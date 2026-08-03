@@ -56,14 +56,16 @@ export class AnalyticsService extends Context.Service<
     readonly flush: Effect.Effect<void>;
   }
 >()("t3/telemetry/AnalyticsService") {
-  /** No-op layer for callers that intentionally disable telemetry. */
-  static readonly layerTest = Layer.succeed(
+  /** No-op layer for runtimes that intentionally disable product analytics. */
+  static readonly layerDisabled = Layer.succeed(
     AnalyticsService,
     AnalyticsService.of({
       record: () => Effect.void,
       flush: Effect.void,
     }),
   );
+
+  static readonly layerTest = AnalyticsService.layerDisabled;
 }
 
 export const make = Effect.gen(function* () {
@@ -184,3 +186,4 @@ export const make = Effect.gen(function* () {
 export const layer = Layer.effect(AnalyticsService, make);
 
 export const layerTest = AnalyticsService.layerTest;
+export const layerDisabled = AnalyticsService.layerDisabled;

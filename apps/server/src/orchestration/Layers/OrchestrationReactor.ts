@@ -34,7 +34,33 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   } satisfies OrchestrationReactorShape;
 });
 
+export const makeCoreOrchestrationReactor = Effect.gen(function* () {
+  const providerRuntimeIngestion = yield* ProviderRuntimeIngestionService;
+  const providerGenerationRecoveryReactor = yield* ProviderGenerationRecoveryReactor;
+  const providerCommandReactor = yield* ProviderCommandReactor;
+  const checkpointReactor = yield* CheckpointReactor;
+  const threadDeletionReactor = yield* ThreadDeletionReactor;
+
+  const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
+    yield* providerRuntimeIngestion.start();
+    yield* providerGenerationRecoveryReactor.start();
+    yield* providerCommandReactor.start();
+    yield* checkpointReactor.start();
+    yield* threadDeletionReactor.start();
+  });
+
+  return {
+    start,
+  } satisfies OrchestrationReactorShape;
+});
+
 export const OrchestrationReactorLive = Layer.effect(
   OrchestrationReactor,
   makeOrchestrationReactor,
+);
+
+/** Cocoa gateway orchestration excludes the hosted agent-awareness relay. */
+export const CoreOrchestrationReactorLive = Layer.effect(
+  OrchestrationReactor,
+  makeCoreOrchestrationReactor,
 );

@@ -355,12 +355,21 @@ interface CloudHttpDependencies {
 }
 
 const cloudHttpDependencies = Effect.gen(function* () {
+  const endpointRuntime = yield* Effect.serviceOption(
+    ManagedEndpointRuntime.CloudManagedEndpointRuntime,
+  );
+  const cliTokenManager = yield* Effect.serviceOption(CliTokenManager.CloudCliTokenManager);
+  if (Option.isNone(endpointRuntime) || Option.isNone(cliTokenManager)) {
+    return yield* Effect.die(
+      new Error("Legacy connect HTTP composition requires hosted cloud services"),
+    );
+  }
   return {
     secrets: yield* ServerSecretStore.ServerSecretStore,
     environment: yield* ServerEnvironment.ServerEnvironment,
-    endpointRuntime: yield* ManagedEndpointRuntime.CloudManagedEndpointRuntime,
+    endpointRuntime: endpointRuntime.value,
     environmentAuth: yield* EnvironmentAuth.EnvironmentAuth,
-    cliTokenManager: yield* CliTokenManager.CloudCliTokenManager,
+    cliTokenManager: cliTokenManager.value,
     httpClient: yield* HttpClient.HttpClient,
   } satisfies CloudHttpDependencies;
 });

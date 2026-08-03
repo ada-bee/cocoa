@@ -1,4 +1,9 @@
-import { EnvironmentHttpApi } from "@t3tools/contracts";
+import {
+  EnvironmentAuthHttpApi,
+  EnvironmentHttpApi,
+  EnvironmentMetadataHttpApi,
+  EnvironmentOrchestrationHttpApi,
+} from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -7,6 +12,7 @@ import * as Schedule from "effect/Schedule";
 import type * as Types from "effect/Types";
 import { FetchHttpClient, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
+import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
@@ -54,7 +60,10 @@ import * as ProcessRunner from "./processRunner.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
-import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor.ts";
+import {
+  CoreOrchestrationReactorLive,
+  OrchestrationReactorLive,
+} from "./orchestration/Layers/OrchestrationReactor.ts";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
@@ -209,15 +218,29 @@ const PlatformServicesLive = Layer.unwrap(
   }),
 );
 
-const ReactorLayerLive = Layer.empty.pipe(
-  Layer.provideMerge(OrchestrationReactorLive),
-  Layer.provideMerge(ProviderRuntimeIngestionLive),
-  Layer.provideMerge(ProviderGenerationRecoveryReactorLive),
-  Layer.provideMerge(ProviderCommandReactorLive),
-  Layer.provideMerge(CheckpointReactorLive),
-  Layer.provideMerge(ThreadDeletionReactorLive),
-  Layer.provideMerge(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
-  Layer.provideMerge(RuntimeReceiptBusLive),
+const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<ROut, E, RIn>) =>
+  Layer.empty.pipe(
+    Layer.provideMerge(orchestrationReactorLayer),
+    Layer.provideMerge(ProviderRuntimeIngestionLive),
+    Layer.provideMerge(ProviderGenerationRecoveryReactorLive),
+    Layer.provideMerge(ProviderCommandReactorLive),
+    Layer.provideMerge(CheckpointReactorLive),
+    Layer.provideMerge(ThreadDeletionReactorLive),
+    Layer.provideMerge(RuntimeReceiptBusLive),
+  );
+
+const LegacyOrchestrationReactorLive = OrchestrationReactorLive.pipe(
+  Layer.provide(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
+);
+
+const ReactorLayerLive = Layer.unwrap(
+  ServerConfig.ServerConfig.pipe(
+    Effect.map((config) =>
+      config.runtimeProfile === "cocoa-gateway"
+        ? makeReactorLayer(CoreOrchestrationReactorLive)
+        : makeReactorLayer(LegacyOrchestrationReactorLive),
+    ),
+  ),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
@@ -365,6 +388,14 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
   ),
 );
 
+const LegacyHostedRuntimeLayerLive = Layer.mergeAll(
+  CloudCliTokenManager.layer.pipe(
+    Layer.provide(ServerSecretStore.layer),
+    Layer.provide(ExternalLauncher.layer),
+  ),
+  CloudManagedEndpointRuntimeLive,
+);
+
 const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(ProviderLayerLive),
   Layer.provideMerge(OrchestrationLayerLive),
@@ -406,13 +437,14 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(ServerEnvironment.layer),
   Layer.provideMerge(AuthLayerLive),
   Layer.provideMerge(ServerSecretStore.layer),
-  Layer.provideMerge(
-    Layer.mergeAll(
-      CloudCliTokenManager.layer.pipe(
-        Layer.provide(ServerSecretStore.layer),
-        Layer.provide(ExternalLauncher.layer),
-      ),
-      CloudManagedEndpointRuntimeLive,
+);
+
+const AnalyticsLayerLive = Layer.unwrap(
+  ServerConfig.ServerConfig.pipe(
+    Effect.map((config) =>
+      config.runtimeProfile === "cocoa-gateway"
+        ? AnalyticsService.layerDisabled
+        : AnalyticsService.layer,
     ),
   ),
 );
@@ -422,7 +454,7 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
   Layer.provideMerge(TraceDiagnostics.layer),
-  Layer.provideMerge(AnalyticsService.layer),
+  Layer.provideMerge(AnalyticsLayerLive),
   Layer.provideMerge(ExternalLauncher.layer),
   Layer.provideMerge(ServerLifecycleEvents.layer),
   Layer.provide(NetService.layer),
@@ -436,15 +468,41 @@ const commandReadinessLayer = HttpRouter.middleware()(
   }),
 ).layer;
 
+class CocoaGatewayEnvironmentHttpApi extends HttpApi.make("environment")
+  .add(EnvironmentMetadataHttpApi)
+  .add(EnvironmentAuthHttpApi)
+  .add(EnvironmentOrchestrationHttpApi) {}
+
+const legacyEnvironmentHttpApiLayer = HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
+  Layer.provide(authHttpApiLayer),
+  Layer.provide(connectHttpApiLayer),
+  Layer.provide(orchestrationHttpApiLayer),
+  Layer.provide(serverEnvironmentHttpApiLayer),
+  Layer.provide(environmentAuthenticatedAuthLayer),
+);
+
+const cocoaGatewayEnvironmentHttpApiLayer = HttpApiBuilder.layer(
+  CocoaGatewayEnvironmentHttpApi,
+).pipe(
+  Layer.provide(authHttpApiLayer),
+  Layer.provide(orchestrationHttpApiLayer),
+  Layer.provide(serverEnvironmentHttpApiLayer),
+  Layer.provide(environmentAuthenticatedAuthLayer),
+);
+
+const environmentHttpApiLayer = Layer.unwrap(
+  ServerConfig.ServerConfig.pipe(
+    Effect.map((config) =>
+      config.runtimeProfile === "cocoa-gateway"
+        ? cocoaGatewayEnvironmentHttpApiLayer
+        : legacyEnvironmentHttpApiLayer,
+    ),
+  ),
+);
+
 const commandReadyRoutesLayer = Layer.mergeAll(
   Layer.mergeAll(
-    HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
-      Layer.provide(authHttpApiLayer),
-      Layer.provide(connectHttpApiLayer),
-      Layer.provide(orchestrationHttpApiLayer),
-      Layer.provide(serverEnvironmentHttpApiLayer),
-      Layer.provide(environmentAuthenticatedAuthLayer),
-    ),
+    environmentHttpApiLayer,
     otlpTracesProxyRouteLayer,
     assetRouteLayer,
     staticAndDevRouteLayer,
@@ -515,7 +573,10 @@ export const makeServerLayer = Layer.unwrap(
           ),
       ),
     );
-    const tailscaleServeLayer = config.tailscaleServeEnabled
+    const legacyFleetFeatures = config.runtimeProfile !== "cocoa-gateway";
+    const hostedRuntimeLayer = legacyFleetFeatures ? LegacyHostedRuntimeLayerLive : Layer.empty;
+    const tailscaleServeEnabled = legacyFleetFeatures && config.tailscaleServeEnabled;
+    const tailscaleServeLayer = tailscaleServeEnabled
       ? Layer.effectDiscard(
           Effect.acquireRelease(
             Effect.gen(function* () {
@@ -568,62 +629,65 @@ export const makeServerLayer = Layer.unwrap(
           ),
         )
       : Layer.empty;
-    const cloudDesiredLinkReconcileLayer = Layer.effectDiscard(
-      Effect.gen(function* () {
-        if (!hasCloudPublicConfig) {
-          yield* Deferred.succeed(cloudLinkParked, undefined).pipe(Effect.orDie);
-          return;
-        }
-        yield* forkParked(
-          Effect.gen(function* () {
-            // Only an activated runtime owns the tunnel cleanup finalizer.
-            yield* Effect.addFinalizer(() =>
-              releaseManagedTunnelOnShutdown().pipe(
-                Effect.timeout("10 seconds"),
-                Effect.tap((released) =>
-                  released
-                    ? Effect.logInfo("Released the managed tunnel on shutdown")
-                    : Effect.void,
-                ),
-                Effect.catchCause((cause) =>
-                  Effect.logWarning(
-                    "Failed to release the managed tunnel on shutdown; the next link reuses it",
-                    { cause },
-                  ),
-                ),
-                Effect.asVoid,
-              ),
-            );
-            if (!(yield* CloudCliState.readCliDesiredCloudLink)) return;
-            const server = yield* HttpServer.HttpServer;
-            const address = server.address;
-            if (typeof address === "string" || !("port" in address)) return;
-            yield* Effect.sleep("250 millis").pipe(
-              Effect.andThen(reconcileDesiredCloudLink(`http://127.0.0.1:${address.port}`)),
-              Effect.retry({
-                while: (error) =>
-                  error._tag !== "EnvironmentHttpBadRequestError" &&
-                  error._tag !== "EnvironmentHttpUnauthorizedError" &&
-                  error._tag !== "EnvironmentHttpConflictError",
-                schedule: Schedule.exponential("1 second").pipe(
-                  Schedule.modifyDelay(({ duration }) =>
-                    Effect.succeed(Duration.min(duration, Duration.seconds(30))),
-                  ),
-                  Schedule.upTo({ duration: "10 minutes" }),
-                ),
-              }),
-              Effect.tap(() => Effect.logInfo("T3 Connect desired link reconciled on startup")),
-              Effect.catch((cause) =>
-                Effect.logWarning("Failed to reconcile T3 Connect desired link on startup", {
-                  cause,
+    const cloudDesiredLinkReconcileLayer =
+      !legacyFleetFeatures || !hasCloudPublicConfig
+        ? Layer.effectDiscard(
+            Deferred.succeed(cloudLinkParked, undefined).pipe(Effect.orDie, Effect.asVoid),
+          )
+        : Layer.effectDiscard(
+            Effect.gen(function* () {
+              yield* forkParked(
+                Effect.gen(function* () {
+                  // Only an activated runtime owns the tunnel cleanup finalizer.
+                  yield* Effect.addFinalizer(() =>
+                    releaseManagedTunnelOnShutdown().pipe(
+                      Effect.timeout("10 seconds"),
+                      Effect.tap((released) =>
+                        released
+                          ? Effect.logInfo("Released the managed tunnel on shutdown")
+                          : Effect.void,
+                      ),
+                      Effect.catchCause((cause) =>
+                        Effect.logWarning(
+                          "Failed to release the managed tunnel on shutdown; the next link reuses it",
+                          { cause },
+                        ),
+                      ),
+                      Effect.asVoid,
+                    ),
+                  );
+                  if (!(yield* CloudCliState.readCliDesiredCloudLink)) return;
+                  const server = yield* HttpServer.HttpServer;
+                  const address = server.address;
+                  if (typeof address === "string" || !("port" in address)) return;
+                  yield* Effect.sleep("250 millis").pipe(
+                    Effect.andThen(reconcileDesiredCloudLink(`http://127.0.0.1:${address.port}`)),
+                    Effect.retry({
+                      while: (error) =>
+                        error._tag !== "EnvironmentHttpBadRequestError" &&
+                        error._tag !== "EnvironmentHttpUnauthorizedError" &&
+                        error._tag !== "EnvironmentHttpConflictError",
+                      schedule: Schedule.exponential("1 second").pipe(
+                        Schedule.modifyDelay(({ duration }) =>
+                          Effect.succeed(Duration.min(duration, Duration.seconds(30))),
+                        ),
+                        Schedule.upTo({ duration: "10 minutes" }),
+                      ),
+                    }),
+                    Effect.tap(() =>
+                      Effect.logInfo("T3 Connect desired link reconciled on startup"),
+                    ),
+                    Effect.catch((cause) =>
+                      Effect.logWarning("Failed to reconcile T3 Connect desired link on startup", {
+                        cause,
+                      }),
+                    ),
+                  );
                 }),
-              ),
-            );
-          }),
-        );
-        yield* Deferred.succeed(cloudLinkParked, undefined).pipe(Effect.orDie);
-      }),
-    );
+              );
+              yield* Deferred.succeed(cloudLinkParked, undefined).pipe(Effect.orDie);
+            }),
+          ).pipe(Layer.provide(LegacyHostedRuntimeLayerLive));
 
     const runtimeServicesLive = ServerRuntimeStartup.layerWithOptions({
       activate: Deferred.succeed(activation, undefined).pipe(Effect.asVoid),
@@ -633,7 +697,7 @@ export const makeServerLayer = Layer.unwrap(
           Deferred.await(runtimeStateParked),
           Deferred.await(cloudLinkParked),
           Deferred.await(routesReady),
-          ...(config.tailscaleServeEnabled ? [Deferred.await(tailscaleParked)] : []),
+          ...(tailscaleServeEnabled ? [Deferred.await(tailscaleParked)] : []),
         ],
         { concurrency: "unbounded" },
       ).pipe(Effect.asVoid),
@@ -650,13 +714,16 @@ export const makeServerLayer = Layer.unwrap(
       cloudDesiredLinkReconcileLayer,
     );
 
+    const relayTracingLayer = legacyFleetFeatures ? serverRelayBrokerTracingLayer : Layer.empty;
+
     return serverApplicationLayer.pipe(
       Layer.provideMerge(runtimeServicesLive),
       Layer.provide(activationLayer),
-      Layer.provideMerge(serverRelayBrokerTracingLayer),
+      Layer.provideMerge(relayTracingLayer),
       Layer.provideMerge(HttpResponseCompressionLive),
       Layer.provideMerge(HttpServerLive),
       Layer.provide(ApplicationObservabilityLive),
+      Layer.provide(hostedRuntimeLayer),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provideMerge(VcsProcess.layer),
       Layer.provideMerge(PlatformServicesLive),

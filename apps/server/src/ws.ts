@@ -313,7 +313,25 @@ const makeWsRpcLayer = (
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
-      const relayClient = yield* RelayClient.RelayClient;
+      const relayClientOption = yield* Effect.serviceOption(RelayClient.RelayClient);
+      if (config.runtimeProfile === "cocoa-gateway" && Option.isSome(relayClientOption)) {
+        return yield* Effect.die(
+          new Error("Cocoa gateway composition must not provide a RelayClient service"),
+        );
+      }
+      if (config.runtimeProfile !== "cocoa-gateway" && Option.isNone(relayClientOption)) {
+        return yield* Effect.die(new Error("Legacy composition requires a RelayClient service"));
+      }
+      const relayClient = Option.getOrNull(relayClientOption);
+      const relayClientStatus: Effect.Effect<RelayClient.RelayClientStatus> =
+        relayClient === null
+          ? Effect.succeed({
+              status: "unsupported",
+              platform: process.platform,
+              arch: "external-provider",
+              version: RelayClient.CLOUDFLARED_VERSION,
+            })
+          : relayClient.resolve;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
           message: `The authenticated token is missing required scope: ${requiredScope}.`,
@@ -1432,36 +1450,44 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "server",
           }),
         [WS_METHODS.cloudGetRelayClientStatus]: (_input) =>
-          observeRpcEffect(WS_METHODS.cloudGetRelayClientStatus, relayClient.resolve, {
+          observeRpcEffect(WS_METHODS.cloudGetRelayClientStatus, relayClientStatus, {
             "rpc.aggregate": "cloud",
           }),
         [WS_METHODS.cloudInstallRelayClient]: (_input) =>
           observeRpcStream(
             WS_METHODS.cloudInstallRelayClient,
-            Stream.callback<RelayClientInstallProgressEvent, RelayClientInstallFailedError>(
-              (queue) =>
-                relayClient
-                  .installWithProgress((event) => Queue.offer(queue, event).pipe(Effect.asVoid))
-                  .pipe(
-                    Effect.flatMap((status) =>
-                      Queue.offer(queue, {
-                        type: "complete",
-                        status,
-                      }),
-                    ),
-                    Effect.catchTag("RelayClientInstallError", (error) =>
-                      Queue.fail(
-                        queue,
-                        new RelayClientInstallFailedError({
-                          reason: error.reason,
-                          message: error.message,
-                        }),
+            relayClient === null
+              ? Stream.fail(
+                  new RelayClientInstallFailedError({
+                    reason: "unsupported_platform",
+                    message:
+                      "Cocoa does not install or manage tunnel clients; administrators own gateway connectivity.",
+                  }),
+                )
+              : Stream.callback<RelayClientInstallProgressEvent, RelayClientInstallFailedError>(
+                  (queue) =>
+                    relayClient
+                      .installWithProgress((event) => Queue.offer(queue, event).pipe(Effect.asVoid))
+                      .pipe(
+                        Effect.flatMap((status) =>
+                          Queue.offer(queue, {
+                            type: "complete",
+                            status,
+                          }),
+                        ),
+                        Effect.catchTag("RelayClientInstallError", (error) =>
+                          Queue.fail(
+                            queue,
+                            new RelayClientInstallFailedError({
+                              reason: error.reason,
+                              message: error.message,
+                            }),
+                          ),
+                        ),
+                        Effect.andThen(Queue.end(queue)),
+                        Effect.forkScoped,
                       ),
-                    ),
-                    Effect.andThen(Queue.end(queue)),
-                    Effect.forkScoped,
-                  ),
-            ),
+                ),
             { "rpc.aggregate": "cloud" },
           ),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
