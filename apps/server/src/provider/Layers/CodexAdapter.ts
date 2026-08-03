@@ -73,13 +73,19 @@ const PROVIDER = ProviderDriverKind.make("codex");
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
+  /**
+   * Instance availability is enforced at the adapter boundary so a disabled
+   * endpoint configuration can never fall through to the legacy local
+   * process runtime.
+   */
+  readonly enabled?: boolean;
   readonly environment?: NodeJS.ProcessEnv;
   readonly makeRuntime?: (
     options: CodexSessionRuntimeOptions,
   ) => Effect.Effect<
     CodexSessionRuntimeShape,
     CodexSessionRuntimeError,
-    ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+    ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
@@ -1377,6 +1383,14 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
       Effect.gen(function* () {
+        if (options?.enabled === false || codexConfig.enabled === false) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: `Provider instance '${boundInstanceId}' is disabled.`,
+          });
+        }
+
         if (input.provider !== undefined && input.provider !== PROVIDER) {
           return yield* new ProviderAdapterValidationError({
             provider: PROVIDER,

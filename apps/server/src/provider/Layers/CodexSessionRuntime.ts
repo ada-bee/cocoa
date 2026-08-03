@@ -181,6 +181,7 @@ export interface CodexSessionRuntimeShape {
 export type CodexSessionRuntimeError =
   | CodexErrors.CodexAppServerError
   | CodexSessionRuntimeEndpointInstanceMismatchError
+  | CodexSessionRuntimeEndpointUnavailableError
   | CodexEndpointRouterRegistrationError
   | CodexSessionRuntimeEndpointMcpConfigurationError
   | CodexSessionRuntimePendingApprovalNotFoundError
@@ -198,6 +199,18 @@ export class CodexSessionRuntimeEndpointInstanceMismatchError extends Schema.Tag
 ) {
   override get message(): string {
     return `Codex endpoint session '${this.threadId}' targets provider instance '${this.configuredProviderInstanceId}', but the initialized connection belongs to '${this.connectionProviderInstanceId}'.`;
+  }
+}
+
+export class CodexSessionRuntimeEndpointUnavailableError extends Schema.TaggedErrorClass<CodexSessionRuntimeEndpointUnavailableError>()(
+  "CodexSessionRuntimeEndpointUnavailableError",
+  {
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+  },
+) {
+  override get message(): string {
+    return `Codex endpoint provider instance '${this.providerInstanceId}' is unavailable for session '${this.threadId}'.`;
   }
 }
 

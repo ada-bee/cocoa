@@ -290,6 +290,44 @@ validationLayer("CodexAdapterLive validation", (it) => {
   );
 });
 
+const disabledRuntimeFactory = makeRuntimeFactory();
+const disabledLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    makeCodexAdapter(decodeCodexSettings({ enabled: false }), {
+      enabled: false,
+      instanceId: ProviderInstanceId.make("codex_disabled"),
+      makeRuntime: disabledRuntimeFactory.factory,
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+disabledLayer("CodexAdapterLive disabled instance guard", (it) => {
+  it.effect("rejects startSession without constructing a local fallback runtime", () =>
+    Effect.gen(function* () {
+      disabledRuntimeFactory.factory.mockClear();
+      const adapter = yield* CodexAdapter;
+      const result = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("disabled-thread"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      NodeAssert.equal(result.failure._tag, "ProviderAdapterValidationError");
+      NodeAssert.match(result.failure.message, /codex_disabled.*disabled/i);
+      NodeAssert.equal(disabledRuntimeFactory.factory.mock.calls.length, 0);
+    }),
+  );
+});
+
 const sessionRuntimeFactory = makeRuntimeFactory();
 const sessionErrorLayer = it.layer(
   Layer.effect(

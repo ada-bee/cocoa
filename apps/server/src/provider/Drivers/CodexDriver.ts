@@ -5,45 +5,67 @@
  * one `ProviderInstance` bundling:
  *   - `snapshot`   — the live `ServerProviderShape` for this instance;
  *   - `adapter`    — the Codex session/turn/approval runtime;
- *   - `textGeneration` — commit/PR/branch/title generation via `codex exec`.
+ *   - `textGeneration` — provider-bound text generation, or an explicit
+ *     unavailable service when the remote endpoint does not expose it.
  *
- * Each call to `create()` captures the `codexConfig` argument in closures
- * owned by the returned instance. Two instances created with different
- * `homePath`s (e.g. `codex_personal` + `codex_work`) therefore run with
- * fully independent Codex app-server processes and `CODEX_HOME`
- * environments — no shared mutable state.
+ * Each call to `create()` captures the typed config in closures owned by the
+ * returned instance. Endpoint-backed instances own exactly one initialized
+ * connection and one notification router for their whole driver scope;
+ * legacy instances retain their isolated local app-server behavior.
  *
  * Resource lifecycle: `create()` runs in a scope handed in by the registry.
- * Closing that scope releases the adapter's child processes, the managed
- * snapshot's refresh fibre, and the text-generation binaries' transient
- * scratch files. The registry uses this to tear down an instance when its
- * `providerInstances` entry disappears or its config changes.
+ * Closing that scope releases the endpoint transport (or legacy adapter child
+ * processes), the managed snapshot refresh fiber, and any transient local
+ * text-generation resources. The registry uses this to tear down an instance
+ * when its `providerInstances` entry disappears or its config changes.
  *
  * @module provider/Drivers/CodexDriver
  */
-import { CodexSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import {
+  CodexSettings,
+  ProviderDriverKind,
+  TextGenerationError,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
+import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
-import { checkCodexProviderStatus, makePendingCodexProvider } from "../Layers/CodexProvider.ts";
+import {
+  checkCodexEndpointProviderStatus,
+  checkCodexProviderStatus,
+  makePendingCodexProvider,
+} from "../Layers/CodexProvider.ts";
+import {
+  CodexSessionRuntimeEndpointUnavailableError,
+  makeCodexEndpointSessionRuntime,
+} from "../Layers/CodexSessionRuntime.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
-import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
+import {
+  defaultProviderContinuationIdentity,
+  type ProviderDriver,
+  type ProviderInstance,
+} from "../ProviderDriver.ts";
+import * as CodexEndpointFactory from "../codexEndpoint/CodexEndpointFactory.ts";
+import { makeCodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
+  makeManualOnlyProviderMaintenanceCapabilities,
   makePackageManagedProviderMaintenanceResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
@@ -66,6 +88,55 @@ const UPDATE = makePackageManagedProviderMaintenanceResolver({
   homebrewFormula: "codex",
   nativeUpdate: null,
 });
+
+type CodexTextGenerationOperation =
+  | "generateCommitMessage"
+  | "generatePrContent"
+  | "generateBranchName"
+  | "generateThreadTitle";
+
+const makeUnavailableEndpointTextGeneration = (
+  instanceId: ProviderInstance["instanceId"],
+): TextGeneration.TextGeneration["Service"] => {
+  const unavailable = (operation: CodexTextGenerationOperation) =>
+    Effect.fail(
+      new TextGenerationError({
+        operation,
+        detail: `Text generation is unavailable for endpoint-backed Codex instance '${instanceId}'.`,
+      }),
+    );
+
+  return TextGeneration.TextGeneration.of({
+    generateCommitMessage: () => unavailable("generateCommitMessage"),
+    generatePrContent: () => unavailable("generatePrContent"),
+    generateBranchName: () => unavailable("generateBranchName"),
+    generateThreadTitle: () => unavailable("generateThreadTitle"),
+  });
+};
+
+export interface CodexDriverDependencies {
+  readonly makeEndpoint: typeof CodexEndpointFactory.make;
+  readonly makeEndpointRouter: typeof makeCodexEndpointRouter;
+  readonly makeEndpointRuntime: typeof makeCodexEndpointSessionRuntime;
+  readonly makeAdapter: typeof makeCodexAdapter;
+  readonly makeLocalTextGeneration: typeof makeCodexTextGeneration;
+  readonly checkEndpointProviderStatus: typeof checkCodexEndpointProviderStatus;
+  readonly checkLocalProviderStatus: typeof checkCodexProviderStatus;
+  readonly resolveHomeLayout: typeof resolveCodexHomeLayout;
+  readonly materializeShadowHome: typeof materializeCodexShadowHome;
+}
+
+const defaultDependencies: CodexDriverDependencies = {
+  makeEndpoint: CodexEndpointFactory.make,
+  makeEndpointRouter: makeCodexEndpointRouter,
+  makeEndpointRuntime: makeCodexEndpointSessionRuntime,
+  makeAdapter: makeCodexAdapter,
+  makeLocalTextGeneration: makeCodexTextGeneration,
+  checkEndpointProviderStatus: checkCodexEndpointProviderStatus,
+  checkLocalProviderStatus: checkCodexProviderStatus,
+  resolveHomeLayout: resolveCodexHomeLayout,
+  materializeShadowHome: materializeCodexShadowHome,
+};
 
 /**
  * Services the driver needs to materialize an instance. Surfaced as the
@@ -105,109 +176,326 @@ const withInstanceIdentity =
     continuation: { groupKey: input.continuationGroupKey },
   });
 
-export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
-  driverKind: DRIVER_KIND,
-  metadata: {
-    displayName: "Codex",
-    supportsMultipleInstances: true,
-  },
-  configSchema: CodexSettings,
-  defaultConfig: (): CodexSettings => decodeCodexSettings({}),
-  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
-    Effect.gen(function* () {
-      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const httpClient = yield* HttpClient.HttpClient;
-      const serverSettings = yield* ServerSettingsService;
-      const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = mergeProviderInstanceEnvironment(environment);
-      const homeLayout = yield* resolveCodexHomeLayout(config);
-      const continuationIdentity = codexContinuationIdentity(homeLayout);
-      const stampIdentity = withInstanceIdentity({
-        instanceId,
-        displayName,
-        accentColor,
-        continuationGroupKey: continuationIdentity.continuationKey,
-      });
-      yield* materializeCodexShadowHome(homeLayout).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
+export const makeCodexDriver = (
+  overrides: Partial<CodexDriverDependencies> = {},
+): ProviderDriver<CodexSettings, CodexDriverEnv> => {
+  const dependencies: CodexDriverDependencies = { ...defaultDependencies, ...overrides };
+
+  return {
+    driverKind: DRIVER_KIND,
+    metadata: {
+      displayName: "Codex",
+      supportsMultipleInstances: true,
+    },
+    configSchema: CodexSettings,
+    defaultConfig: (): CodexSettings => decodeCodexSettings({}),
+    create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
+      Effect.gen(function* () {
+        const serverSettings = yield* ServerSettingsService;
+        const eventLoggers = yield* ProviderEventLoggers;
+        const processEnv = mergeProviderInstanceEnvironment(environment);
+        const mapDriverError = (detail: string, cause: unknown) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail,
+            cause,
+          });
+
+        if (config.endpointTransport) {
+          const continuationIdentity = defaultProviderContinuationIdentity({
+            driverKind: DRIVER_KIND,
+            instanceId,
+          });
+          const stampIdentity = withInstanceIdentity({
+            instanceId,
+            displayName,
+            accentColor,
+            continuationGroupKey: continuationIdentity.continuationKey,
+          });
+          const effectiveConfig = { ...config, enabled } satisfies CodexSettings;
+          const maintenanceCapabilities = makeManualOnlyProviderMaintenanceCapabilities({
+            provider: DRIVER_KIND,
+            packageName: null,
+          });
+          const textGeneration = makeUnavailableEndpointTextGeneration(instanceId);
+
+          if (!enabled) {
+            const adapter = yield* dependencies.makeAdapter(effectiveConfig, {
               instanceId,
-              detail: cause.message,
-              cause,
-            }),
-        ),
-      );
-      const effectiveConfig = {
-        ...config,
-        enabled,
-        homePath: homeLayout.effectiveHomePath ?? "",
-      } satisfies CodexSettings;
-      const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
-        binaryPath: effectiveConfig.binaryPath,
-        env: processEnv,
-      });
+              enabled: false,
+              environment: processEnv,
+              ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+            });
+            const snapshotSettings = makeProviderSnapshotSettingsSource(
+              effectiveConfig,
+              serverSettings,
+            );
+            const pendingSnapshot = makePendingCodexProvider(effectiveConfig).pipe(
+              Effect.map(stampIdentity),
+            );
+            const snapshot = yield* makeManagedServerProvider<
+              ProviderSnapshotSettings<CodexSettings>
+            >({
+              maintenanceCapabilities,
+              getSettings: snapshotSettings.getSettings,
+              streamSettings: snapshotSettings.streamSettings,
+              haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+              initialSnapshot: () => pendingSnapshot,
+              checkProvider: pendingSnapshot,
+            }).pipe(
+              Effect.mapError((cause) =>
+                mapDriverError(
+                  `Failed to build disabled Codex endpoint snapshot: ${cause.message ?? String(cause)}`,
+                  cause,
+                ),
+              ),
+            );
 
-      // `makeCodexAdapter` and `makeCodexTextGeneration` have `never` error
-      // channels at construction time — their failure modes are all on the
-      // per-operation closures they return. No `mapError` wrapper is needed
-      // here; the registry only has to worry about snapshot-build and
-      // spawner-availability failures surfaced from `checkCodexProviderStatus`
-      // below.
-      const adapter = yield* makeCodexAdapter(effectiveConfig, {
-        instanceId,
-        environment: processEnv,
-        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
-      });
-      const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnv);
+            return {
+              instanceId,
+              driverKind: DRIVER_KIND,
+              continuationIdentity,
+              displayName,
+              accentColor,
+              enabled,
+              snapshot,
+              adapter,
+              textGeneration,
+            } satisfies ProviderInstance;
+          }
 
-      // Build a managed snapshot whose settings never change — mutations come
-      // in as instance rebuilds from the registry rather than in-place
-      // updates. Pre-provide `ChildProcessSpawner` so the check fits
-      // `makeManagedServerProvider.checkProvider`'s `R = never`.
-      const checkProvider = checkCodexProviderStatus(effectiveConfig, undefined, processEnv).pipe(
-        Effect.map(stampIdentity),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      );
-      const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
-      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<CodexSettings>>({
-        maintenanceCapabilities,
-        getSettings: snapshotSettings.getSettings,
-        streamSettings: snapshotSettings.streamSettings,
-        haveSettingsChanged: haveProviderSnapshotSettingsChanged,
-        initialSnapshot: (settings) =>
-          makePendingCodexProvider(settings.provider).pipe(Effect.map(stampIdentity)),
-        checkProvider,
-        enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
-          enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities, {
-            enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+          const connection = yield* dependencies
+            .makeEndpoint({
+              providerInstanceId: instanceId,
+              transport: config.endpointTransport,
+            })
+            .pipe(
+              Effect.mapError((cause) =>
+                mapDriverError(`Failed to connect Codex endpoint: ${cause.message}`, cause),
+              ),
+            );
+          const router = yield* dependencies.makeEndpointRouter(connection.client);
+          const generationAvailable = yield* Ref.make(true);
+          const adapter = yield* dependencies.makeAdapter(effectiveConfig, {
+            instanceId,
+            enabled: true,
+            environment: processEnv,
+            makeRuntime: (runtimeOptions) => {
+              const {
+                binaryPath: _binaryPath,
+                homePath: _homePath,
+                launchArgs: _launchArgs,
+                environment: _environment,
+                providerInstanceId: _providerInstanceId,
+                ...endpointOptions
+              } = runtimeOptions;
+              const ensureGenerationAvailable = Ref.get(generationAvailable).pipe(
+                Effect.flatMap((available) =>
+                  available
+                    ? Effect.void
+                    : Effect.fail(
+                        new CodexSessionRuntimeEndpointUnavailableError({
+                          threadId: runtimeOptions.threadId,
+                          providerInstanceId: instanceId,
+                        }),
+                      ),
+                ),
+              );
+              return ensureGenerationAvailable.pipe(
+                Effect.andThen(
+                  Effect.suspend(() =>
+                    dependencies.makeEndpointRuntime({
+                      connection,
+                      router,
+                      options: {
+                        ...endpointOptions,
+                        providerInstanceId: instanceId,
+                      },
+                    }),
+                  ),
+                ),
+                Effect.map((runtime) => ({
+                  ...runtime,
+                  start: () =>
+                    ensureGenerationAvailable.pipe(
+                      Effect.andThen(runtime.start()),
+                      Effect.flatMap((session) =>
+                        ensureGenerationAvailable.pipe(Effect.as(session)),
+                      ),
+                    ),
+                })),
+              );
+            },
+            ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+          });
+
+          const checkProvider = dependencies
+            .checkEndpointProviderStatus(effectiveConfig, connection)
+            .pipe(Effect.map(stampIdentity));
+          const snapshotSettings = makeProviderSnapshotSettingsSource(
+            effectiveConfig,
+            serverSettings,
+          );
+          const snapshot = yield* makeManagedServerProvider<
+            ProviderSnapshotSettings<CodexSettings>
+          >({
+            maintenanceCapabilities,
+            getSettings: snapshotSettings.getSettings,
+            streamSettings: snapshotSettings.streamSettings,
+            haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+            initialSnapshot: (settings) =>
+              makePendingCodexProvider(settings.provider).pipe(Effect.map(stampIdentity)),
+            checkProvider,
           }).pipe(
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
-          ),
-      }).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderDriverError({
-              driver: DRIVER_KIND,
-              instanceId,
-              detail: `Failed to build Codex snapshot: ${cause.message ?? String(cause)}`,
-              cause,
-            }),
-        ),
-      );
+            Effect.mapError((cause) =>
+              mapDriverError(
+                `Failed to build Codex endpoint snapshot: ${cause.message ?? String(cause)}`,
+                cause,
+              ),
+            ),
+          );
 
-      return {
-        instanceId,
-        driverKind: DRIVER_KIND,
-        continuationIdentity,
-        displayName,
-        accentColor,
-        enabled,
-        snapshot,
-        adapter,
-        textGeneration,
-      } satisfies ProviderInstance;
-    }),
+          // A connection and router form one immutable generation. This first
+          // endpoint slice deliberately fails closed: termination invalidates
+          // the generation and stops every borrower once. Reconciliation may
+          // construct a fresh driver scope later; sessions never swap clients
+          // or replay mutations here. Refresh after invalidation so consumers
+          // promptly observe the endpoint's error state.
+          yield* connection.awaitTermination.pipe(
+            Effect.catch((cause) =>
+              Ref.getAndSet(generationAvailable, false).pipe(
+                Effect.flatMap((wasAvailable) =>
+                  wasAvailable
+                    ? adapter.stopAll().pipe(
+                        Effect.catch((stopCause) =>
+                          Effect.logWarning("Failed to stop Codex endpoint sessions", {
+                            providerInstanceId: instanceId,
+                            cause: stopCause,
+                          }),
+                        ),
+                        Effect.andThen(
+                          snapshot.refresh.pipe(
+                            Effect.catchCause((refreshCause) =>
+                              Effect.logWarning(
+                                "Failed to refresh terminated Codex endpoint snapshot",
+                                {
+                                  providerInstanceId: instanceId,
+                                  cause: refreshCause,
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                      )
+                    : Effect.void,
+                ),
+                Effect.tap(() =>
+                  Effect.logWarning("Codex endpoint generation terminated", {
+                    providerInstanceId: instanceId,
+                    cause,
+                  }),
+                ),
+              ),
+            ),
+            Effect.forkScoped,
+          );
+
+          return {
+            instanceId,
+            driverKind: DRIVER_KIND,
+            continuationIdentity,
+            displayName,
+            accentColor,
+            enabled,
+            snapshot,
+            adapter,
+            textGeneration,
+          } satisfies ProviderInstance;
+        }
+
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const httpClient = yield* HttpClient.HttpClient;
+        const homeLayout = yield* dependencies.resolveHomeLayout(config);
+        const continuationIdentity = codexContinuationIdentity(homeLayout);
+        const stampIdentity = withInstanceIdentity({
+          instanceId,
+          displayName,
+          accentColor,
+          continuationGroupKey: continuationIdentity.continuationKey,
+        });
+        yield* dependencies
+          .materializeShadowHome(homeLayout)
+          .pipe(Effect.mapError((cause) => mapDriverError(cause.message, cause)));
+        const effectiveConfig = {
+          ...config,
+          enabled,
+          homePath: homeLayout.effectiveHomePath ?? "",
+        } satisfies CodexSettings;
+        const maintenanceCapabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
+          UPDATE,
+          {
+            binaryPath: effectiveConfig.binaryPath,
+            env: processEnv,
+          },
+        );
+        const adapter = yield* dependencies.makeAdapter(effectiveConfig, {
+          instanceId,
+          enabled,
+          environment: processEnv,
+          ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        });
+        const textGeneration = yield* dependencies.makeLocalTextGeneration(
+          effectiveConfig,
+          processEnv,
+        );
+        const checkProvider = dependencies
+          .checkLocalProviderStatus(effectiveConfig, undefined, processEnv)
+          .pipe(
+            Effect.map(stampIdentity),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          );
+        const snapshotSettings = makeProviderSnapshotSettingsSource(
+          effectiveConfig,
+          serverSettings,
+        );
+        const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<CodexSettings>>({
+          maintenanceCapabilities,
+          getSettings: snapshotSettings.getSettings,
+          streamSettings: snapshotSettings.streamSettings,
+          haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+          initialSnapshot: (settings) =>
+            makePendingCodexProvider(settings.provider).pipe(Effect.map(stampIdentity)),
+          checkProvider,
+          enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
+            enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities, {
+              enableProviderUpdateChecks: settings.enableProviderUpdateChecks,
+            }).pipe(
+              Effect.provideService(HttpClient.HttpClient, httpClient),
+              Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
+            ),
+        }).pipe(
+          Effect.mapError((cause) =>
+            mapDriverError(
+              `Failed to build Codex snapshot: ${cause.message ?? String(cause)}`,
+              cause,
+            ),
+          ),
+        );
+
+        return {
+          instanceId,
+          driverKind: DRIVER_KIND,
+          continuationIdentity,
+          displayName,
+          accentColor,
+          enabled,
+          snapshot,
+          adapter,
+          textGeneration,
+        } satisfies ProviderInstance;
+      }),
+  };
 };
+
+export const CodexDriver = makeCodexDriver();
