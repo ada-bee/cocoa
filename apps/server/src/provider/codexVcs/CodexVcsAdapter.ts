@@ -1,4 +1,5 @@
 import {
+  type CodexCheckpointHelperConfig,
   CodexGitExecutablePath as CodexGitExecutablePathSchema,
   type CodexGitExecutablePath as CodexGitExecutablePathContract,
   type ProviderInstanceId,
@@ -25,6 +26,7 @@ import type {
   CodexEndpointBorrowUnavailableError,
   CodexEndpointConnectionBorrow,
 } from "../codexEndpoint/CodexEndpointSupervisor.ts";
+import { makeCodexCheckpointHelperAdapter } from "./CodexCheckpointHelperAdapter.ts";
 
 export const CodexGitExecutablePath = CodexGitExecutablePathSchema;
 export type CodexGitExecutablePath = CodexGitExecutablePathContract;
@@ -33,6 +35,7 @@ export interface MakeCodexVcsAdapterOptions {
   readonly providerInstanceId: ProviderInstanceId;
   /** Administrator-configured absolute path. It is never discovered through PATH. */
   readonly gitExecutablePath: CodexGitExecutablePath;
+  readonly checkpointHelper?: CodexCheckpointHelperConfig;
   readonly borrowConnection: Effect.Effect<
     CodexEndpointConnectionBorrow,
     CodexEndpointBorrowUnavailableError
@@ -471,6 +474,14 @@ export const redactCodexVcsRemoteUrl = (input: string): string => {
 };
 
 export const makeCodexVcsAdapter = (options: MakeCodexVcsAdapterOptions): ProviderVcsAdapter => {
+  const checkpointHelper =
+    options.checkpointHelper === undefined
+      ? undefined
+      : makeCodexCheckpointHelperAdapter({
+          providerInstanceId: options.providerInstanceId,
+          gitExecutablePath: options.gitExecutablePath,
+          helper: options.checkpointHelper,
+        });
   const command = (args: ReadonlyArray<string>): ReadonlyArray<string> => [
     options.gitExecutablePath,
     ...GIT_CONFIG_PREFIX,
@@ -595,6 +606,16 @@ export const makeCodexVcsAdapter = (options: MakeCodexVcsAdapterOptions): Provid
     }
     const rootPath = lines[0]!;
     const commonDirectoryPath = lines[1]!;
+    const checkpointResult =
+      checkpointHelper === undefined
+        ? undefined
+        : yield* checkpointHelper.probe(borrowed, rootPath).pipe(
+            Effect.flatMap((probeResult) =>
+              checkpointHelper.open(borrowed, { rootPath, commonDirectoryPath }, probeResult),
+            ),
+            Effect.result,
+          );
+    const checkpoints = checkpointResult?._tag === "Success" ? checkpointResult.success : undefined;
 
     const repository: ProviderVcsRepository = {
       identity: { kind: "git", rootPath, commonDirectoryPath },
@@ -604,6 +625,7 @@ export const makeCodexVcsAdapter = (options: MakeCodexVcsAdapterOptions): Provid
         remotes: true,
         reviewDiff: true,
       },
+      ...(checkpoints === undefined ? {} : { checkpoints }),
       getStatus: Effect.fn("CodexVcsAdapter.getStatus")(function* (input) {
         const result = yield* execute(
           borrowed,

@@ -1,6 +1,14 @@
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import {
+  CODEX_CHECKPOINT_HELPER_MAX_PATCH_BYTES,
+  CODEX_CHECKPOINT_HELPER_MAX_REQUEST_BYTES,
+  CODEX_CHECKPOINT_HELPER_MAX_RESPONSE_BYTES,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Encoding from "effect/Encoding";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
@@ -17,6 +25,7 @@ import {
   CodexEndpointBorrowUnavailableError,
   type CodexEndpointConnectionBorrow,
 } from "../codexEndpoint/CodexEndpointSupervisor.ts";
+import { encodeCodexCheckpointHelperFrame } from "./CodexCheckpointHelperAdapter.ts";
 import {
   CODEX_VCS_COMMAND_ENV,
   CODEX_VCS_COMMAND_TIMEOUT_MS,
@@ -30,6 +39,20 @@ const INSTANCE_ID = ProviderInstanceId.make("codex_vcs_test");
 const GIT = CodexGitExecutablePath.make("/nix/store/git/bin/git");
 const ROOT = "/srv/project";
 const COMMON = "/srv/project/.git";
+const CHECKPOINT_HELPER = "/nix/store/cocoa/bin/cocoa-workspace-helper";
+const CHECKPOINT_HELPER_CONFIG = {
+  type: "cocoa-checkpoint-helper-v1" as const,
+  executablePath: CHECKPOINT_HELPER,
+  expectedProtocol: 1 as const,
+};
+const CHECKPOINT_BINDING = {
+  worktreeRoot: { canonicalPath: ROOT, device: "1", inode: "10" },
+  gitDirectoryRoot: { canonicalPath: COMMON, device: "1", inode: "11" },
+  gitCommonDirectoryRoot: { canonicalPath: COMMON, device: "1", inode: "11" },
+  objectFormat: "sha1" as const,
+  fingerprint: "f".repeat(64),
+};
+const decodeUnknownJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
 
 type CommandExecResponse = {
   readonly exitCode: number;
@@ -80,6 +103,7 @@ function makeBorrow(
 function makeAdapter(
   handler: Handler,
   check?: () => Effect.Effect<void, CodexEndpointBorrowUnavailableError>,
+  checkpointHelper = false,
 ) {
   const requests: Array<Record<string, unknown>> = [];
   const connection = makeConnection((payload) => {
@@ -91,6 +115,7 @@ function makeAdapter(
   const adapter = makeCodexVcsAdapter({
     providerInstanceId: INSTANCE_ID,
     gitExecutablePath: GIT,
+    ...(checkpointHelper ? { checkpointHelper: CHECKPOINT_HELPER_CONFIG } : {}),
     borrowConnection: Effect.sync(() => {
       borrows += 1;
       return makeBorrow(connection, 1, () => {
@@ -101,6 +126,25 @@ function makeAdapter(
   });
   return { adapter, requests, counts: () => ({ borrows, barriers }) };
 }
+
+const decodeCheckpointOperation = (payload: Record<string, unknown>): string => {
+  const command = payload.command as ReadonlyArray<string>;
+  const json = Result.getOrThrow(Encoding.decodeBase64String(command[1]!));
+  const value = decodeUnknownJson(json) as {
+    readonly operation: string;
+  };
+  return value.operation;
+};
+
+const checkpointSuccess = (result: unknown): CommandExecResponse => ({
+  exitCode: 0,
+  stderr: "",
+  stdout: encodeCodexCheckpointHelperFrame({
+    protocol: "cocoa.checkpoint.v1",
+    ok: true,
+    result,
+  }),
+});
 
 const open = Effect.fn("test.open")(function* (adapter: ReturnType<typeof makeCodexVcsAdapter>) {
   const result = yield* adapter.openRepository(ROOT);
@@ -167,6 +211,88 @@ it.effect("pins one generation and sends exact read-only command requests", () =
       "-z",
       "--untracked-files=all",
     ]);
+  }),
+);
+
+it.effect("probes and binds checkpoints without coupling read-only VCS availability", () =>
+  Effect.gen(function* () {
+    const configured = makeAdapter(
+      (payload) => {
+        const argv = payload.command as ReadonlyArray<string>;
+        if (argv[0] === GIT) {
+          return Effect.succeed(
+            argv.includes("rev-parse")
+              ? repositoryIdentity()
+              : {
+                  exitCode: 0,
+                  stderr: "",
+                  stdout: "origin\thttps://host/repository.git (fetch)\n",
+                },
+          );
+        }
+        assert.strictEqual(argv[0], CHECKPOINT_HELPER);
+        const operation = decodeCheckpointOperation(payload);
+        return Effect.succeed(
+          operation === "probe"
+            ? checkpointSuccess({
+                operation: "probe",
+                implementation: "test-helper",
+                gitExecutablePath: GIT,
+                capabilities: ["probe", "open", "capture", "diff", "restore", "delete", "observe"],
+                objectFormats: ["sha1", "sha256"],
+                limits: {
+                  maxRequestBytes: CODEX_CHECKPOINT_HELPER_MAX_REQUEST_BYTES,
+                  maxPatchBytes: CODEX_CHECKPOINT_HELPER_MAX_PATCH_BYTES,
+                  maxResponseBytes: CODEX_CHECKPOINT_HELPER_MAX_RESPONSE_BYTES,
+                },
+              })
+            : checkpointSuccess({
+                operation: "open",
+                binding: CHECKPOINT_BINDING,
+                headOid: "a".repeat(40),
+              }),
+        );
+      },
+      undefined,
+      true,
+    );
+    const repository = yield* open(configured.adapter);
+    assert.isDefined(repository.checkpoints);
+    assert.deepStrictEqual(repository.checkpoints?.binding, CHECKPOINT_BINDING);
+    assert.deepStrictEqual(
+      configured.requests.map((payload) => (payload.command as ReadonlyArray<string>)[0]),
+      [GIT, CHECKPOINT_HELPER, CHECKPOINT_HELPER],
+    );
+
+    const failedProbe = makeAdapter(
+      (payload) => {
+        const argv = payload.command as ReadonlyArray<string>;
+        if (argv[0] === CHECKPOINT_HELPER) {
+          return Effect.succeed({ exitCode: 127, stdout: "SECRET", stderr: "SECRET" });
+        }
+        return Effect.succeed(
+          argv.includes("rev-parse")
+            ? repositoryIdentity()
+            : {
+                exitCode: 0,
+                stderr: "",
+                stdout: "origin\thttps://host/repository.git (fetch)\n",
+              },
+        );
+      },
+      undefined,
+      true,
+    );
+    const readOnlyRepository = yield* open(failedProbe.adapter);
+    assert.strictEqual(readOnlyRepository.checkpoints, undefined);
+    const remotes = yield* readOnlyRepository.listRemotes({
+      maxRemotes: ProviderVcsRemoteLimit.make(1),
+    });
+    assert.strictEqual(remotes.remotes[0]?.name, "origin");
+    assert.deepStrictEqual(
+      failedProbe.requests.map((payload) => (payload.command as ReadonlyArray<string>)[0]),
+      [GIT, CHECKPOINT_HELPER, GIT],
+    );
   }),
 );
 
