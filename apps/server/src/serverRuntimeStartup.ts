@@ -192,9 +192,10 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
 
   if (serverConfig.autoBootstrapProjectFromCwd) {
     yield* Effect.gen(function* () {
-      const existingProject = yield* projectionReadModelQuery.getActiveProjectByWorkspaceRoot(
-        serverConfig.cwd,
-      );
+      const existingProject = yield* projectionReadModelQuery.getActiveProjectByWorkspaceRoot({
+        providerInstanceId: getAutoBootstrapDefaultModelSelection().instanceId,
+        workspaceRoot: serverConfig.cwd,
+      });
       let nextProjectId: ProjectId;
       let nextProjectDefaultModelSelection: ModelSelection;
 
@@ -207,6 +208,7 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
           type: "project.create",
           commandId: CommandId.make(yield* randomUUID),
           projectId: nextProjectId,
+          providerInstanceId: nextProjectDefaultModelSelection.instanceId,
           title: bootstrapProjectTitle,
           workspaceRoot: serverConfig.cwd,
           defaultModelSelection: nextProjectDefaultModelSelection,

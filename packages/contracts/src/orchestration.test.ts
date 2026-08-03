@@ -122,6 +122,7 @@ it.effect("trims branded ids and command string fields at decode boundaries", ()
       type: "project.create",
       commandId: " cmd-1 ",
       projectId: " project-1 ",
+      providerInstanceId: " codex_remote ",
       title: " Project Title ",
       workspaceRoot: " /tmp/workspace ",
       defaultModelSelection: {
@@ -132,6 +133,7 @@ it.effect("trims branded ids and command string fields at decode boundaries", ()
     });
     assert.strictEqual(parsed.commandId, "cmd-1");
     assert.strictEqual(parsed.projectId, "project-1");
+    assert.strictEqual(parsed.providerInstanceId, "codex_remote");
     assert.strictEqual(parsed.title, "Project Title");
     assert.strictEqual(parsed.workspaceRoot, "/tmp/workspace");
     assert.strictEqual(parsed.createWorkspaceRootIfMissing, undefined);
@@ -148,6 +150,7 @@ it.effect("decodes project.create with createWorkspaceRootIfMissing enabled", ()
       type: "project.create",
       commandId: "cmd-1",
       projectId: "project-1",
+      providerInstanceId: "codex",
       title: "Project Title",
       workspaceRoot: "/tmp/workspace",
       createWorkspaceRootIfMissing: true,
@@ -158,10 +161,28 @@ it.effect("decodes project.create with createWorkspaceRootIfMissing enabled", ()
   }),
 );
 
-it.effect("decodes historical project.created payloads with a default provider", () =>
+it.effect("rejects project.create without a provider instance", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeProjectCreateCommand({
+        type: "project.create",
+        commandId: "cmd-1",
+        projectId: "project-1",
+        title: "Project Title",
+        workspaceRoot: "/tmp/workspace",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+
+    assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("decodes project.created payloads with a provider instance", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeProjectCreatedPayload({
       projectId: "project-1",
+      providerInstanceId: "codex_remote",
       title: "Project Title",
       workspaceRoot: "/tmp/workspace",
       defaultModelSelection: {
@@ -173,6 +194,7 @@ it.effect("decodes historical project.created payloads with a default provider",
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
     assert.strictEqual(parsed.defaultModelSelection?.instanceId, "codex");
+    assert.strictEqual(parsed.providerInstanceId, "codex_remote");
   }),
 );
 
@@ -197,6 +219,7 @@ it.effect("rejects command fields that become empty after trim", () =>
         type: "project.create",
         commandId: "cmd-1",
         projectId: "project-1",
+        providerInstanceId: "codex",
         title: "  ",
         workspaceRoot: "/tmp/workspace",
         createdAt: "2026-01-01T00:00:00.000Z",
@@ -575,6 +598,7 @@ it.effect("normalizes legacy object-shaped defaultModelSelection.options on deco
   Effect.gen(function* () {
     const parsed = yield* decodeProjectCreatedPayload({
       projectId: "project-1",
+      providerInstanceId: "codex",
       title: "Legacy default project",
       workspaceRoot: "/tmp/legacy",
       defaultModelSelection: {

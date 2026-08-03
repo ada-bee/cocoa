@@ -72,6 +72,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         metadata: {},
         payload: {
           projectId: ProjectId.make("project-1"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",
           defaultModelSelection: null,
@@ -410,6 +411,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           metadata: {},
           payload: {
             projectId: ProjectId.make("project-clear-attachments"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
             title: "Project Clear Attachments",
             workspaceRoot: "/tmp/project-clear-attachments",
             defaultModelSelection: null,
@@ -539,6 +541,7 @@ it.layer(
         metadata: {},
         payload: {
           projectId: ProjectId.make("project-overwrite"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project Overwrite",
           workspaceRoot: "/tmp/project-overwrite",
           defaultModelSelection: null,
@@ -688,6 +691,7 @@ it.layer(
         metadata: {},
         payload: {
           projectId: ProjectId.make("project-rollback"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project Rollback",
           workspaceRoot: "/tmp/project-rollback",
           defaultModelSelection: null,
@@ -817,6 +821,7 @@ it.layer(
         metadata: {},
         payload: {
           projectId: ProjectId.make("project-revert-files"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project Revert Files",
           workspaceRoot: "/tmp/project-revert-files",
           defaultModelSelection: null,
@@ -1025,6 +1030,7 @@ it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-projection-atta
           metadata: {},
           payload: {
             projectId: ProjectId.make("project-delete-files"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
             title: "Project Delete Files",
             workspaceRoot: "/tmp/project-delete-files",
             defaultModelSelection: null,
@@ -1188,6 +1194,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         metadata: {},
         payload: {
           projectId: ProjectId.make("project-a"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project A",
           workspaceRoot: "/tmp/project-a",
           defaultModelSelection: null,
@@ -1536,6 +1543,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         metadata: {},
         payload: {
           projectId: ProjectId.make("project-empty"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project Empty",
           workspaceRoot: "/tmp/project-empty",
           defaultModelSelection: null,
@@ -1676,6 +1684,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
           metadata: {},
           payload: {
             projectId: ProjectId.make("project-conflict"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
             title: "Project Conflict",
             workspaceRoot: "/tmp/project-conflict",
             defaultModelSelection: null,
@@ -1820,6 +1829,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         metadata: {},
         payload: {
           projectId: ProjectId.make("project-stale-approval"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project Stale Approval",
           workspaceRoot: "/tmp/project-stale-approval",
           defaultModelSelection: null,
@@ -1963,6 +1973,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         metadata: {},
         payload: {
           projectId: ProjectId.make("project-stale-user-input"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project Stale User Input",
           workspaceRoot: "/tmp/project-stale-user-input",
           defaultModelSelection: null,
@@ -2099,6 +2110,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         metadata: {},
         payload: {
           projectId: ProjectId.make("project-nonstale-approval"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project Non-Stale Approval",
           workspaceRoot: "/tmp/project-nonstale-approval",
           defaultModelSelection: null,
@@ -2279,6 +2291,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         metadata: {},
         payload: {
           projectId: ProjectId.make("project-revert"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project Revert",
           workspaceRoot: "/tmp/project-revert",
           defaultModelSelection: null,
@@ -2687,6 +2700,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
 
       yield* engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-live-project"),
         projectId: ProjectId.make("project-live"),
         title: "Live Project",
@@ -2725,6 +2739,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
 
       yield* engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-scripts-project-create"),
         projectId: ProjectId.make("project-scripts"),
         title: "Scripts Project",

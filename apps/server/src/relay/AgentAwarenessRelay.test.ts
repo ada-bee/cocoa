@@ -424,6 +424,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
 
         const project = {
           id: projectId,
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "T3 Code",
           workspaceRoot: "/workspace",
           repositoryIdentity: null,
@@ -582,6 +583,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
 
         const project = {
           id: projectId,
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "T3 Code",
           workspaceRoot: "/workspace",
           repositoryIdentity: null,

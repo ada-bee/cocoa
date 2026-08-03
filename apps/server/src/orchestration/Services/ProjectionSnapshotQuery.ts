@@ -19,6 +19,7 @@ import type {
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadShell,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -121,9 +122,10 @@ export interface ProjectionSnapshotQueryShape {
   /**
    * Read the active project for an exact workspace root match.
    */
-  readonly getActiveProjectByWorkspaceRoot: (
-    workspaceRoot: string,
-  ) => Effect.Effect<Option.Option<OrchestrationProject>, ProjectionRepositoryError>;
+  readonly getActiveProjectByWorkspaceRoot: (input: {
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly workspaceRoot: string;
+  }) => Effect.Effect<Option.Option<OrchestrationProject>, ProjectionRepositoryError>;
 
   /**
    * Read a single active project shell row by id.

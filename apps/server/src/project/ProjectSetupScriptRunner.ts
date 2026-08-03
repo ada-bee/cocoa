@@ -1,4 +1,4 @@
-import { ProjectId } from "@t3tools/contracts";
+import { ProjectId, type ProviderInstanceId } from "@t3tools/contracts";
 import { projectScriptRuntimeEnv, setupProjectScript } from "@t3tools/shared/projectScripts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -28,6 +28,7 @@ export type ProjectSetupScriptRunnerResult =
 export interface ProjectSetupScriptRunnerInput {
   readonly threadId: string;
   readonly projectId?: string;
+  readonly providerInstanceId?: ProviderInstanceId;
   readonly projectCwd?: string;
   readonly worktreePath: string;
   readonly preferredTerminalId?: string;
@@ -106,18 +107,23 @@ export const make = Effect.gen(function* () {
       : null;
     const project =
       projectById ??
-      (input.projectCwd
-        ? yield* projectionSnapshotQuery.getActiveProjectByWorkspaceRoot(input.projectCwd).pipe(
-            Effect.map(Option.getOrUndefined),
-            Effect.mapError(
-              (cause) =>
-                new ProjectSetupScriptOperationError({
-                  ...errorContext,
-                  operation: "resolveProject",
-                  cause,
-                }),
-            ),
-          )
+      (input.projectCwd && input.providerInstanceId
+        ? yield* projectionSnapshotQuery
+            .getActiveProjectByWorkspaceRoot({
+              providerInstanceId: input.providerInstanceId,
+              workspaceRoot: input.projectCwd,
+            })
+            .pipe(
+              Effect.map(Option.getOrUndefined),
+              Effect.mapError(
+                (cause) =>
+                  new ProjectSetupScriptOperationError({
+                    ...errorContext,
+                    operation: "resolveProject",
+                    cause,
+                  }),
+              ),
+            )
         : null);
 
     if (!project) {

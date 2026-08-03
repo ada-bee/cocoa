@@ -75,6 +75,7 @@ export function requireProjectAbsent(input: {
 export function requireActiveProjectWorkspaceRootAbsent(input: {
   readonly readModel: OrchestrationReadModel;
   readonly command: OrchestrationCommand;
+  readonly providerInstanceId: OrchestrationProject["providerInstanceId"];
   readonly workspaceRoot: string;
   readonly exceptProjectId?: ProjectId;
 }): Effect.Effect<void, OrchestrationCommandInvariantError> {
@@ -82,6 +83,7 @@ export function requireActiveProjectWorkspaceRootAbsent(input: {
   const existingProject = input.readModel.projects.find(
     (project) =>
       project.deletedAt === null &&
+      project.providerInstanceId === input.providerInstanceId &&
       normalizeProjectPathForComparison(project.workspaceRoot) === normalizedWorkspaceRoot &&
       project.id !== input.exceptProjectId,
   );
@@ -91,7 +93,24 @@ export function requireActiveProjectWorkspaceRootAbsent(input: {
   return Effect.fail(
     invariantError(
       input.command.type,
-      `Active project '${existingProject.id}' already exists for workspace root '${normalizedWorkspaceRoot}'.`,
+      `Active project '${existingProject.id}' already exists for provider instance '${input.providerInstanceId}' and workspace root '${normalizedWorkspaceRoot}'.`,
+    ),
+  );
+}
+
+export function requireModelSelectionProviderMatchesProject(input: {
+  readonly command: OrchestrationCommand;
+  readonly projectId: ProjectId;
+  readonly projectProviderInstanceId: OrchestrationProject["providerInstanceId"];
+  readonly modelSelection: NonNullable<OrchestrationProject["defaultModelSelection"]>;
+}): Effect.Effect<void, OrchestrationCommandInvariantError> {
+  if (input.modelSelection.instanceId === input.projectProviderInstanceId) {
+    return Effect.void;
+  }
+  return Effect.fail(
+    invariantError(
+      input.command.type,
+      `Model selection provider instance '${input.modelSelection.instanceId}' must match owning project '${input.projectId}' provider instance '${input.projectProviderInstanceId}'.`,
     ),
   );
 }

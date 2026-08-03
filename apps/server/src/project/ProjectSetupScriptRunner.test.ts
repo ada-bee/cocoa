@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "@effect/vitest";
-import { type OrchestrationProject, ProjectId } from "@t3tools/contracts";
+import { type OrchestrationProject, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -15,6 +15,7 @@ const isProjectSetupScriptOperationError = Schema.is(
 
 const makeProject = (scripts: OrchestrationProject["scripts"]): OrchestrationProject => ({
   id: ProjectId.make("project-1"),
+  providerInstanceId: ProviderInstanceId.make("codex"),
   title: "Project",
   workspaceRoot: "/repo/project",
   defaultModelSelection: null,
@@ -32,7 +33,7 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
     getArchivedShellSnapshot: () => Effect.die("unused"),
     getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 1 }),
     getCounts: () => Effect.die("unused"),
-    getActiveProjectByWorkspaceRoot: (workspaceRoot) =>
+    getActiveProjectByWorkspaceRoot: ({ workspaceRoot }) =>
       Effect.succeed(
         workspaceRoot === project.workspaceRoot ? Option.some(project) : Option.none(),
       ),

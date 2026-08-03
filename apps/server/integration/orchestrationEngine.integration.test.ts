@@ -125,6 +125,7 @@ const seedProjectAndThread = (harness: OrchestrationIntegrationHarness) =>
 
     yield* harness.engine.dispatch({
       type: "project.create",
+      providerInstanceId: instanceId,
       commandId: CommandId.make("cmd-project-create"),
       projectId: PROJECT_ID,
       title: "Integration Project",
@@ -275,6 +276,7 @@ it.live.skipIf(!process.env.CODEX_BINARY_PATH)(
 
         yield* harness.engine.dispatch({
           type: "project.create",
+          providerInstanceId: ProviderInstanceId.make("codex"),
           commandId: CommandId.make("cmd-project-create-real-codex"),
           projectId: PROJECT_ID,
           title: "Integration Project",

@@ -24,6 +24,7 @@ import {
   type OrchestrationThreadShell,
   ModelSelection,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Arr from "effect/Array";
@@ -121,6 +122,7 @@ const ProjectionThreadSearchRow = Schema.Struct({
   messageCreatedAt: Schema.NullOr(IsoDateTime),
 });
 const WorkspaceRootLookupInput = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
   workspaceRoot: Schema.String,
 });
 const ProjectIdLookupInput = Schema.Struct({
@@ -276,6 +278,7 @@ function mapProjectShellRow(
 ): OrchestrationProjectShell {
   return {
     id: row.projectId,
+    providerInstanceId: row.providerInstanceId,
     title: row.title,
     workspaceRoot: row.workspaceRoot,
     repositoryIdentity,
@@ -350,6 +353,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           project_id AS "projectId",
+          provider_instance_id AS "providerInstanceId",
           title,
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
@@ -793,10 +797,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const getActiveProjectRowByWorkspaceRoot = SqlSchema.findOneOption({
     Request: WorkspaceRootLookupInput,
     Result: ProjectionProjectLookupRowSchema,
-    execute: ({ workspaceRoot }) =>
+    execute: ({ providerInstanceId, workspaceRoot }) =>
       sql`
         SELECT
           project_id AS "projectId",
+          provider_instance_id AS "providerInstanceId",
           title,
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
@@ -805,7 +810,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt",
           deleted_at AS "deletedAt"
         FROM projection_projects
-        WHERE workspace_root = ${workspaceRoot}
+        WHERE provider_instance_id = ${providerInstanceId}
+          AND workspace_root = ${workspaceRoot}
           AND deleted_at IS NULL
         ORDER BY created_at ASC, project_id ASC
         LIMIT 1
@@ -819,6 +825,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           project_id AS "projectId",
+          provider_instance_id AS "providerInstanceId",
           title,
           workspace_root AS "workspaceRoot",
           default_model_selection_json AS "defaultModelSelection",
@@ -1301,6 +1308,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
               const projects: ReadonlyArray<OrchestrationProject> = projectRows.map((row) => ({
                 id: row.projectId,
+                providerInstanceId: row.providerInstanceId,
                 title: row.title,
                 workspaceRoot: row.workspaceRoot,
                 repositoryIdentity: repositoryIdentities.get(row.projectId) ?? null,
@@ -1429,6 +1437,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 updatedAt = maxIso(updatedAt, row.updatedAt);
                 projects.push({
                   id: row.projectId,
+                  providerInstanceId: row.providerInstanceId,
                   title: row.title,
                   workspaceRoot: row.workspaceRoot,
                   defaultModelSelection: row.defaultModelSelection,
@@ -1890,8 +1899,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   });
 
   const getActiveProjectByWorkspaceRoot: ProjectionSnapshotQueryShape["getActiveProjectByWorkspaceRoot"] =
-    (workspaceRoot) =>
-      getActiveProjectRowByWorkspaceRoot({ workspaceRoot }).pipe(
+    (input) =>
+      getActiveProjectRowByWorkspaceRoot(input).pipe(
         Effect.mapError(
           toPersistenceSqlOrDecodeError(
             "ProjectionSnapshotQuery.getActiveProjectByWorkspaceRoot:query",
@@ -1905,6 +1914,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 Effect.map((repositoryIdentity) =>
                   Option.some({
                     id: option.value.projectId,
+                    providerInstanceId: option.value.providerInstanceId,
                     title: option.value.title,
                     workspaceRoot: option.value.workspaceRoot,
                     repositoryIdentity,

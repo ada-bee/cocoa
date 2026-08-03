@@ -13,6 +13,7 @@ import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
   listThreadsByProjectId,
   requireActiveProjectWorkspaceRootAbsent,
+  requireModelSelectionProviderMatchesProject,
   requireProject,
   requireProjectAbsent,
   requireThread,
@@ -233,9 +234,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       yield* requireActiveProjectWorkspaceRootAbsent({
         readModel,
         command,
+        providerInstanceId: command.providerInstanceId,
         workspaceRoot: command.workspaceRoot,
         exceptProjectId: command.projectId,
       });
+      if (command.defaultModelSelection != null) {
+        yield* requireModelSelectionProviderMatchesProject({
+          command,
+          projectId: command.projectId,
+          projectProviderInstanceId: command.providerInstanceId,
+          modelSelection: command.defaultModelSelection,
+        });
+      }
 
       return {
         ...(yield* withEventBase({
@@ -247,6 +257,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "project.created",
         payload: {
           projectId: command.projectId,
+          providerInstanceId: command.providerInstanceId,
           title: command.title,
           workspaceRoot: command.workspaceRoot,
           defaultModelSelection: command.defaultModelSelection ?? null,
@@ -258,7 +269,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.meta.update": {
-      yield* requireProject({
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
@@ -267,8 +278,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         yield* requireActiveProjectWorkspaceRootAbsent({
           readModel,
           command,
+          providerInstanceId: project.providerInstanceId,
           workspaceRoot: command.workspaceRoot,
           exceptProjectId: command.projectId,
+        });
+      }
+      if (command.defaultModelSelection != null) {
+        yield* requireModelSelectionProviderMatchesProject({
+          command,
+          projectId: project.id,
+          projectProviderInstanceId: project.providerInstanceId,
+          modelSelection: command.defaultModelSelection,
         });
       }
       const occurredAt = yield* nowIso;
@@ -345,10 +365,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.create": {
-      yield* requireProject({
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
+      });
+      yield* requireModelSelectionProviderMatchesProject({
+        command,
+        projectId: project.id,
+        projectProviderInstanceId: project.providerInstanceId,
+        modelSelection: command.modelSelection,
       });
       yield* requireThreadAbsent({
         readModel,
@@ -636,6 +662,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.modelSelection !== undefined) {
+        const project = yield* requireProject({
+          readModel,
+          command,
+          projectId: thread.projectId,
+        });
+        yield* requireModelSelectionProviderMatchesProject({
+          command,
+          projectId: project.id,
+          projectProviderInstanceId: project.providerInstanceId,
+          modelSelection: command.modelSelection,
+        });
+      }
       const branch =
         command.branch !== undefined &&
         command.expectedBranch !== undefined &&
@@ -754,6 +793,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (command.modelSelection !== undefined) {
+        const project = yield* requireProject({
+          readModel,
+          command,
+          projectId: targetThread.projectId,
+        });
+        yield* requireModelSelectionProviderMatchesProject({
+          command,
+          projectId: project.id,
+          projectProviderInstanceId: project.providerInstanceId,
+          modelSelection: command.modelSelection,
+        });
+      }
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({

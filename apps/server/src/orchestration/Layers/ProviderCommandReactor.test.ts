@@ -420,6 +420,7 @@ describe("ProviderCommandReactor", () => {
     await Effect.runPromise(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: modelSelection.instanceId,
         commandId: CommandId.make("cmd-project-create"),
         projectId: asProjectId("project-1"),
         title: "Provider Project",

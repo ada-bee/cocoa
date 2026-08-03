@@ -151,6 +151,7 @@ const makeDefaultOrchestrationReadModel = () => {
     projects: [
       {
         id: defaultProjectId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
         title: "Default Project",
         workspaceRoot: "/tmp/default-project",
         defaultModelSelection,
@@ -4932,6 +4933,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             type: "project.create",
             commandId: CommandId.make("cmd-project-create-missing-root"),
             projectId: ProjectId.make("project-create-missing-root"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
             title: "New Project",
             workspaceRoot: missingWorkspaceRoot,
             createWorkspaceRootIfMissing: true,
@@ -5722,6 +5724,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         projects: [
           {
             id: ProjectId.make("project-a"),
+            providerInstanceId: ProviderInstanceId.make("codex"),
             title: "Project A",
             workspaceRoot: "/tmp/project-a",
             defaultModelSelection,

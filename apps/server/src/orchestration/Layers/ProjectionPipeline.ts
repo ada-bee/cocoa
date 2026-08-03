@@ -492,6 +492,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         case "project.created":
           yield* projectionProjectRepository.upsert({
             projectId: event.payload.projectId,
+            providerInstanceId: event.payload.providerInstanceId,
             title: event.payload.title,
             workspaceRoot: event.payload.workspaceRoot,
             defaultModelSelection: event.payload.defaultModelSelection,

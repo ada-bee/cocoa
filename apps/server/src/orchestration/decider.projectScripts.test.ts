@@ -27,6 +27,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
       const result = yield* decideOrchestrationCommand({
         command: {
           type: "project.create",
+          providerInstanceId: ProviderInstanceId.make("codex"),
           commandId: CommandId.make("cmd-project-create-scripts"),
           projectId: asProjectId("project-scripts"),
           title: "Scripts",
@@ -59,6 +60,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         metadata: {},
         payload: {
           projectId: asProjectId("project-scripts"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Scripts",
           workspaceRoot: "/tmp/scripts",
           defaultModelSelection: null,
@@ -111,6 +113,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         metadata: {},
         payload: {
           projectId: asProjectId("project-existing"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project",
           workspaceRoot: "/tmp/project",
           defaultModelSelection: null,
@@ -124,6 +127,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         decideOrchestrationCommand({
           command: {
             type: "project.create",
+            providerInstanceId: ProviderInstanceId.make("codex"),
             commandId: CommandId.make("cmd-project-create-duplicate-root"),
             projectId: asProjectId("project-duplicate-root"),
             title: "Duplicate Project",
@@ -135,8 +139,53 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
       );
 
       expect(failure.message).toContain(
-        "Active project 'project-existing' already exists for workspace root '/tmp/project'.",
+        "Active project 'project-existing' already exists for provider instance 'codex' and workspace root '/tmp/project'.",
       );
+    }),
+  );
+
+  it.effect("allows the same workspace root on a different provider instance", () =>
+    Effect.gen(function* () {
+      const now = "2026-01-01T00:00:00.000Z";
+      const initial = createEmptyReadModel(now);
+      const readModel = yield* projectEvent(initial, {
+        sequence: 1,
+        eventId: asEventId("evt-project-create-codex"),
+        aggregateKind: "project",
+        aggregateId: asProjectId("project-codex"),
+        type: "project.created",
+        occurredAt: now,
+        commandId: CommandId.make("cmd-project-create-codex"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-project-create-codex"),
+        metadata: {},
+        payload: {
+          projectId: asProjectId("project-codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          title: "Codex Project",
+          workspaceRoot: "/tmp/project",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-create-codex-remote"),
+          projectId: asProjectId("project-codex-remote"),
+          providerInstanceId: ProviderInstanceId.make("codex_remote"),
+          title: "Remote Codex Project",
+          workspaceRoot: "/tmp/project/",
+          createdAt: now,
+        },
+        readModel,
+      });
+
+      const event = Array.isArray(result) ? result[0] : result;
+      expect(event.type).toBe("project.created");
     }),
   );
 
@@ -157,6 +206,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         metadata: {},
         payload: {
           projectId: asProjectId("project-first"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "First",
           workspaceRoot: "/tmp/project-first",
           defaultModelSelection: null,
@@ -178,6 +228,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         metadata: {},
         payload: {
           projectId: asProjectId("project-second"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Second",
           workspaceRoot: "/tmp/project-second",
           defaultModelSelection: null,
@@ -200,7 +251,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
       );
 
       expect(failure.message).toContain(
-        "Active project 'project-first' already exists for workspace root '/tmp/project-first'.",
+        "Active project 'project-first' already exists for provider instance 'codex' and workspace root '/tmp/project-first'.",
       );
     }),
   );
@@ -222,6 +273,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         metadata: {},
         payload: {
           projectId: asProjectId("project-1"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project",
           workspaceRoot: "/tmp/project",
           defaultModelSelection: null,
@@ -319,6 +371,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         metadata: {},
         payload: {
           projectId: asProjectId("project-1"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project",
           workspaceRoot: "/tmp/project",
           defaultModelSelection: null,
@@ -397,6 +450,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
         metadata: {},
         payload: {
           projectId: asProjectId("project-1"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project",
           workspaceRoot: "/tmp/project",
           defaultModelSelection: null,

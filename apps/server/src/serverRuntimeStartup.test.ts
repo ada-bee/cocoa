@@ -145,6 +145,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
           Effect.succeed(
             Option.some({
               id: bootstrapProjectId,
+              providerInstanceId: ProviderInstanceId.make("codex"),
               title: "Startup Project",
               workspaceRoot: "/tmp/startup-project",
               defaultModelSelection: ServerRuntimeStartup.getAutoBootstrapDefaultModelSelection(),

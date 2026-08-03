@@ -47,6 +47,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -57,6 +58,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         )
         VALUES (
           'project-1',
+          'codex',
           'Project 1',
           '/tmp/project-1',
           '{"provider":"codex","model":"gpt-5-codex"}',
@@ -259,6 +261,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.deepEqual(snapshot.projects, [
         {
           id: asProjectId("project-1"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",
           repositoryIdentity: null,
@@ -375,6 +378,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       assert.deepEqual(shellSnapshot.projects, [
         {
           id: asProjectId("project-1"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",
           repositoryIdentity: null,
@@ -464,6 +468,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -474,6 +479,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         )
         VALUES (
           'project-archive-test',
+          'codex',
           'Archive Test',
           '/tmp/archive-test',
           '{"provider":"codex","model":"gpt-5-codex"}',
@@ -584,6 +590,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -594,6 +601,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         )
         VALUES (
           'project-settled-test',
+          'codex',
           'Settled Test',
           '/tmp/settled-test',
           '{"provider":"codex","model":"gpt-5-codex"}',
@@ -695,6 +703,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -706,6 +715,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         VALUES
           (
             'project-active',
+            'codex',
             'Active Project',
             '/tmp/workspace',
             '{"provider":"codex","model":"gpt-5-codex"}',
@@ -716,6 +726,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           ),
           (
             'project-deleted',
+            'codex',
             'Deleted Project',
             '/tmp/deleted',
             NULL,
@@ -796,13 +807,19 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           threadCount: 3,
         });
 
-        const project = yield* snapshotQuery.getActiveProjectByWorkspaceRoot("/tmp/workspace");
+        const project = yield* snapshotQuery.getActiveProjectByWorkspaceRoot({
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          workspaceRoot: "/tmp/workspace",
+        });
         assert.equal(project._tag, "Some");
         if (project._tag === "Some") {
           assert.equal(project.value.id, asProjectId("project-active"));
         }
 
-        const missingProject = yield* snapshotQuery.getActiveProjectByWorkspaceRoot("/tmp/missing");
+        const missingProject = yield* snapshotQuery.getActiveProjectByWorkspaceRoot({
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          workspaceRoot: "/tmp/missing",
+        });
         assert.equal(missingProject._tag, "None");
 
         const firstThreadId = yield* snapshotQuery.getFirstActiveThreadIdByProjectId(
@@ -827,6 +844,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -837,6 +855,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         )
         VALUES (
           'project-context',
+          'codex',
           'Context Project',
           '/tmp/context-workspace',
           NULL,
@@ -980,6 +999,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -990,6 +1010,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         )
         VALUES (
           'project-1',
+          'codex',
           'Project 1',
           '/tmp/project-1',
           '{"provider":"codex","model":"gpt-5-codex"}',
@@ -1141,6 +1162,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -1151,6 +1173,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         )
         VALUES (
           'project-1',
+          'codex',
           'Project 1',
           '/tmp/project-1',
           '{"provider":"codex","model":"gpt-5-codex"}',
@@ -1285,6 +1308,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -1295,6 +1319,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         )
         VALUES (
           'project-1',
+          'codex',
           'Project 1',
           '/tmp/project-1',
           '{"provider":"codex","model":"gpt-5-codex"}',
@@ -1437,6 +1462,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -1447,6 +1473,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         )
         VALUES (
           'project-deleted',
+          'codex',
           'Deleted Project',
           '/tmp/deleted-project',
           '{"provider":"codex","model":"gpt-5-codex"}',
@@ -1565,6 +1592,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -1575,6 +1603,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         )
         VALUES (
           'project-search',
+          'codex',
           'Project Needle',
           '/tmp/project-search',
           '{"provider":"codex","model":"gpt-5-codex"}',
@@ -1855,6 +1884,7 @@ it.effect(
       yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model_selection_json,
@@ -1866,6 +1896,7 @@ it.effect(
         VALUES
           (
             'project-1',
+            'codex',
             'Shared Project 1',
             '/tmp/shared-root',
             '{"provider":"codex","model":"gpt-5-codex"}',
@@ -1876,6 +1907,7 @@ it.effect(
           ),
           (
             'project-2',
+            'codex_remote',
             'Shared Project 2',
             '/tmp/shared-root',
             '{"provider":"codex","model":"gpt-5-codex"}',
@@ -1886,6 +1918,7 @@ it.effect(
           ),
           (
             'project-3',
+            'codex',
             'Deleted Project',
             '/tmp/deleted-root',
             '{"provider":"codex","model":"gpt-5-codex"}',
@@ -1901,6 +1934,21 @@ it.effect(
       assert.equal(shellSnapshot.projects.length, 2);
       assert.equal(shellSnapshot.projects[0]?.repositoryIdentity?.rootPath, "/tmp/shared-root");
       assert.equal(shellSnapshot.projects[1]?.repositoryIdentity?.rootPath, "/tmp/shared-root");
+
+      const firstProject = yield* snapshotQuery.getActiveProjectByWorkspaceRoot({
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        workspaceRoot: "/tmp/shared-root",
+      });
+      const secondProject = yield* snapshotQuery.getActiveProjectByWorkspaceRoot({
+        providerInstanceId: ProviderInstanceId.make("codex_remote"),
+        workspaceRoot: "/tmp/shared-root",
+      });
+      assert.equal(firstProject._tag, "Some");
+      assert.equal(secondProject._tag, "Some");
+      if (firstProject._tag === "Some" && secondProject._tag === "Some") {
+        assert.equal(firstProject.value.id, asProjectId("project-1"));
+        assert.equal(secondProject.value.id, asProjectId("project-2"));
+      }
 
       resolveCalls.length = 0;
 

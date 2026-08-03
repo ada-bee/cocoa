@@ -475,13 +475,15 @@ const projectAddCommand = Command.make("add", {
 
         const title = yield* resolveProjectTitle(workspaceRoot, Option.getOrUndefined(flags.title));
         const projectId = ProjectId.make(yield* projectCommandUuid);
+        const defaultModelSelection = ServerRuntimeStartup.getAutoBootstrapDefaultModelSelection();
         yield* dispatch({
           type: "project.create",
           commandId: CommandId.make(yield* projectCommandUuid),
           projectId,
+          providerInstanceId: defaultModelSelection.instanceId,
           title,
           workspaceRoot,
-          defaultModelSelection: ServerRuntimeStartup.getAutoBootstrapDefaultModelSelection(),
+          defaultModelSelection,
           createdAt: DateTime.formatIso(yield* DateTime.now),
         });
         return `Added project ${projectId} (${title}) at ${workspaceRoot}.`;

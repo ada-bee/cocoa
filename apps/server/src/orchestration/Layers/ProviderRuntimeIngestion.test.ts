@@ -255,6 +255,7 @@ describe("ProviderRuntimeIngestion", () => {
     await Effect.runPromise(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-provider-project-create"),
         projectId: asProjectId("project-1"),
         title: "Provider Project",

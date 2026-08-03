@@ -17,6 +17,7 @@ describe("canonicalizeClientCommandTimestamps", () => {
   it("replaces a client command timestamp with the server receipt timestamp", () => {
     const command: ClientOrchestrationCommand = {
       type: "project.create",
+      providerInstanceId: ProviderInstanceId.make("codex"),
       commandId: CommandId.make("command-1"),
       projectId: ProjectId.make("project-1"),
       title: "Clock-safe project",

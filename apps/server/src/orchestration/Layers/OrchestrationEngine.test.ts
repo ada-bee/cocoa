@@ -117,6 +117,7 @@ describe("OrchestrationEngine", () => {
       projects: [
         {
           id: asProjectId("project-bootstrap"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
           title: "Bootstrap Project",
           workspaceRoot: "/tmp/project-bootstrap",
           defaultModelSelection: {
@@ -246,6 +247,7 @@ describe("OrchestrationEngine", () => {
     await system.run(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-project-1-create"),
         projectId: asProjectId("project-1"),
         title: "Project 1",
@@ -306,6 +308,7 @@ describe("OrchestrationEngine", () => {
     await system.run(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-project-archive-create"),
         projectId: asProjectId("project-archive"),
         title: "Project Archive",
@@ -399,6 +402,7 @@ describe("OrchestrationEngine", () => {
     await system.run(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-project-replay-create"),
         projectId: asProjectId("project-replay"),
         title: "Replay Project",
@@ -457,6 +461,7 @@ describe("OrchestrationEngine", () => {
     await system.run(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-project-stream-create"),
         projectId: asProjectId("project-stream"),
         title: "Stream Project",
@@ -518,6 +523,7 @@ describe("OrchestrationEngine", () => {
     await system.run(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-branch-race-project-create"),
         projectId: asProjectId("project-branch-race"),
         title: "Branch Race Project",
@@ -571,6 +577,7 @@ describe("OrchestrationEngine", () => {
     await system.run(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-worktree-bootstrap-project-create"),
         projectId: asProjectId("project-worktree-bootstrap"),
         title: "Worktree Bootstrap Project",
@@ -624,6 +631,7 @@ describe("OrchestrationEngine", () => {
     await system.run(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-project-ack-create"),
         projectId: asProjectId("project-ack"),
         title: "Ack Project",
@@ -713,6 +721,7 @@ describe("OrchestrationEngine", () => {
     await system.run(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-project-turn-diff-create"),
         projectId: asProjectId("project-turn-diff"),
         title: "Turn Diff Project",
@@ -832,6 +841,7 @@ describe("OrchestrationEngine", () => {
     await runtime.runPromise(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-project-flaky-create"),
         projectId: asProjectId("project-flaky"),
         title: "Flaky Project",
@@ -936,6 +946,7 @@ describe("OrchestrationEngine", () => {
     await runtime.runPromise(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-project-atomic-create"),
         projectId: asProjectId("project-atomic"),
         title: "Atomic Project",
@@ -1079,6 +1090,7 @@ describe("OrchestrationEngine", () => {
     await runtime.runPromise(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-project-sync-create"),
         projectId: asProjectId("project-sync"),
         title: "Sync Project",
@@ -1166,6 +1178,7 @@ describe("OrchestrationEngine", () => {
     await system.run(
       engine.dispatch({
         type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-project-duplicate-create"),
         projectId: asProjectId("project-duplicate"),
         title: "Duplicate Project",
