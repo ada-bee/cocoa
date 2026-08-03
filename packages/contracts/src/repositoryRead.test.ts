@@ -3,10 +3,15 @@ import * as Schema from "effect/Schema";
 
 import {
   REPOSITORY_REFS_MAX_REFS,
+  REPOSITORY_REMOTES_MAX_REMOTES,
+  REPOSITORY_REMOTE_NAME_MAX_LENGTH,
+  REPOSITORY_REMOTE_URL_MAX_LENGTH,
   REPOSITORY_REVIEW_MAX_BYTES,
   REPOSITORY_STATUS_MAX_CHANGED_PATHS,
   RepositoryListRefsInput,
   RepositoryListRefsResult,
+  RepositoryListRemotesInput,
+  RepositoryListRemotesResult,
   RepositoryReadError,
   RepositoryReadTarget,
   RepositoryReviewDiffInput,
@@ -42,6 +47,14 @@ describe("repository read codecs", () => {
       target: { projectId: "project-a" },
       scope: "all",
       maxRefs: REPOSITORY_REFS_MAX_REFS + 1,
+    });
+    expectRejected(RepositoryListRemotesInput, {
+      target: { projectId: "project-a" },
+      maxRemotes: REPOSITORY_REMOTES_MAX_REMOTES + 1,
+    });
+    expectRejected(RepositoryListRemotesInput, {
+      target: { projectId: "project-a" },
+      maxRemotes: 0,
     });
     expectRejected(RepositoryReviewDiffInput, {
       target: { projectId: "project-a" },
@@ -106,6 +119,54 @@ describe("repository read codecs", () => {
       _tag: "Repository",
       refs: Array.from({ length: REPOSITORY_REFS_MAX_REFS + 1 }, () => ref),
       truncated: true,
+    });
+    const remote = {
+      name: "origin",
+      fetchUrl: "https://example.test/owner/repository.git",
+    };
+    expectRejected(RepositoryListRemotesResult, {
+      _tag: "Repository",
+      remotes: Array.from({ length: REPOSITORY_REMOTES_MAX_REMOTES + 1 }, () => remote),
+      truncated: true,
+    });
+    expectRejected(RepositoryListRemotesResult, {
+      _tag: "Repository",
+      remotes: [{ ...remote, name: "x".repeat(REPOSITORY_REMOTE_NAME_MAX_LENGTH + 1) }],
+      truncated: false,
+    });
+    expectRejected(RepositoryListRemotesResult, {
+      _tag: "Repository",
+      remotes: [{ ...remote, fetchUrl: "x".repeat(REPOSITORY_REMOTE_URL_MAX_LENGTH + 1) }],
+      truncated: false,
+    });
+    expectRejected(RepositoryListRemotesResult, {
+      _tag: "Repository",
+      remotes: [{ name: "", fetchUrl: "https://example.test/repository.git" }],
+      truncated: false,
+    });
+    expectRejected(RepositoryListRemotesResult, {
+      _tag: "Repository",
+      remotes: [{ name: "origin", pushUrl: "" }],
+      truncated: false,
+    });
+    for (const fetchUrl of [
+      "https://token@example.test/repository.git",
+      "https://example.test/repository.git?token=secret",
+      "file:///private/workspace",
+      "/private/workspace",
+      "C:\\private\\workspace",
+      "ext::helper command",
+    ]) {
+      expectRejected(RepositoryListRemotesResult, {
+        _tag: "Repository",
+        remotes: [{ name: "origin", fetchUrl }],
+        truncated: false,
+      });
+    }
+    expectRejected(RepositoryListRemotesResult, {
+      _tag: "Repository",
+      remotes: [{ name: "origin\n", fetchUrl: "https://example.test/repository.git" }],
+      truncated: false,
     });
   });
 

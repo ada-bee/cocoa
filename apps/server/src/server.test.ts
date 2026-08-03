@@ -705,6 +705,7 @@ const buildAppUnderTest = (options?: {
           Layer.mock(RepositoryReadService.RepositoryReadService)({
             status: () => Effect.succeed({ _tag: "NotRepository" as const }),
             listRefs: () => Effect.succeed({ _tag: "NotRepository" as const }),
+            listRemotes: () => Effect.succeed({ _tag: "NotRepository" as const }),
             getReviewDiff: () => Effect.succeed({ _tag: "NotRepository" as const }),
             ...options?.layers?.repositoryReadService,
           }),
@@ -5428,6 +5429,49 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("routes bounded repository remote reads through the public RPC", () =>
+    Effect.gen(function* () {
+      const received: Array<unknown> = [];
+      yield* buildAppUnderTest({
+        layers: {
+          repositoryReadService: {
+            listRemotes: (input) =>
+              Effect.sync(() => {
+                received.push(input);
+                return {
+                  _tag: "Repository" as const,
+                  remotes: [
+                    {
+                      name: "origin",
+                      fetchUrl: "https://example.test/owner/repository.git",
+                    },
+                  ],
+                  truncated: false,
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.vcsListRemotes]({
+            target: { projectId: defaultProjectId },
+            maxRemotes: 7,
+          }),
+        ),
+      );
+
+      assert.deepEqual(received, [{ target: { projectId: defaultProjectId }, maxRemotes: 7 }]);
+      assert.deepEqual(result, {
+        _tag: "Repository",
+        remotes: [{ name: "origin", fetchUrl: "https://example.test/owner/repository.git" }],
+        truncated: false,
+      });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("fails closed for gateway-local workspace and source-control operations", () =>
     Effect.gen(function* () {
       const unreachable = (operation: string) => Effect.die(`unexpected local call: ${operation}`);
@@ -5467,6 +5511,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           },
           repositoryReadService: {
             listRefs: () => Effect.succeed({ _tag: "NotRepository" as const }),
+            listRemotes: () => Effect.succeed({ _tag: "NotRepository" as const }),
             getReviewDiff: () => Effect.succeed({ _tag: "NotRepository" as const }),
           },
         },
@@ -5627,6 +5672,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
       assert.equal(refs._tag, "NotRepository");
+
+      const remotes = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.vcsListRemotes]({
+            target: { projectId: defaultProjectId },
+            maxRemotes: 10,
+          }),
+        ),
+      );
+      assert.equal(remotes._tag, "NotRepository");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

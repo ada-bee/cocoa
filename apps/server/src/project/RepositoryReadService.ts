@@ -8,10 +8,14 @@
  * @module project/RepositoryReadService
  */
 import {
+  REPOSITORY_REMOTE_NAME_MAX_LENGTH,
+  REPOSITORY_REMOTE_URL_MAX_LENGTH,
   RepositoryReadError,
   type RepositoryReadOperation,
   type RepositoryListRefsInput,
   type RepositoryListRefsResult,
+  type RepositoryListRemotesInput,
+  type RepositoryListRemotesResult,
   type RepositoryReviewDiffInput,
   type RepositoryReviewDiffResult,
   type RepositoryStatusInput,
@@ -24,6 +28,7 @@ import * as Layer from "effect/Layer";
 import {
   ProviderVcsRefLimit,
   ProviderVcsRefQuery,
+  ProviderVcsRemoteLimit,
   ProviderVcsReviewDiffByteLimit,
   ProviderVcsRevision,
   ProviderVcsStatusPathLimit,
@@ -38,6 +43,9 @@ export interface RepositoryReadServiceShape {
   readonly listRefs: (
     input: RepositoryListRefsInput,
   ) => Effect.Effect<RepositoryListRefsResult, RepositoryReadError>;
+  readonly listRemotes: (
+    input: RepositoryListRemotesInput,
+  ) => Effect.Effect<RepositoryListRemotesResult, RepositoryReadError>;
   readonly getReviewDiff: (
     input: RepositoryReviewDiffInput,
   ) => Effect.Effect<RepositoryReviewDiffResult, RepositoryReadError>;
@@ -130,11 +138,102 @@ export function mapProjectRepositoryReadError(
         "The repository provider could not complete the read.",
         true,
       );
+    case "ProviderVcsCheckpointRestoreIndeterminateError":
+    case "ProviderVcsCheckpointOutcomeUnknownError":
+      return readError(
+        operation,
+        "operation-failed",
+        "The repository provider could not establish the operation outcome.",
+        true,
+      );
   }
 }
 
 const unsupportedCapability = (operation: RepositoryReadOperation) =>
   readError(operation, "unsupported", "The repository provider does not support this read.", false);
+
+const isUnsafePublicCodePoint = (codePoint: number): boolean =>
+  codePoint <= 0x1f ||
+  (codePoint >= 0x7f && codePoint <= 0x9f) ||
+  codePoint === 0x061c ||
+  codePoint === 0x200e ||
+  codePoint === 0x200f ||
+  (codePoint >= 0x202a && codePoint <= 0x202e) ||
+  (codePoint >= 0x2066 && codePoint <= 0x2069);
+
+const sanitizePublicText = (value: string): string =>
+  Array.from(value)
+    .filter((character) => !isUnsafePublicCodePoint(character.codePointAt(0) ?? 0))
+    .join("")
+    .trim();
+
+const clipUtf16 = (value: string, maxLength: number): string => {
+  if (value.length <= maxLength) return value;
+  const clipped = value.slice(0, maxLength);
+  const lastCodeUnit = clipped.charCodeAt(clipped.length - 1);
+  return lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff ? clipped.slice(0, -1) : clipped;
+};
+
+const sanitizeRemoteName = (value: string): string | undefined => {
+  const sanitized = sanitizePublicText(clipUtf16(value, REPOSITORY_REMOTE_NAME_MAX_LENGTH));
+  if (sanitized.length === 0) return undefined;
+  return sanitized;
+};
+
+const NETWORK_REMOTE_PROTOCOLS = new Set(["git:", "http:", "https:", "ssh:"]);
+
+/**
+ * Only network-shaped remotes cross the gateway boundary. Credentials,
+ * query parameters, fragments, local paths, file URLs, and remote-helper
+ * syntax are intentionally omitted.
+ */
+const sanitizeRemoteUrl = (value: string): string | undefined => {
+  if (value.length > REPOSITORY_REMOTE_URL_MAX_LENGTH) return undefined;
+  const sanitized = sanitizePublicText(value);
+  if (sanitized.length === 0) return undefined;
+
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//u.test(sanitized)) {
+    try {
+      const url = new URL(sanitized);
+      if (!NETWORK_REMOTE_PROTOCOLS.has(url.protocol) || url.hostname.length === 0) {
+        return undefined;
+      }
+      url.username = "";
+      url.password = "";
+      url.search = "";
+      url.hash = "";
+      const redacted = url.toString();
+      return redacted.length <= REPOSITORY_REMOTE_URL_MAX_LENGTH ? redacted : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const firstColon = sanitized.indexOf(":");
+  const firstAt = sanitized.indexOf("@");
+  if (
+    sanitized.includes("::") ||
+    /^[A-Za-z]:[\\/]/u.test(sanitized) ||
+    (firstColon >= 0 && firstAt > firstColon)
+  ) {
+    return undefined;
+  }
+  const scpLike = /^(?:[^@\s/:]+@)?(\[[^\]]+\]|[^@\s/:]+):(.+)$/u.exec(sanitized);
+  if (scpLike === null) return undefined;
+  const host = scpLike[1];
+  const remotePath = scpLike[2]?.replace(/[?#].*$/u, "");
+  if (
+    host === undefined ||
+    host.includes("\\") ||
+    remotePath === undefined ||
+    remotePath.length === 0 ||
+    /[@\s]/u.test(remotePath)
+  ) {
+    return undefined;
+  }
+  const redacted = `${host}:${remotePath}`;
+  return redacted.length <= REPOSITORY_REMOTE_URL_MAX_LENGTH ? redacted : undefined;
+};
 
 const utf8Length = (value: string): number => new TextEncoder().encode(value).byteLength;
 
@@ -215,6 +314,39 @@ export const make = Effect.gen(function* () {
     } as const;
   });
 
+  const listRemotes: RepositoryReadServiceShape["listRemotes"] = Effect.fn(
+    "RepositoryReadService.listRemotes",
+  )(function* (input) {
+    const repository = yield* resolve("list-remotes", input.target);
+    if (repository === null) return { _tag: "NotRepository" } as const;
+    if (!repository.capabilities.remotes) return yield* unsupportedCapability("list-remotes");
+    const result = yield* repository
+      .listRemotes({ maxRemotes: ProviderVcsRemoteLimit.make(input.maxRemotes) })
+      .pipe(Effect.mapError((error) => mapProjectRepositoryReadError("list-remotes", error)));
+    const bounded = result.remotes.slice(0, input.maxRemotes);
+    const remotes = bounded.flatMap((remote) => {
+      const name = sanitizeRemoteName(remote.name);
+      if (name === undefined) return [];
+      const fetchUrl = sanitizeRemoteUrl(remote.fetchUrl);
+      const pushUrl = remote.pushUrl === null ? undefined : sanitizeRemoteUrl(remote.pushUrl);
+      return [
+        {
+          name,
+          ...(fetchUrl === undefined ? {} : { fetchUrl }),
+          ...(pushUrl === undefined ? {} : { pushUrl }),
+        },
+      ];
+    });
+    return {
+      _tag: "Repository",
+      remotes,
+      truncated:
+        result.truncated ||
+        result.remotes.length > bounded.length ||
+        bounded.length > remotes.length,
+    } as const;
+  });
+
   const getReviewDiff: RepositoryReadServiceShape["getReviewDiff"] = Effect.fn(
     "RepositoryReadService.getReviewDiff",
   )(function* (input) {
@@ -248,7 +380,7 @@ export const make = Effect.gen(function* () {
     return { _tag: "Repository", sources, truncated } as const;
   });
 
-  return RepositoryReadService.of({ status, listRefs, getReviewDiff });
+  return RepositoryReadService.of({ status, listRefs, listRemotes, getReviewDiff });
 });
 
 export const layer = Layer.effect(RepositoryReadService, make);

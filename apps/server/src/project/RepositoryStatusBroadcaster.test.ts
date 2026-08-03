@@ -42,6 +42,7 @@ const makeBroadcaster = (readStatus: RepositoryReadService.RepositoryReadService
       RepositoryReadService.RepositoryReadService.of({
         status: readStatus,
         listRefs: () => Effect.die("unused"),
+        listRemotes: () => Effect.die("unused"),
         getReviewDiff: () => Effect.die("unused"),
       }),
     ),
