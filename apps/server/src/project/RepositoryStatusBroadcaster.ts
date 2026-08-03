@@ -148,8 +148,8 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const key = repositoryStatusKey(input);
         const subscription = yield* PubSub.subscribe(changes);
-        // Always re-resolve on subscription. A cache entry can belong to an
-        // invalidated endpoint generation and must never seed a new stream.
+        // Always re-resolve on subscription so a new stream cannot inherit a
+        // snapshot from an invalidated endpoint generation.
         const initial = yield* reads.status(input);
         yield* update(input, initial, false);
         yield* retainPoller(
