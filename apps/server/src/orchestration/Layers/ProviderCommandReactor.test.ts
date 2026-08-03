@@ -45,6 +45,12 @@ import {
 import { makeProviderRegistryLayer } from "../../provider/testUtils/providerRegistryMock.ts";
 import { TextGeneration, type TextGenerationShape } from "../../textGeneration/TextGeneration.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import * as ProjectWorkspace from "../../project/ProjectWorkspace.ts";
+import {
+  ProviderWorkspaceDisconnectedError,
+  ProviderWorkspacePathError,
+  ProviderWorkspaceUnsupportedError,
+} from "../../provider/ProviderWorkspaceAdapter.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -151,6 +157,7 @@ describe("ProviderCommandReactor", () => {
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
+    readonly validateWorkspaceRoot?: ProjectWorkspace.ProjectWorkspaceShape["validateRoot"];
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -166,6 +173,7 @@ describe("ProviderCommandReactor", () => {
       model: "gpt-5-codex",
     };
     const startSessionEffect = input?.startSessionEffect;
+    const validateWorkspaceRoot = vi.fn(input?.validateWorkspaceRoot ?? (() => Effect.void));
     const startSession = vi.fn((_: unknown, input: unknown) => {
       const sessionIndex = nextSessionIndex++;
       const resumeCursor =
@@ -408,6 +416,11 @@ describe("ProviderCommandReactor", () => {
         }),
       ),
       Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(
+        Layer.mock(ProjectWorkspace.ProjectWorkspace)({
+          validateRoot: validateWorkspaceRoot,
+        }),
+      ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -489,6 +502,7 @@ describe("ProviderCommandReactor", () => {
       engine,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
       startSession,
+      validateWorkspaceRoot,
       sendTurn,
       interruptTurn,
       respondToRequest,
@@ -532,6 +546,11 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.startSession.mock.calls[0]?.[0]).toEqual(ThreadId.make("thread-1"));
+    expect(harness.validateWorkspaceRoot).toHaveBeenCalledTimes(1);
+    expect(harness.validateWorkspaceRoot).toHaveBeenCalledWith({
+      projectId: asProjectId("project-1"),
+      threadId: ThreadId.make("thread-1"),
+    });
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
       cwd: "/tmp/provider-project",
       modelSelection: {
@@ -547,6 +566,105 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
   });
+
+  it.each([
+    {
+      category: "disconnected",
+      validation: Effect.fail(
+        new ProviderWorkspaceDisconnectedError({
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          operation: "openRoot",
+          cause: new Error("secret endpoint ws://192.168.20.61/helper"),
+        }),
+      ),
+      detail:
+        "The project workspace is temporarily unavailable because its provider is disconnected.",
+    },
+    {
+      category: "unsupported",
+      validation: Effect.fail(
+        new ProviderWorkspaceUnsupportedError({
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          operation: "openRoot",
+          cause: new Error("secret method-not-found helper frame"),
+        }),
+      ),
+      detail: "Workspace validation is not supported by the selected provider.",
+    },
+    {
+      category: "path",
+      validation: Effect.fail(
+        new ProviderWorkspacePathError({
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          operation: "openRoot",
+          path: "/secret/provider/root",
+          issue: "secret symlink frame",
+          cause: new Error("secret helper traceback"),
+        }),
+      ),
+      detail: "The project workspace path could not be validated by the selected provider.",
+    },
+    {
+      category: "defective",
+      validation: Effect.die(new Error("secret unexpected helper frame")),
+      detail: "The selected provider could not validate the project workspace.",
+    },
+  ])(
+    "records a sanitized durable failure when workspace validation is $category",
+    async ({ category, validation, detail }) => {
+      const harness = await createHarness({
+        validateWorkspaceRoot: () => validation,
+      });
+      const now = "2026-01-01T00:00:00.000Z";
+
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-workspace-validation-${category}`),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId(`message-workspace-validation-${category}`),
+            role: "user",
+            text: "validate before starting",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+
+      await waitFor(async () => {
+        const readModel = await harness.readModel();
+        return (
+          readModel.threads
+            .find((entry) => entry.id === ThreadId.make("thread-1"))
+            ?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ?? false
+        );
+      });
+
+      expect(harness.validateWorkspaceRoot).toHaveBeenCalledWith({
+        projectId: asProjectId("project-1"),
+        threadId: ThreadId.make("thread-1"),
+      });
+      expect(harness.startSession).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      const activity = thread?.activities.find(
+        (entry) => entry.kind === "provider.turn.start.failed",
+      );
+      expect(thread?.session?.status).toBe("error");
+      expect(thread?.session?.lastError).toBe(detail);
+      expect(activity?.payload).toEqual({ detail });
+      const clientVisibleFailure = JSON.stringify({
+        sessionError: thread?.session?.lastError,
+        activity: activity?.payload,
+      });
+      expect(clientVisibleFailure).not.toContain("secret");
+      expect(clientVisibleFailure).not.toContain("192.168.20.61");
+    },
+  );
 
   effectIt.effect("projects starting before a slow provider session finishes", () =>
     Effect.gen(function* () {
@@ -1764,6 +1882,7 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     expect(harness.startSession.mock.calls.length).toBe(1);
+    expect(harness.validateWorkspaceRoot).toHaveBeenCalledTimes(1);
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
@@ -1852,6 +1971,11 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.validateWorkspaceRoot).toHaveBeenCalledTimes(1);
+    expect(harness.validateWorkspaceRoot).toHaveBeenLastCalledWith({
+      projectId: asProjectId("project-1"),
+      threadId: ThreadId.make("thread-1"),
+    });
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
       cwd: "/tmp/provider-project",
     });
@@ -1884,6 +2008,11 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 2);
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.validateWorkspaceRoot).toHaveBeenCalledTimes(2);
+    expect(harness.validateWorkspaceRoot).toHaveBeenLastCalledWith({
+      projectId: asProjectId("project-1"),
+      threadId: ThreadId.make("thread-1"),
+    });
     expect(harness.stopSession.mock.calls.length).toBe(0);
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       threadId: ThreadId.make("thread-1"),

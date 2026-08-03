@@ -45,6 +45,7 @@ import {
 } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { ProjectWorkspace, type ProjectWorkspaceError } from "../../project/ProjectWorkspace.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 
@@ -175,7 +176,7 @@ function canReplaceThreadTitle(currentTitle: string, titleSeed?: string): boolea
 }
 
 function findProviderAdapterRequestError(
-  cause: Cause.Cause<ProviderServiceError>,
+  cause: Cause.Cause<unknown>,
 ): ProviderAdapterRequestError | undefined {
   const failReason = cause.reasons.find(Cause.isFailReason);
   return isProviderAdapterRequestError(failReason?.error) ? failReason.error : undefined;
@@ -245,6 +246,29 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
   return `${WORKTREE_BRANCH_PREFIX}/${safeFragment}`;
 }
 
+function sanitizedWorkspaceValidationDetail(error: ProjectWorkspaceError): string {
+  switch (error._tag) {
+    case "ProviderWorkspaceDisconnectedError":
+      return "The project workspace is temporarily unavailable because its provider is disconnected.";
+    case "ProviderWorkspaceUnsupportedError":
+    case "ProjectWorkspaceCapabilityUnavailableError":
+      return "Workspace validation is not supported by the selected provider.";
+    case "ProviderWorkspacePathError":
+      return "The project workspace path could not be validated by the selected provider.";
+    case "ProjectWorkspaceProviderNotFoundError":
+    case "ProjectWorkspaceProviderUnavailableError":
+      return "The provider that owns the project workspace is unavailable.";
+    case "ProjectWorkspaceProjectNotFoundError":
+    case "ProjectWorkspaceThreadNotFoundError":
+    case "ProjectWorkspaceThreadProjectMismatchError":
+    case "ProjectWorkspaceResolveOperationError":
+      return "The project workspace could not be resolved.";
+    case "ProviderWorkspaceProtocolError":
+    case "ProviderWorkspaceOperationError":
+      return "The selected provider could not validate the project workspace.";
+  }
+}
+
 const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const orchestrationEngine = yield* OrchestrationEngineService;
@@ -255,6 +279,7 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const projectWorkspace = yield* ProjectWorkspace;
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
@@ -552,11 +577,35 @@ const make = Effect.gen(function* () {
       projects: project ? [project] : [],
     });
 
-    const startProviderSession = (input?: {
+    const startProviderSession = Effect.fn("startProviderSession")(function* (input?: {
       readonly resumeCursor?: unknown;
       readonly provider?: ProviderDriverKind;
-    }) =>
-      providerService.startSession(threadId, {
+    }) {
+      yield* projectWorkspace.validateRoot({ projectId: thread.projectId, threadId }).pipe(
+        Effect.mapError(
+          (error) =>
+            new ProviderAdapterRequestError({
+              provider: providerErrorLabel(String(desiredInstanceId)),
+              method: "thread.turn.start",
+              detail: sanitizedWorkspaceValidationDetail(error),
+            }),
+        ),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.failCause(cause);
+          }
+          const mappedError = findProviderAdapterRequestError(cause);
+          return Effect.fail(
+            mappedError ??
+              new ProviderAdapterRequestError({
+                provider: providerErrorLabel(String(desiredInstanceId)),
+                method: "thread.turn.start",
+                detail: "The selected provider could not validate the project workspace.",
+              }),
+          );
+        }),
+      );
+      return yield* providerService.startSession(threadId, {
         threadId,
         ...(preferredProvider ? { provider: preferredProvider } : {}),
         providerInstanceId: desiredInstanceId,
@@ -565,6 +614,7 @@ const make = Effect.gen(function* () {
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
         runtimeMode: desiredRuntimeMode,
       });
+    });
 
     const bindSessionToThread = (session: ProviderSession) =>
       Effect.gen(function* () {
