@@ -51,3 +51,8 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   GrokDriver,
   OpenCodeDriver,
 ];
+
+/** Remote-only driver catalog used by the explicit Cocoa gateway profile. */
+export const COCOA_GATEWAY_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
+  CodexDriver,
+];

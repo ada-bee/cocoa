@@ -21,6 +21,15 @@ export const modeFlag = Flag.choice("mode", ServerConfig.RuntimeMode.literals).p
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
   Flag.optional,
 );
+export const runtimeProfileFlag = Flag.choice(
+  "runtime-profile",
+  ServerConfig.RuntimeProfile.literals,
+).pipe(
+  Flag.withDescription(
+    "Runtime policy. `cocoa-gateway` requires explicit endpoint-backed Codex instances.",
+  ),
+  Flag.optional,
+);
 export const portFlag = Flag.integer("port").pipe(
   Flag.withSchema(PortSchema),
   Flag.withDescription("Port for the HTTP/WebSocket server."),
@@ -102,6 +111,10 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  runtimeProfile: Config.schema(ServerConfig.RuntimeProfile, "T3CODE_RUNTIME_PROFILE").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
   port: Config.port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.string("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
   t3Home: Config.string("T3CODE_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
@@ -143,6 +156,7 @@ const EnvServerConfig = Config.all({
 
 export interface CliServerFlags {
   readonly mode: Option.Option<ServerConfig.RuntimeMode>;
+  readonly runtimeProfile?: Option.Option<ServerConfig.RuntimeProfile>;
   readonly port: Option.Option<number>;
   readonly host: Option.Option<string>;
   readonly baseDir: Option.Option<string>;
@@ -172,6 +186,7 @@ export const projectLocationFlags = {
 
 export const sharedServerCommandFlags = {
   mode: modeFlag,
+  runtimeProfile: runtimeProfileFlag,
   port: portFlag,
   host: hostFlag,
   baseDir: baseDirFlag,
@@ -222,6 +237,7 @@ export const resolveServerConfig = (
     const env = yield* EnvServerConfig;
     const normalizedFlags = {
       mode: flags.mode ?? Option.none(),
+      runtimeProfile: flags.runtimeProfile ?? Option.none(),
       port: flags.port ?? Option.none(),
       host: flags.host ?? Option.none(),
       baseDir: flags.baseDir ?? Option.none(),
@@ -248,6 +264,13 @@ export const resolveServerConfig = (
         Option.fromUndefinedOr(bootstrap?.mode),
       ),
       () => "web",
+    );
+    const runtimeProfile: ServerConfig.RuntimeProfile = Option.getOrElse(
+      resolveOptionPrecedence(
+        normalizedFlags.runtimeProfile,
+        Option.fromUndefinedOr(env.runtimeProfile),
+      ),
+      () => "legacy",
     );
 
     const port = yield* Option.match(
@@ -367,6 +390,7 @@ export const resolveServerConfig = (
       otlpExportIntervalMs: env.otlpExportIntervalMs,
       otlpServiceName: env.otlpServiceName,
       mode,
+      runtimeProfile,
       port,
       cwd,
       baseDir,
@@ -398,6 +422,7 @@ export const resolveCliAuthConfig = (
   resolveServerConfig(
     {
       mode: Option.none(),
+      runtimeProfile: Option.none(),
       port: Option.none(),
       host: Option.none(),
       baseDir: flags.baseDir,

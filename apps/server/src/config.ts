@@ -19,6 +19,10 @@ export const DEFAULT_PORT = 3773;
 export const RuntimeMode = Schema.Literals(["web", "desktop"]);
 export type RuntimeMode = typeof RuntimeMode.Type;
 
+/** Selects the upstream-compatible runtime or Cocoa's remote-only gateway policy. */
+export const RuntimeProfile = Schema.Literals(["legacy", "cocoa-gateway"]);
+export type RuntimeProfile = typeof RuntimeProfile.Type;
+
 export const StartupPresentation = Schema.Literals(["browser", "headless"]);
 export type StartupPresentation = typeof StartupPresentation.Type;
 
@@ -66,6 +70,7 @@ export class ServerConfig extends Context.Service<
     readonly otlpExportIntervalMs: number;
     readonly otlpServiceName: string;
     readonly mode: RuntimeMode;
+    readonly runtimeProfile?: RuntimeProfile;
     readonly port: number;
     readonly host: string | undefined;
     readonly cwd: string;
@@ -89,7 +94,8 @@ export class ServerConfig extends Context.Service<
   static readonly layerTest = (
     cwd: string,
     baseDirOrPrefix: string | { readonly prefix: string },
-  ) => layerTest(cwd, baseDirOrPrefix);
+    options?: { readonly runtimeProfile?: RuntimeProfile },
+  ) => layerTest(cwd, baseDirOrPrefix, options);
 }
 
 export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
@@ -157,6 +163,7 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
 const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
   cwd: string,
   baseDirOrPrefix: string | { readonly prefix: string },
+  options: { readonly runtimeProfile?: RuntimeProfile } = {},
 ) {
   const devUrl = undefined;
   const fs = yield* FileSystem.FileSystem;
@@ -182,6 +189,7 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
     baseDir,
     ...derivedPaths,
     mode: "web",
+    runtimeProfile: options.runtimeProfile ?? "legacy",
     autoBootstrapProjectFromCwd: false,
     logWebSocketEvents: false,
     tailscaleServeEnabled: false,
@@ -200,8 +208,11 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
   });
 });
 
-export const layerTest = (cwd: string, baseDirOrPrefix: string | { readonly prefix: string }) =>
-  Layer.effect(ServerConfig, makeTest(cwd, baseDirOrPrefix));
+export const layerTest = (
+  cwd: string,
+  baseDirOrPrefix: string | { readonly prefix: string },
+  options?: { readonly runtimeProfile?: RuntimeProfile },
+) => Layer.effect(ServerConfig, makeTest(cwd, baseDirOrPrefix, options));
 
 export const resolveStaticDir = Effect.fn(function* () {
   const { join, resolve } = yield* Path.Path;

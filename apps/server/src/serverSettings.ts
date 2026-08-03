@@ -44,6 +44,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { writeFileStringAtomically } from "./atomicWrite.ts";
 import * as ServerConfig from "./config.ts";
+import { resolveCocoaGatewayProviderInstanceConfigMap } from "./cocoa/CocoaGatewayPolicy.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
@@ -182,7 +183,13 @@ export const layerTest = (overrides: DeepPartial<ServerSettings> = {}) =>
 const ServerSettingsJson = fromLenientJson(ServerSettings);
 const decodeServerSettingsJsonExit = Schema.decodeUnknownExit(ServerSettingsJson);
 
-function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
+function resolveTextGenerationProvider(
+  settings: ServerSettings,
+  runtimeProfile: ServerConfig.RuntimeProfile = "legacy",
+): ServerSettings {
+  if (runtimeProfile === "cocoa-gateway") {
+    return settings;
+  }
   return isModelSelectionProviderEnabled(settings, settings.textGenerationModelSelection)
     ? settings
     : fallbackTextGenerationProvider(settings);
@@ -251,7 +258,9 @@ function stripDefaultServerSettings(current: unknown, defaults: unknown): unknow
 }
 
 const make = Effect.gen(function* () {
-  const { settingsPath } = yield* ServerConfig.ServerConfig;
+  const config = yield* ServerConfig.ServerConfig;
+  const { settingsPath } = config;
+  const runtimeProfile = config.runtimeProfile ?? "legacy";
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
@@ -260,6 +269,7 @@ const make = Effect.gen(function* () {
   const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
   const startedRef = yield* Ref.make(false);
   const startedDeferred = yield* Deferred.make<void, ServerSettingsError>();
+  const lastValidCocoaSettingsRef = yield* Ref.make(Option.none<ServerSettings>());
   const watcherScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(watcherScope, Exit.void));
 
@@ -288,10 +298,43 @@ const make = Effect.gen(function* () {
     ),
   );
 
-  const loadSettingsFromDisk = Effect.gen(function* () {
-    if (!(yield* readConfigExists)) {
-      return DEFAULT_SERVER_SETTINGS;
-    }
+  const validateForRuntimeProfile = (
+    settings: ServerSettings,
+  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    runtimeProfile === "legacy"
+      ? Effect.succeed(settings)
+      : resolveCocoaGatewayProviderInstanceConfigMap(settings).pipe(
+          Effect.as(settings),
+          Effect.mapError(
+            (cause) =>
+              new ServerSettingsError({
+                settingsPath,
+                operation: "normalize",
+                cause,
+              }),
+          ),
+        );
+
+  const retainLastValidCocoaSettings = (error: ServerSettingsError) =>
+    Ref.get(lastValidCocoaSettingsRef).pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.fail(error),
+          onSome: (settings) =>
+            Effect.logWarning(
+              "Cocoa gateway rejected a settings reload; retaining the last valid configuration",
+              {
+                path: settingsPath,
+                operation: error.operation,
+                cause: error.cause,
+              },
+            ).pipe(Effect.as(settings)),
+        }),
+      ),
+    );
+
+  const loadLegacySettingsFromDisk = Effect.gen(function* () {
+    if (!(yield* readConfigExists)) return DEFAULT_SERVER_SETTINGS;
 
     const raw = yield* readRawConfig;
     const decoded = decodeServerSettingsJsonExit(raw);
@@ -305,6 +348,34 @@ const make = Effect.gen(function* () {
     }
     return decoded.value;
   });
+
+  const loadCocoaSettingsFromDisk = Effect.gen(function* () {
+    if (!(yield* readConfigExists)) {
+      return yield* new ServerSettingsError({
+        settingsPath,
+        operation: "check-exists",
+        cause: new Error("Cocoa gateway requires an explicit settings file."),
+      });
+    }
+
+    const raw = yield* readRawConfig;
+    const decoded = decodeServerSettingsJsonExit(raw);
+    if (decoded._tag === "Failure") {
+      return yield* new ServerSettingsError({
+        settingsPath,
+        operation: "normalize",
+        cause: decoded.cause,
+      });
+    }
+    const settings = yield* validateForRuntimeProfile(decoded.value);
+    yield* Ref.set(lastValidCocoaSettingsRef, Option.some(settings));
+    return settings;
+  });
+
+  const loadSettingsFromDisk =
+    runtimeProfile === "legacy"
+      ? loadLegacySettingsFromDisk
+      : loadCocoaSettingsFromDisk.pipe(Effect.catch(retainLastValidCocoaSettings));
 
   const settingsCache = yield* Cache.make<typeof cacheKey, ServerSettings, ServerSettingsError>({
     capacity: 1,
@@ -372,7 +443,7 @@ const make = Effect.gen(function* () {
           ),
         ),
       ),
-      Stream.map(resolveTextGenerationProvider),
+      Stream.map((settings) => resolveTextGenerationProvider(settings, runtimeProfile)),
     );
 
   const persistProviderEnvironmentSecrets = (
@@ -573,22 +644,27 @@ const make = Effect.gen(function* () {
     ready: Deferred.await(startedDeferred),
     getSettings: getSettingsFromCache.pipe(
       Effect.flatMap(materializeProviderEnvironmentSecrets),
-      Effect.map(resolveTextGenerationProvider),
+      Effect.map((settings) => resolveTextGenerationProvider(settings, runtimeProfile)),
     ),
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
           const current = yield* getSettingsFromCache;
-          const nextPersisted = yield* persistProviderEnvironmentSecrets(
-            current,
+          const normalizedPatch = yield* normalizeServerSettings(
             applyServerSettingsPatch(current, patch),
           );
+          const validatedPatch = yield* validateForRuntimeProfile(normalizedPatch);
+          const nextPersisted = yield* persistProviderEnvironmentSecrets(current, validatedPatch);
           const next = yield* normalizeServerSettings(nextPersisted);
+          yield* validateForRuntimeProfile(next);
           yield* writeSettingsAtomically(next);
           yield* Cache.set(settingsCache, cacheKey, next);
+          if (runtimeProfile === "cocoa-gateway") {
+            yield* Ref.set(lastValidCocoaSettingsRef, Option.some(next));
+          }
           yield* emitChange(next);
           const materialized = yield* materializeProviderEnvironmentSecrets(next);
-          return resolveTextGenerationProvider(materialized);
+          return resolveTextGenerationProvider(materialized, runtimeProfile);
         }),
       ),
     get streamChanges() {

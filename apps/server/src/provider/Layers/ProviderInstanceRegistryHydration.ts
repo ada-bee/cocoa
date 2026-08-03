@@ -51,8 +51,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import * as ServerConfig from "../../config.ts";
+import { resolveCocoaGatewayProviderInstanceConfigMap } from "../../cocoa/CocoaGatewayPolicy.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "../builtInDrivers.ts";
+import {
+  BUILT_IN_DRIVERS,
+  COCOA_GATEWAY_DRIVERS,
+  type BuiltInDriversEnv,
+} from "../builtInDrivers.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
 import { ProviderInstanceRegistryMutableLayer } from "./ProviderInstanceRegistryLive.ts";
@@ -103,6 +109,14 @@ export const deriveProviderInstanceConfigMap = (
   return merged as ProviderInstanceConfigMap;
 };
 
+export const resolveProviderInstanceConfigMap = (
+  settings: ServerSettings,
+  runtimeProfile: ServerConfig.RuntimeProfile,
+) =>
+  runtimeProfile === "cocoa-gateway"
+    ? resolveCocoaGatewayProviderInstanceConfigMap(settings)
+    : Effect.succeed(deriveProviderInstanceConfigMap(settings));
+
 /**
  * Layer that consumes `ProviderInstanceRegistryMutator` and forks a
  * settings-watcher fiber. The fiber's lifetime is tied to the enclosing
@@ -114,24 +128,27 @@ export const deriveProviderInstanceConfigMap = (
  * configs, so the only way the watcher could fail is a settings stream
  * tear-down, which logs and exits cleanly.
  */
-const SettingsWatcherLive = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const mutator = yield* ProviderInstanceRegistryMutator;
-    const serverSettings = yield* ServerSettingsService;
-    yield* serverSettings.streamChanges.pipe(
-      Stream.runForEach((next) =>
-        mutator
-          .reconcile(deriveProviderInstanceConfigMap(next))
-          .pipe(
+const settingsWatcherLive = (runtimeProfile: ServerConfig.RuntimeProfile) =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const mutator = yield* ProviderInstanceRegistryMutator;
+      const serverSettings = yield* ServerSettingsService;
+      yield* serverSettings.streamChanges.pipe(
+        Stream.runForEach((next) =>
+          resolveProviderInstanceConfigMap(next, runtimeProfile).pipe(
+            Effect.flatMap(mutator.reconcile),
             Effect.catchCause((cause) =>
-              Effect.logError("ProviderInstanceRegistry reconcile failed", cause),
+              Effect.logWarning(
+                "ProviderInstanceRegistry rejected a settings reload; retaining current instances",
+                cause,
+              ),
             ),
           ),
-      ),
-      Effect.forkScoped,
-    );
-  }),
-);
+        ),
+        Effect.forkScoped,
+      );
+    }),
+  );
 
 /**
  * Hydrate `ProviderInstanceRegistry` from `ServerSettings` and keep it in
@@ -152,23 +169,32 @@ const SettingsWatcherLive = Layer.effectDiscard(
 export const ProviderInstanceRegistryHydrationLive: Layer.Layer<
   ProviderInstanceRegistry,
   never,
-  BuiltInDriversEnv | ServerSettingsService
+  BuiltInDriversEnv | ServerConfig.ServerConfig | ServerSettingsService
 > = Layer.unwrap(
   Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const runtimeProfile = config.runtimeProfile ?? "legacy";
     const serverSettings = yield* ServerSettingsService;
-    const initialSettings: ServerSettings | undefined = yield* serverSettings.getSettings.pipe(
-      Effect.orElseSucceed(() => undefined),
-    );
+    const initialSettings: ServerSettings | undefined =
+      runtimeProfile === "cocoa-gateway"
+        ? yield* serverSettings.getSettings.pipe(Effect.orDie)
+        : yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => undefined));
     const initialConfigMap =
       initialSettings === undefined
         ? ({} as ProviderInstanceConfigMap)
-        : deriveProviderInstanceConfigMap(initialSettings);
+        : yield* resolveProviderInstanceConfigMap(initialSettings, runtimeProfile).pipe(
+            Effect.orDie,
+          );
 
     const mutableLayer = ProviderInstanceRegistryMutableLayer({
-      drivers: BUILT_IN_DRIVERS,
+      drivers: runtimeProfile === "cocoa-gateway" ? COCOA_GATEWAY_DRIVERS : BUILT_IN_DRIVERS,
       configMap: initialConfigMap,
     });
 
-    return SettingsWatcherLive.pipe(Layer.provideMerge(mutableLayer));
+    return settingsWatcherLive(runtimeProfile).pipe(Layer.provideMerge(mutableLayer));
   }),
-) as Layer.Layer<ProviderInstanceRegistry, never, BuiltInDriversEnv | ServerSettingsService>;
+) as Layer.Layer<
+  ProviderInstanceRegistry,
+  never,
+  BuiltInDriversEnv | ServerConfig.ServerConfig | ServerSettingsService
+>;

@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as ServerConfig from "./config.ts";
 import * as ServerSettingsModule from "./serverSettings.ts";
@@ -23,17 +24,41 @@ import * as ServerSettingsModule from "./serverSettings.ts";
 const decodeSettingsPatch = Schema.decodeUnknownEffect(ServerSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownEffect(ServerSettings);
 
-const makeServerSettingsLayer = () =>
+const makeServerSettingsLayer = (runtimeProfile: ServerConfig.RuntimeProfile = "legacy") =>
   ServerSettingsModule.layer.pipe(
     Layer.provide(ServerSecretStore.layer),
     Layer.provideMerge(
       Layer.fresh(
-        ServerConfig.layerTest(process.cwd(), {
-          prefix: "t3code-server-settings-test-",
-        }),
+        ServerConfig.layerTest(
+          process.cwd(),
+          {
+            prefix: "t3code-server-settings-test-",
+          },
+          { runtimeProfile },
+        ),
       ),
     ),
   );
+
+const cocoaSettingsJson = JSON.stringify({
+  providerInstances: {
+    macbook_air: {
+      driver: "codex",
+      config: {
+        endpointTransport: {
+          type: "direct-websocket",
+          url: "ws://192.168.20.99:4500",
+          authentication: { type: "none" },
+        },
+      },
+    },
+    linux_dev_box: {
+      driver: "codex",
+      config: { endpointTransport: { type: "ssh-proxy", host: "rigatoni-alfredo" } },
+    },
+  },
+  textGenerationModelSelection: { instanceId: "macbook_air", model: "gpt-5.4" },
+});
 
 const makeFailingSecretStoreLayer = (cause: ServerSecretStore.SecretStoreError) =>
   Layer.succeed(
@@ -48,6 +73,50 @@ const makeFailingSecretStoreLayer = (cause: ServerSecretStore.SecretStoreError) 
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("fails closed when Cocoa gateway settings are missing at boot", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const error = yield* Effect.flip(serverSettings.getSettings);
+
+      assert.strictEqual(error.operation, "check-exists");
+    }).pipe(Effect.provide(makeServerSettingsLayer("cocoa-gateway"))),
+  );
+
+  it.effect("fails closed when Cocoa gateway settings are malformed at boot", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fileSystem.writeFileString(config.settingsPath, "{ invalid json");
+
+      const error = yield* Effect.flip(serverSettings.getSettings);
+
+      assert.strictEqual(error.operation, "normalize");
+    }).pipe(Effect.provide(makeServerSettingsLayer("cocoa-gateway"))),
+  );
+
+  it.effect("retains the last valid Cocoa configuration after an invalid hot reload", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+        yield* fileSystem.writeFileString(config.settingsPath, cocoaSettingsJson);
+        yield* serverSettings.start;
+        const initial = yield* serverSettings.getSettings;
+        const changes = yield* serverSettings.subscribeChanges;
+
+        yield* fileSystem.writeFileString(config.settingsPath, "{ invalid json");
+        const emitted = yield* Stream.runHead(changes).pipe(Effect.timeout("2 seconds"));
+        const current = yield* serverSettings.getSettings;
+
+        assert.isTrue(Option.isSome(emitted));
+        assert.deepEqual(Option.getOrThrow(emitted).providerInstances, initial.providerInstances);
+        assert.deepEqual(current.providerInstances, initial.providerInstances);
+      }),
+    ).pipe(Effect.provide(makeServerSettingsLayer("cocoa-gateway")), TestClock.withLive),
+  );
+
   it.effect("preserves context when reading a provider environment secret fails", () => {
     const platformCause = PlatformError.systemError({
       _tag: "PermissionDenied",
