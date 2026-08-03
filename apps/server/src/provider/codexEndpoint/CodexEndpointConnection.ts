@@ -4,6 +4,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as CodexClient from "effect-codex-app-server/client";
@@ -14,6 +15,8 @@ import { ProviderInstanceId } from "@t3tools/contracts";
 import packageJson from "../../../package.json" with { type: "json" };
 
 export const CODEX_ENDPOINT_INITIALIZE_TIMEOUT = "10 seconds" as const;
+export const CODEX_ENDPOINT_CAPABILITY_PROBE_TIMEOUT = "2 seconds" as const;
+export const CODEX_ENDPOINT_TESTED_BASELINE_VERSION = "0.146.0" as const;
 
 const COCOA_CLIENT_INFO = {
   name: "cocoa_gateway",
@@ -31,6 +34,51 @@ export interface CodexEndpointCompatibilityMetadata {
   readonly codexHome: string;
   readonly platformFamily: string;
   readonly platformOs: string;
+  /** Present on connections acquired through the compatibility-probing handshake. */
+  readonly versionRelation?: CodexEndpointVersionRelation;
+  /** Present on connections acquired through the compatibility-probing handshake. */
+  readonly capabilities?: CodexEndpointNativeCapabilities;
+}
+
+export type CodexEndpointVersionRelation = "older" | "baseline" | "newer" | "unknown";
+
+export type CodexEndpointNativeMethod =
+  | "thread/start"
+  | "thread/resume"
+  | "turn/start"
+  | "turn/interrupt"
+  | "thread/read"
+  | "thread/rollback"
+  | "command/exec"
+  | "command/exec/write"
+  | "command/exec/resize"
+  | "command/exec/terminate";
+
+export type CodexEndpointNativeMethodAvailability = "available" | "unavailable";
+
+export interface CodexEndpointNativeCapabilities {
+  /** The minimum native conversation primitives Cocoa requires from every ready generation. */
+  readonly conversation: true;
+  readonly conversationRead: boolean;
+  readonly checkedConversationRollback: boolean;
+  readonly commandExec: boolean;
+  readonly commandExecControl: boolean;
+  readonly methods: Readonly<
+    Record<CodexEndpointNativeMethod, CodexEndpointNativeMethodAvailability>
+  >;
+}
+
+export class CodexEndpointCompatibilityError extends Schema.TaggedErrorClass<CodexEndpointCompatibilityError>()(
+  "CodexEndpointCompatibilityError",
+  {
+    providerInstanceId: ProviderInstanceId,
+    method: Schema.String,
+    reason: Schema.Literals(["missing", "malformed", "timed-out"]),
+  },
+) {
+  override get message() {
+    return `Codex endpoint '${this.providerInstanceId}' is incompatible: required method '${this.method}' is ${this.reason}.`;
+  }
 }
 
 export class CodexEndpointInitializationError extends Schema.TaggedErrorClass<CodexEndpointInitializationError>()(
@@ -72,6 +120,7 @@ export class CodexEndpointTerminationError extends Schema.TaggedErrorClass<Codex
 export type CodexEndpointConnectionError =
   | CodexEndpointInitializationError
   | CodexEndpointInitializationTimeoutError
+  | CodexEndpointCompatibilityError
   | CodexEndpointTerminationError;
 
 export type CodexEndpointFramedTransport = Omit<
@@ -96,6 +145,131 @@ export class CodexEndpointConnection extends Context.Service<
 
 export const parseCodexServerVersion = (userAgent: string): string | undefined =>
   userAgent.match(/\/([^\s]+)/)?.[1];
+
+const parseNumericVersion = (version: string): readonly [number, number, number] | undefined => {
+  const match = version.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  if (match === null) return undefined;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+};
+
+export const evaluateCodexEndpointVersion = (
+  serverVersion: string | undefined,
+): CodexEndpointVersionRelation => {
+  const observed = serverVersion === undefined ? undefined : parseNumericVersion(serverVersion);
+  const baseline = parseNumericVersion(CODEX_ENDPOINT_TESTED_BASELINE_VERSION)!;
+  if (observed === undefined) return "unknown";
+  for (let index = 0; index < baseline.length; index += 1) {
+    if (observed[index]! < baseline[index]!) return "older";
+    if (observed[index]! > baseline[index]!) return "newer";
+  }
+  return "baseline";
+};
+
+const REQUIRED_METHOD_PROBES = [
+  ["thread/start", { cwd: false }],
+  ["thread/resume", { threadId: false }],
+  ["turn/start", { threadId: false, input: false }],
+  ["turn/interrupt", { threadId: false, turnId: false }],
+] as const satisfies ReadonlyArray<readonly [CodexEndpointNativeMethod, unknown]>;
+
+const OPTIONAL_METHOD_PROBES = [
+  ["thread/read", { threadId: false }],
+  ["thread/rollback", { threadId: false, numTurns: false }],
+  ["command/exec", { command: false }],
+  ["command/exec/write", { processId: false }],
+  ["command/exec/resize", { processId: false, size: false }],
+  ["command/exec/terminate", { processId: false }],
+] as const satisfies ReadonlyArray<readonly [CodexEndpointNativeMethod, unknown]>;
+
+type ProbeResult =
+  | { readonly _tag: "Available" }
+  | { readonly _tag: "Unavailable"; readonly reason: "missing" | "malformed" | "timed-out" };
+
+const probeNativeMethod = Effect.fn("CodexEndpointConnection.probeNativeMethod")(function* (
+  client: CodexClient.CodexAppServerClient["Service"],
+  method: CodexEndpointNativeMethod,
+  invalidParams: unknown,
+): Effect.fn.Return<ProbeResult, CodexError.CodexAppServerError> {
+  const result = yield* client.raw
+    .request(method, invalidParams)
+    .pipe(Effect.timeoutOption(CODEX_ENDPOINT_CAPABILITY_PROBE_TIMEOUT), Effect.result);
+  if (result._tag === "Success") {
+    return Option.isNone(result.success)
+      ? { _tag: "Unavailable", reason: "timed-out" }
+      : { _tag: "Unavailable", reason: "malformed" };
+  }
+  const error = result.failure;
+  if (error._tag === "CodexAppServerRequestError") {
+    if (error.code === -32601) return { _tag: "Unavailable", reason: "missing" };
+    if (error.code === -32700 || error.code === -32600) {
+      return { _tag: "Unavailable", reason: "malformed" };
+    }
+    // Invalid params is the expected response. Other application-level errors
+    // also prove that the server routed the named method without mutating state.
+    return { _tag: "Available" };
+  }
+  if (error._tag === "CodexAppServerProtocolParseError") {
+    return { _tag: "Unavailable", reason: "malformed" };
+  }
+  return yield* error;
+});
+
+const probeNativeCapabilities = Effect.fn("CodexEndpointConnection.probeNativeCapabilities")(
+  function* (
+    providerInstanceId: ProviderInstanceId,
+    client: CodexClient.CodexAppServerClient["Service"],
+  ): Effect.fn.Return<
+    CodexEndpointNativeCapabilities,
+    CodexEndpointCompatibilityError | CodexError.CodexAppServerError
+  > {
+    const required = yield* Effect.forEach(
+      REQUIRED_METHOD_PROBES,
+      ([method, params]) =>
+        probeNativeMethod(client, method, params).pipe(
+          Effect.map((result) => [method, result] as const),
+        ),
+      { concurrency: 4 },
+    );
+    for (const [method, result] of required) {
+      if (result._tag === "Unavailable") {
+        return yield* new CodexEndpointCompatibilityError({
+          providerInstanceId,
+          method,
+          reason: result.reason,
+        });
+      }
+    }
+    const optional = yield* Effect.forEach(
+      OPTIONAL_METHOD_PROBES,
+      ([method, params]) =>
+        probeNativeMethod(client, method, params).pipe(
+          Effect.map((result) => [method, result] as const),
+        ),
+      { concurrency: 4 },
+    );
+    const methods = Object.fromEntries(
+      [...required, ...optional].map(([method, result]) => [
+        method,
+        result._tag === "Available" ? "available" : "unavailable",
+      ]),
+    ) as Record<CodexEndpointNativeMethod, CodexEndpointNativeMethodAvailability>;
+    const available = (method: CodexEndpointNativeMethod) => methods[method] === "available";
+    const conversationRead = available("thread/read");
+    const commandExec = available("command/exec");
+    return {
+      conversation: true,
+      conversationRead,
+      checkedConversationRollback: conversationRead && available("thread/rollback"),
+      commandExec,
+      commandExecControl:
+        commandExec &&
+        available("command/exec/write") &&
+        available("command/exec/resize") &&
+        available("command/exec/terminate"),
+      methods,
+    };
+  },
+);
 
 const classifyInitializationError = (
   providerInstanceId: ProviderInstanceId,
@@ -138,14 +312,20 @@ export const make = Effect.fn("CodexEndpointConnection.make")(function* (
             },
           });
           yield* client.notify("initialized", undefined);
-          return initialized;
+          const capabilities = yield* probeNativeCapabilities(options.providerInstanceId, client);
+          return { initialized, capabilities };
         }).pipe(
           Effect.mapError((cause) =>
-            classifyInitializationError(options.providerInstanceId, cause),
+            cause._tag === "CodexEndpointCompatibilityError"
+              ? cause
+              : classifyInitializationError(options.providerInstanceId, cause),
           ),
         );
 
-        const initialized = yield* Effect.raceFirst(handshake, awaitTermination).pipe(
+        const { initialized, capabilities } = yield* Effect.raceFirst(
+          handshake,
+          awaitTermination,
+        ).pipe(
           Effect.timeout(CODEX_ENDPOINT_INITIALIZE_TIMEOUT),
           Effect.mapError((error) =>
             Cause.isTimeoutError(error)
@@ -166,6 +346,10 @@ export const make = Effect.fn("CodexEndpointConnection.make")(function* (
             codexHome: initialized.codexHome,
             platformFamily: initialized.platformFamily,
             platformOs: initialized.platformOs,
+            versionRelation: evaluateCodexEndpointVersion(
+              parseCodexServerVersion(initialized.userAgent),
+            ),
+            capabilities,
           },
           awaitTermination,
         });

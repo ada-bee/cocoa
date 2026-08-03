@@ -15,6 +15,7 @@ import * as CodexEndpointConnection from "./CodexEndpointConnection.ts";
 
 const PROVIDER_INSTANCE_ID = ProviderInstanceId.make("codex_remote");
 const decodeJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const encodeJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
 
 const makeInMemoryTransport = Effect.fn("CodexEndpointConnectionTest.makeTransport")(function* () {
   const input = yield* Queue.unbounded<string, Cause.Done<void>>();
@@ -43,20 +44,53 @@ const initializeResult = (userAgent: string) => ({
   userAgent,
 });
 
+type ProbeResponse = "available" | "missing" | "malformed";
+
+const DEFAULT_PROBE_RESPONSES: Partial<
+  Record<CodexEndpointConnection.CodexEndpointNativeMethod, ProbeResponse>
+> = {};
+
 const completeHandshake = Effect.fn("CodexEndpointConnectionTest.completeHandshake")(function* (
   transport: Effect.Success<ReturnType<typeof makeInMemoryTransport>>,
   userAgent: string,
+  probeResponses: Partial<
+    Record<CodexEndpointConnection.CodexEndpointNativeMethod, ProbeResponse>
+  > = DEFAULT_PROBE_RESPONSES,
 ) {
   const initialize = yield* decodeJson(yield* Queue.take(transport.output));
   yield* Queue.offer(
     transport.input,
-    yield* Schema.encodeUnknownEffect(Schema.UnknownFromJsonString)({
+    yield* encodeJson({
       id: 1,
       result: initializeResult(userAgent),
     }),
   );
   const initialized = yield* decodeJson(yield* Queue.take(transport.output));
-  return { initialize, initialized };
+  const probes: Array<unknown> = [];
+  for (let index = 0; index < 10; index += 1) {
+    const probe = yield* decodeJson(yield* Queue.take(transport.output));
+    probes.push(probe);
+    const request = probe as {
+      readonly id: number;
+      readonly method: CodexEndpointConnection.CodexEndpointNativeMethod;
+    };
+    const response = probeResponses[request.method] ?? "available";
+    yield* Queue.offer(
+      transport.input,
+      yield* encodeJson(
+        response === "malformed"
+          ? { id: request.id, result: {} }
+          : {
+              id: request.id,
+              error: {
+                code: response === "missing" ? -32601 : -32602,
+                message: response === "missing" ? "method not found" : "invalid params",
+              },
+            },
+      ),
+    );
+  }
+  return { initialize, initialized, probes };
 });
 
 const makeConnection = (transport: Effect.Success<ReturnType<typeof makeInMemoryTransport>>) =>
@@ -91,6 +125,7 @@ describe("CodexEndpointConnection", () => {
         },
       });
       assert.deepEqual(handshake.initialized, { method: "initialized" });
+      assert.lengthOf(handshake.probes, 10);
       assert.equal(connection.identity.providerInstanceId, PROVIDER_INSTANCE_ID);
       assert.deepEqual(connection.compatibility, {
         userAgent: "codex_cli_rs/0.146.0 extra-data",
@@ -98,6 +133,26 @@ describe("CodexEndpointConnection", () => {
         codexHome: "/srv/codex",
         platformFamily: "unix",
         platformOs: "linux",
+        versionRelation: "baseline",
+        capabilities: {
+          conversation: true,
+          conversationRead: true,
+          checkedConversationRollback: true,
+          commandExec: true,
+          commandExecControl: true,
+          methods: {
+            "thread/start": "available",
+            "thread/resume": "available",
+            "turn/start": "available",
+            "turn/interrupt": "available",
+            "thread/read": "available",
+            "thread/rollback": "available",
+            "command/exec": "available",
+            "command/exec/write": "available",
+            "command/exec/resize": "available",
+            "command/exec/terminate": "available",
+          },
+        },
       });
 
       yield* Queue.end(transport.input);
@@ -111,12 +166,12 @@ describe("CodexEndpointConnection", () => {
   it.effect("accepts additive and unknown reported versions as compatibility metadata", () =>
     Effect.gen(function* () {
       const cases = [
-        ["codex_cli_rs/999.42.7 future-capability", "999.42.7"],
-        ["codex_cli_rs/future-build additive-fields", "future-build"],
-        ["custom-codex-daemon", undefined],
+        ["codex_cli_rs/999.42.7 future-capability", "999.42.7", "newer"],
+        ["codex_cli_rs/future-build additive-fields", "future-build", "unknown"],
+        ["custom-codex-daemon", undefined, "unknown"],
       ] as const;
 
-      for (const [userAgent, expectedVersion] of cases) {
+      for (const [userAgent, expectedVersion, expectedRelation] of cases) {
         yield* Effect.scoped(
           Effect.gen(function* () {
             const transport = yield* makeInMemoryTransport();
@@ -124,9 +179,65 @@ describe("CodexEndpointConnection", () => {
             const connection = yield* makeConnection(transport);
             assert.equal(connection.compatibility.userAgent, userAgent);
             assert.equal(connection.compatibility.serverVersion, expectedVersion);
+            assert.equal(connection.compatibility.versionRelation, expectedRelation);
           }),
         );
       }
+    }),
+  );
+
+  it.effect("keeps older endpoints ready while downgrading missing optional methods", () =>
+    Effect.gen(function* () {
+      const transport = yield* makeInMemoryTransport();
+      yield* completeHandshake(transport, "codex_cli_rs/0.145.0", {
+        "thread/rollback": "missing",
+        "command/exec/resize": "missing",
+      }).pipe(Effect.forkScoped);
+
+      const connection = yield* makeConnection(transport);
+      assert.equal(connection.compatibility.versionRelation, "older");
+      assert.equal(connection.compatibility.capabilities?.conversationRead, true);
+      assert.equal(connection.compatibility.capabilities?.checkedConversationRollback, false);
+      assert.equal(connection.compatibility.capabilities?.commandExec, true);
+      assert.equal(connection.compatibility.capabilities?.commandExecControl, false);
+    }),
+  );
+
+  it.effect("rejects generations missing a required thread primitive", () =>
+    Effect.gen(function* () {
+      const transport = yield* makeInMemoryTransport();
+      yield* completeHandshake(transport, "codex_cli_rs/0.146.0", {
+        "thread/resume": "missing",
+      }).pipe(Effect.forkScoped);
+
+      const error = yield* makeConnection(transport).pipe(Effect.flip);
+      assert.instanceOf(error, CodexEndpointConnection.CodexEndpointCompatibilityError);
+      assert.equal(error.method, "thread/resume");
+      assert.equal(error.reason, "missing");
+    }),
+  );
+
+  it.effect("rejects malformed required probes and downgrades malformed optional probes", () =>
+    Effect.gen(function* () {
+      const malformedRequired = yield* makeInMemoryTransport();
+      yield* completeHandshake(malformedRequired, "codex_cli_rs/0.146.0", {
+        "turn/start": "malformed",
+      }).pipe(Effect.forkScoped);
+      const requiredError = yield* makeConnection(malformedRequired).pipe(Effect.flip);
+      assert.instanceOf(requiredError, CodexEndpointConnection.CodexEndpointCompatibilityError);
+      assert.equal(requiredError.method, "turn/start");
+      assert.equal(requiredError.reason, "malformed");
+
+      const malformedOptional = yield* makeInMemoryTransport();
+      yield* completeHandshake(malformedOptional, "codex_cli_rs/0.146.0", {
+        "thread/read": "malformed",
+        "command/exec": "malformed",
+      }).pipe(Effect.forkScoped);
+      const connection = yield* makeConnection(malformedOptional);
+      assert.equal(connection.compatibility.capabilities?.conversationRead, false);
+      assert.equal(connection.compatibility.capabilities?.checkedConversationRollback, false);
+      assert.equal(connection.compatibility.capabilities?.commandExec, false);
+      assert.equal(connection.compatibility.capabilities?.commandExecControl, false);
     }),
   );
 
@@ -141,10 +252,7 @@ describe("CodexEndpointConnection", () => {
         const transport = yield* makeInMemoryTransport();
         const peer = yield* Effect.gen(function* () {
           yield* Queue.take(transport.output);
-          yield* Queue.offer(
-            transport.input,
-            yield* Schema.encodeUnknownEffect(Schema.UnknownFromJsonString)(response),
-          );
+          yield* Queue.offer(transport.input, yield* encodeJson(response));
         }).pipe(Effect.forkScoped);
 
         const error = yield* makeConnection(transport).pipe(Effect.flip);

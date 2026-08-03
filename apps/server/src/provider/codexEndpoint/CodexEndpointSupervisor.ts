@@ -133,10 +133,10 @@ export interface CodexEndpointSupervisor {
 }
 
 /**
- * Initialization request failures caused by a protocol/schema mismatch cannot
- * recover while this configured supervisor remains unchanged. Server-side
- * internal/overload errors remain retryable. The observed remote version is
- * deliberately not part of this decision.
+ * Handshake or required-capability failures caused by a protocol/schema
+ * mismatch cannot recover while this configured supervisor remains unchanged.
+ * Server-side internal/overload errors remain retryable. The observed remote
+ * version is deliberately not part of this decision.
  */
 export function classifyCodexEndpointSupervisorError(
   error: CodexEndpointFactory.CodexEndpointFactoryError,
@@ -145,6 +145,7 @@ export function classifyCodexEndpointSupervisorError(
     case "CodexEndpointUnsupportedAuthenticationError":
     case "CodexEndpointCredentialReadError":
     case "CodexEndpointInvalidCredentialError":
+    case "CodexEndpointCompatibilityError":
       return "permanent";
     case "CodexEndpointInitializationError":
       return error.cause._tag === "CodexAppServerRequestError" &&

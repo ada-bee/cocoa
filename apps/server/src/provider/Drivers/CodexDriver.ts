@@ -62,6 +62,7 @@ import {
   type ProviderInstanceGenerationState,
 } from "../ProviderDriver.ts";
 import * as CodexEndpointFactory from "../codexEndpoint/CodexEndpointFactory.ts";
+import type { CodexEndpointCompatibilityMetadata } from "../codexEndpoint/CodexEndpointConnection.ts";
 import { makeCodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
 import { makeCodexTerminalAdapter } from "../codexTerminal/CodexTerminalAdapter.ts";
@@ -299,28 +300,33 @@ export const makeCodexDriver = (
             instanceId,
             endpointTextGeneration,
           );
+          let conversationCompatibility: CodexEndpointCompatibilityMetadata | undefined;
+          let terminalCompatibility: CodexEndpointCompatibilityMetadata | undefined;
           const terminalConfig = effectiveConfig.endpointTerminal;
-          const terminalCapability =
-            terminalConfig.enabled === false
+          const terminalSandboxMode =
+            terminalConfig.enabled === false ? undefined : terminalConfig.sandboxMode;
+          const terminalSupervisor =
+            terminalSandboxMode === undefined
               ? undefined
-              : {
-                  supervisor: yield* dependencies.makeEndpointSupervisor({
-                    providerInstanceId: instanceId,
-                    transport: config.endpointTransport,
-                    dependencies: {
-                      makeEndpoint: dependencies.makeEndpoint,
-                      makeRouter: dependencies.makeEndpointRouter,
-                    },
-                  }),
-                  sandboxMode: terminalConfig.sandboxMode,
-                };
+              : yield* dependencies.makeEndpointSupervisor({
+                  providerInstanceId: instanceId,
+                  transport: config.endpointTransport,
+                  dependencies: {
+                    makeEndpoint: dependencies.makeEndpoint,
+                    makeRouter: dependencies.makeEndpointRouter,
+                  },
+                });
+          const terminalChanges =
+            terminalSupervisor === undefined
+              ? undefined
+              : yield* terminalSupervisor.subscribeChanges;
           const terminal =
-            terminalCapability === undefined
+            terminalSupervisor === undefined || terminalSandboxMode === undefined
               ? undefined
               : yield* dependencies.makeEndpointTerminal({
                   providerInstanceId: instanceId,
-                  sandboxMode: terminalCapability.sandboxMode,
-                  borrowConnection: terminalCapability.supervisor.borrowConnection,
+                  sandboxMode: terminalSandboxMode,
+                  borrowConnection: terminalSupervisor.borrowConnection,
                 });
           const workspace =
             config.workspaceHelper === undefined
@@ -463,7 +469,7 @@ export const makeCodexDriver = (
             },
           );
 
-          const adapter = yield* dependencies.makeAdapter(effectiveConfig, {
+          const nativeAdapter = yield* dependencies.makeAdapter(effectiveConfig, {
             instanceId,
             enabled: true,
             environment: processEnv,
@@ -511,6 +517,26 @@ export const makeCodexDriver = (
             },
             ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
           });
+          const adapter = {
+            ...nativeAdapter,
+            capabilities: {
+              get sessionModelSwitch() {
+                return conversationCompatibility === undefined
+                  ? ("unsupported" as const)
+                  : nativeAdapter.capabilities.sessionModelSwitch;
+              },
+              get conversationRead() {
+                return conversationCompatibility?.capabilities?.conversationRead === true
+                  ? ("ordered-turn-ids-v1" as const)
+                  : ("unsupported" as const);
+              },
+              get checkedConversationRollback() {
+                return conversationCompatibility?.capabilities?.checkedConversationRollback === true
+                  ? ("ordered-turn-ids-v1" as const)
+                  : ("unsupported" as const);
+              },
+            },
+          } satisfies ProviderInstance["adapter"];
 
           yield* supervisor.start({
             onGenerationInvalidated: ({ generationId, error }) =>
@@ -525,16 +551,29 @@ export const makeCodexDriver = (
                 ),
               ),
           });
-          if (terminalCapability !== undefined) {
+          if (terminalSupervisor !== undefined) {
             // Schedule the isolated terminal connection without making
             // provider hydration wait for its connector timeout. Its retry
             // lifecycle remains separate from conversation/provider health.
-            yield* terminalCapability.supervisor.start({
+            yield* terminalSupervisor.start({
               // Terminal sessions are permanently bound to their captured
               // connection generation. Their invalidation is deliberately
               // independent from conversation session cleanup.
               onGenerationInvalidated: () => Effect.void,
             });
+          }
+
+          const initialConversationState = yield* supervisor.getState;
+          conversationCompatibility =
+            initialConversationState._tag === "Ready"
+              ? initialConversationState.compatibility
+              : undefined;
+          if (terminalSupervisor !== undefined) {
+            const initialTerminalState = yield* terminalSupervisor.getState;
+            terminalCompatibility =
+              initialTerminalState._tag === "Ready"
+                ? initialTerminalState.compatibility
+                : undefined;
           }
 
           const stampedCheckProvider = checkProvider().pipe(Effect.map(stampIdentity));
@@ -564,8 +603,9 @@ export const makeCodexDriver = (
           // initial Ready/Retrying/Blocked transition is buffered even though
           // this bridge starts only after the managed snapshot exists.
           yield* Stream.fromSubscription(supervisorChanges).pipe(
-            Stream.runForEach((state) =>
-              snapshot.refresh.pipe(
+            Stream.runForEach((state) => {
+              conversationCompatibility = state._tag === "Ready" ? state.compatibility : undefined;
+              return snapshot.refresh.pipe(
                 Effect.catchCause((cause) =>
                   Effect.logWarning("Failed to refresh Codex endpoint lifecycle snapshot", {
                     providerInstanceId: instanceId,
@@ -575,10 +615,20 @@ export const makeCodexDriver = (
                 ),
                 Effect.andThen(PubSub.publish(generationChanges, toGenerationState(state))),
                 Effect.asVoid,
-              ),
-            ),
+              );
+            }),
             Effect.forkScoped,
           );
+          if (terminalChanges !== undefined) {
+            yield* Stream.fromSubscription(terminalChanges).pipe(
+              Stream.runForEach((state) =>
+                Effect.sync(() => {
+                  terminalCompatibility = state._tag === "Ready" ? state.compatibility : undefined;
+                }),
+              ),
+              Effect.forkScoped,
+            );
+          }
 
           return {
             instanceId,
@@ -591,9 +641,25 @@ export const makeCodexDriver = (
             generationLifecycle,
             snapshot,
             adapter,
-            ...(workspace === undefined ? {} : { workspace }),
-            ...(terminal === undefined ? {} : { terminal }),
-            ...(vcs === undefined ? {} : { vcs }),
+            get workspace() {
+              return workspace !== undefined &&
+                conversationCompatibility?.capabilities?.commandExec === true
+                ? workspace
+                : undefined;
+            },
+            get terminal() {
+              return terminal !== undefined &&
+                terminalCompatibility?.platformFamily === "unix" &&
+                terminalCompatibility.capabilities?.commandExecControl === true
+                ? terminal
+                : undefined;
+            },
+            get vcs() {
+              return vcs !== undefined &&
+                conversationCompatibility?.capabilities?.commandExec === true
+                ? vcs
+                : undefined;
+            },
             textGeneration,
           } satisfies ProviderInstance;
         }

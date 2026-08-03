@@ -183,6 +183,7 @@ const terminationError = (instanceId: ProviderInstanceId, label: string) =>
 const makeTerminationConnection = Effect.fn("test.makeDriverTerminationConnection")(function* (
   instanceId: ProviderInstanceId,
   generation: number,
+  capabilityOverrides: Partial<CodexEndpointConnection.CodexEndpointNativeCapabilities> = {},
 ) {
   const terminated = yield* Deferred.make<CodexEndpointConnection.CodexEndpointTerminationError>();
   return {
@@ -197,6 +198,27 @@ const makeTerminationConnection = Effect.fn("test.makeDriverTerminationConnectio
         codexHome: `/remote/${generation}/.codex`,
         platformFamily: "unix",
         platformOs: "linux",
+        versionRelation: "baseline",
+        capabilities: {
+          conversation: true,
+          conversationRead: true,
+          checkedConversationRollback: true,
+          commandExec: true,
+          commandExecControl: true,
+          methods: {
+            "thread/start": "available",
+            "thread/resume": "available",
+            "turn/start": "available",
+            "turn/interrupt": "available",
+            "thread/read": "available",
+            "thread/rollback": "available",
+            "command/exec": "available",
+            "command/exec/write": "available",
+            "command/exec/resize": "available",
+            "command/exec/terminate": "available",
+          },
+          ...capabilityOverrides,
+        },
       },
       awaitTermination: Deferred.await(terminated).pipe(Effect.flatMap(Effect.fail)),
     }),
@@ -270,7 +292,12 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         Effect.gen(function* () {
           const instanceScope = yield* Scope.make();
           const first = yield* makeTerminationConnection(INSTANCE_ID, 1);
-          const second = yield* makeTerminationConnection(INSTANCE_ID, 2);
+          const second = yield* makeTerminationConnection(INSTANCE_ID, 2, {
+            conversationRead: false,
+            checkedConversationRollback: false,
+            commandExec: false,
+            commandExecControl: false,
+          });
           const retry = yield* makeGatedRetry();
           const stopped = yield* Deferred.make<void>();
           const nativeStartEntered = yield* Deferred.make<void>();
@@ -440,6 +467,11 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           );
           assert.isDefined(instance.workspace);
           assert.isDefined(instance.vcs);
+          assert.equal(instance.adapter.capabilities.conversationRead, "ordered-turn-ids-v1");
+          assert.equal(
+            instance.adapter.capabilities.checkedConversationRollback,
+            "ordered-turn-ids-v1",
+          );
           assert.deepStrictEqual(workspaceGenerations, []);
           assert.deepStrictEqual(vcsGenerations, []);
           assert.deepStrictEqual(textGenerationGenerations, []);
@@ -533,10 +565,12 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           assert.equal((yield* instance.snapshot.getSnapshot).status, "ready");
           assert.equal((yield* instance.snapshot.getSnapshot).version, "0.2.0");
           assert.equal(stopAllCalls, 1);
-          yield* instance.workspace!.openRoot("/remote/workspace");
-          yield* instance.vcs!.openRepository("/remote/workspace");
-          assert.deepStrictEqual(workspaceGenerations, [1, 2]);
-          assert.deepStrictEqual(vcsGenerations, [1, 2]);
+          assert.isUndefined(instance.workspace);
+          assert.isUndefined(instance.vcs);
+          assert.equal(instance.adapter.capabilities.conversationRead, "unsupported");
+          assert.equal(instance.adapter.capabilities.checkedConversationRollback, "unsupported");
+          assert.deepStrictEqual(workspaceGenerations, [1]);
+          assert.deepStrictEqual(vcsGenerations, [1]);
 
           const recoveredRuntime = yield* adapterOptions!.makeRuntime!(runtimeOptions).pipe(
             Effect.result,
@@ -684,7 +718,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           _tag: "Unavailable",
           providerInstanceId: INSTANCE_ID,
         });
-        assert.isDefined(instance.terminal);
+        assert.isUndefined(instance.terminal);
         assert.deepStrictEqual(
           [yield* Queue.take(connectorStarts), yield* Queue.take(connectorStarts)].sort(),
           [1, 2],

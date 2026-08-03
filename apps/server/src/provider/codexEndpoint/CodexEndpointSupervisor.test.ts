@@ -353,7 +353,13 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
       providerInstanceId: INSTANCE_ID,
       cause: CodexErrors.CodexAppServerRequestError.overloaded(),
     });
+    const missingRequiredMethod = new CodexEndpointConnection.CodexEndpointCompatibilityError({
+      providerInstanceId: INSTANCE_ID,
+      method: "thread/start",
+      reason: "missing",
+    });
     assert.equal(classifyCodexEndpointSupervisorError(incompatible), "permanent");
+    assert.equal(classifyCodexEndpointSupervisorError(missingRequiredMethod), "permanent");
     assert.equal(classifyCodexEndpointSupervisorError(overloaded), "transient");
   });
 

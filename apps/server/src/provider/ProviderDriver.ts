@@ -88,11 +88,11 @@ export interface ProviderInstance {
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   /** Optional provider-host workspace access, permanently scoped to this instance. */
-  readonly workspace?: ProviderWorkspaceAdapter;
+  readonly workspace?: ProviderWorkspaceAdapter | undefined;
   /** Optional provider-host interactive terminal access, permanently scoped to this instance. */
-  readonly terminal?: ProviderTerminalAdapter;
+  readonly terminal?: ProviderTerminalAdapter | undefined;
   /** Optional provider-host read-only VCS access, permanently scoped to this instance. */
-  readonly vcs?: ProviderVcsAdapter;
+  readonly vcs?: ProviderVcsAdapter | undefined;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
 }
 
