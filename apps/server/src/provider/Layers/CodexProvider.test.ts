@@ -1,10 +1,61 @@
 import { assert, it } from "@effect/vitest";
+import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import type * as CodexClient from "effect-codex-app-server/client";
+import * as CodexErrors from "effect-codex-app-server/errors";
 
 import {
   applyPreferredCodexDefaultModel,
+  checkCodexEndpointProviderStatus,
   isLegacyCodexModel,
   mapCodexModelCapabilities,
 } from "./CodexProvider.ts";
+import { CodexEndpointConnection } from "../codexEndpoint/CodexEndpointConnection.ts";
+
+const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+
+type RequestCall = { readonly method: string; readonly payload: unknown };
+type RequestHandler = (
+  method: string,
+  payload: unknown,
+) => Effect.Effect<unknown, CodexErrors.CodexAppServerError>;
+
+const makeEndpointConnection = (
+  calls: RequestCall[],
+  handler: RequestHandler,
+  serverVersion = "0.146.0",
+): CodexEndpointConnection["Service"] => {
+  const request = ((method: string, payload: unknown) => {
+    calls.push({ method, payload });
+    return handler(method, payload);
+  }) as CodexClient.CodexAppServerClient["Service"]["request"];
+
+  return CodexEndpointConnection.of({
+    identity: { providerInstanceId: ProviderInstanceId.make("remote_codex") },
+    client: { request } as CodexClient.CodexAppServerClient["Service"],
+    compatibility: {
+      userAgent: `codex_cli_rs/${serverVersion}`,
+      serverVersion,
+      codexHome: "/remote/.codex",
+      platformFamily: "unix",
+      platformOs: "linux",
+    },
+    awaitTermination: Effect.never,
+  });
+};
+
+const model = (slug: string, isDefault: boolean) => ({
+  additionalSpeedTiers: [],
+  defaultReasoningEffort: "medium",
+  description: `${slug} description`,
+  displayName: slug,
+  hidden: false,
+  id: slug,
+  isDefault,
+  model: slug,
+  supportedReasoningEfforts: [],
+});
 
 it("keeps only the GPT-5.6 Codex family out of legacy models", () => {
   assert.deepStrictEqual(
@@ -136,6 +187,112 @@ it("marks the most preferred available model as default", () => {
     ],
   );
 });
+
+it.effect("builds an authenticated remote snapshot from every model page", () =>
+  Effect.gen(function* () {
+    const calls: RequestCall[] = [];
+    const connection = makeEndpointConnection(calls, (method, payload) => {
+      if (method === "account/read") {
+        return Effect.succeed({
+          account: { type: "chatgpt", email: "ada@example.com", planType: "pro" },
+          requiresOpenaiAuth: true,
+        });
+      }
+      if (method === "model/list") {
+        const cursor = (payload as { readonly cursor?: string }).cursor;
+        return cursor === "page-2"
+          ? Effect.succeed({ data: [model("gpt-5.6-terra", false)], nextCursor: null })
+          : Effect.succeed({ data: [model("gpt-5.4", true)], nextCursor: "page-2" });
+      }
+      return Effect.die(new Error(`Unexpected endpoint request: ${method}`));
+    });
+
+    const status = yield* checkCodexEndpointProviderStatus(
+      decodeCodexSettings({ customModels: ["custom-codex", "gpt-5.4"] }),
+      connection,
+    );
+
+    assert.equal(status.status, "ready");
+    assert.equal(status.version, "0.146.0");
+    assert.equal(status.auth.status, "authenticated");
+    assert.deepStrictEqual(
+      status.models.map(({ slug, isCustom, isDefault }) => ({ slug, isCustom, isDefault })),
+      [
+        { slug: "gpt-5.4", isCustom: false, isDefault: undefined },
+        { slug: "gpt-5.6-terra", isCustom: false, isDefault: true },
+        { slug: "custom-codex", isCustom: true, isDefault: undefined },
+      ],
+    );
+    assert.deepStrictEqual(status.skills, []);
+    assert.deepStrictEqual(calls, [
+      { method: "account/read", payload: {} },
+      { method: "model/list", payload: {} },
+      { method: "model/list", payload: { cursor: "page-2" } },
+    ]);
+    assert.isFalse(calls.some(({ method }) => method === "initialize" || method === "skills/list"));
+  }),
+);
+
+it.effect("short-circuits model and skills requests when remote auth is required", () =>
+  Effect.gen(function* () {
+    const calls: RequestCall[] = [];
+    const connection = makeEndpointConnection(calls, (method) =>
+      method === "account/read"
+        ? Effect.succeed({ account: null, requiresOpenaiAuth: true })
+        : Effect.die(new Error(`Unexpected endpoint request: ${method}`)),
+    );
+
+    const status = yield* checkCodexEndpointProviderStatus(
+      decodeCodexSettings({ customModels: ["custom-offline"] }),
+      connection,
+    );
+
+    assert.equal(status.status, "error");
+    assert.equal(status.auth.status, "unauthenticated");
+    assert.deepStrictEqual(
+      status.models.map(({ slug }) => slug),
+      ["custom-offline"],
+    );
+    assert.deepStrictEqual(status.skills, []);
+    assert.deepStrictEqual(calls, [{ method: "account/read", payload: {} }]);
+  }),
+);
+
+it.effect("returns an error snapshot when the initialized endpoint request fails", () =>
+  Effect.gen(function* () {
+    const calls: RequestCall[] = [];
+    const failure = new CodexErrors.CodexAppServerTransportError({
+      operation: "read-input-stream",
+      cause: new Error("endpoint disconnected"),
+    });
+    const connection = makeEndpointConnection(calls, () => Effect.fail(failure), "0.147.0");
+
+    const status = yield* checkCodexEndpointProviderStatus(decodeCodexSettings({}), connection);
+
+    assert.equal(status.status, "error");
+    assert.equal(status.installed, true);
+    assert.equal(status.version, "0.147.0");
+    assert.include(status.message, "Codex endpoint provider status request failed");
+    assert.deepStrictEqual(calls, [{ method: "account/read", payload: {} }]);
+  }),
+);
+
+it.effect("returns disabled without making endpoint requests", () =>
+  Effect.gen(function* () {
+    const calls: RequestCall[] = [];
+    const connection = makeEndpointConnection(calls, (method) =>
+      Effect.die(new Error(`Unexpected endpoint request: ${method}`)),
+    );
+
+    const status = yield* checkCodexEndpointProviderStatus(
+      decodeCodexSettings({ enabled: false }),
+      connection,
+    );
+
+    assert.equal(status.status, "disabled");
+    assert.deepStrictEqual(calls, []);
+  }),
+);
 
 it("prefers sol over terra when both are available", () => {
   const models = applyPreferredCodexDefaultModel([

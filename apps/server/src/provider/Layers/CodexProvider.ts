@@ -33,6 +33,7 @@ import {
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
+import type { CodexEndpointConnection } from "../codexEndpoint/CodexEndpointConnection.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
@@ -499,6 +500,102 @@ function accountProbeStatus(account: CodexAppServerProviderSnapshot["account"]):
 
   return { status: "ready", auth };
 }
+
+/** Builds a provider snapshot from an already initialized remote Codex endpoint. */
+export const checkCodexEndpointProviderStatus = Effect.fn("checkCodexEndpointProviderStatus")(
+  function* (
+    codexSettings: CodexSettings,
+    connection: CodexEndpointConnection["Service"],
+  ): Effect.fn.Return<ServerProviderDraft> {
+    const checkedAt = DateTime.formatIso(yield* DateTime.now);
+    const emptyModels = emptyCodexModelsFromSettings(codexSettings);
+
+    if (!codexSettings.enabled) {
+      return buildServerProvider({
+        presentation: CODEX_PRESENTATION,
+        enabled: false,
+        checkedAt,
+        models: emptyModels,
+        skills: [],
+        probe: {
+          installed: false,
+          version: null,
+          status: "warning",
+          auth: { status: "unknown" },
+          message: "Codex is disabled in T3 Code settings.",
+        },
+      });
+    }
+
+    const probeResult = yield* Effect.gen(function* () {
+      const account = yield* connection.client.request("account/read", {});
+      const models =
+        !account.account && account.requiresOpenaiAuth
+          ? emptyModels
+          : applyPreferredCodexDefaultModel(
+              appendCustomCodexModels(
+                yield* requestAllCodexModels(connection.client),
+                codexSettings.customModels,
+              ),
+            );
+
+      return { account, models };
+    }).pipe(Effect.timeoutOption(Duration.millis(AUTH_PROBE_TIMEOUT_MS)), Effect.result);
+
+    if (Result.isFailure(probeResult)) {
+      return buildServerProvider({
+        presentation: CODEX_PRESENTATION,
+        enabled: true,
+        checkedAt,
+        models: emptyModels,
+        skills: [],
+        probe: {
+          installed: true,
+          version: connection.compatibility.serverVersion ?? null,
+          status: "error",
+          auth: { status: "unknown" },
+          message: `Codex endpoint provider status request failed: ${probeResult.failure.message}.`,
+        },
+      });
+    }
+
+    if (Option.isNone(probeResult.success)) {
+      return buildServerProvider({
+        presentation: CODEX_PRESENTATION,
+        enabled: true,
+        checkedAt,
+        models: emptyModels,
+        skills: [],
+        probe: {
+          installed: true,
+          version: connection.compatibility.serverVersion ?? null,
+          status: "error",
+          auth: { status: "unknown" },
+          message: "Timed out while checking Codex endpoint provider status.",
+        },
+      });
+    }
+
+    const snapshot = probeResult.success.value;
+    const accountStatus = accountProbeStatus(snapshot.account);
+    return buildServerProvider({
+      presentation: CODEX_PRESENTATION,
+      enabled: true,
+      checkedAt,
+      models: snapshot.models,
+      // `skills/list` requires an explicit remote workspace cwd; workspace-scoped skills belong in
+      // a later project-aware endpoint snapshot.
+      skills: [],
+      probe: {
+        installed: true,
+        version: connection.compatibility.serverVersion ?? null,
+        status: accountStatus.status,
+        auth: accountStatus.auth,
+        ...(accountStatus.message ? { message: accountStatus.message } : {}),
+      },
+    });
+  },
+);
 
 export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(function* (
   codexSettings: CodexSettings,
