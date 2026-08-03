@@ -28,6 +28,7 @@ import {
   httpCompressionLayer,
 } from "./http.ts";
 import * as GatewayHealth from "./health/GatewayHealth.ts";
+import { cocoaClientV1WebSocketRouteLayer } from "./clientApi/v1/Route.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -550,6 +551,7 @@ const commandReadyRoutesLayer = Layer.mergeAll(
     assetRouteLayer,
     staticAndDevRouteLayer,
     websocketRpcRouteLayer,
+    cocoaClientV1WebSocketRouteLayer,
   ),
   McpHttpServer.layer.pipe(Layer.provide(McpSessionRegistry.layer)),
 ).pipe(

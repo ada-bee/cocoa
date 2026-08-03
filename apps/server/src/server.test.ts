@@ -32,6 +32,7 @@ import {
   WsRpcGroup,
   EditorId,
 } from "@t3tools/contracts";
+import { COCOA_CLIENT_V1_METHODS, CocoaClientV1RpcGroup } from "@t3tools/contracts/client/v1";
 import {
   computeDpopAccessTokenHash,
   computeDpopJwkThumbprint,
@@ -1002,6 +1003,15 @@ const withWsRpcClient = <A, E, R>(
   wsUrl: string,
   f: (client: WsRpcClient) => Effect.Effect<A, E, R>,
 ) => makeWsRpcClient.pipe(Effect.flatMap(f), Effect.provide(wsRpcProtocolLayer(wsUrl)));
+
+const makeCocoaClientV1RpcClient = RpcClient.make(CocoaClientV1RpcGroup);
+type CocoaClientV1RpcClient =
+  typeof makeCocoaClientV1RpcClient extends Effect.Effect<infer Client, any, any> ? Client : never;
+
+const withCocoaClientV1RpcClient = <A, E, R>(
+  wsUrl: string,
+  f: (client: CocoaClientV1RpcClient) => Effect.Effect<A, E, R>,
+) => makeCocoaClientV1RpcClient.pipe(Effect.flatMap(f), Effect.provide(wsRpcProtocolLayer(wsUrl)));
 
 const appendSessionCookieToWsUrl = (url: string, sessionCookieHeader: string) => {
   const isAbsoluteUrl = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(url);
@@ -2169,6 +2179,26 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         (yield* descriptorResponse.json) as typeof testEnvironmentDescriptor,
         testEnvironmentDescriptor,
       );
+
+      const cocoaClientV1Url = yield* getWsServerUrl("/api/client/v1/ws");
+      const cocoaClientV1Info = yield* Effect.scoped(
+        withCocoaClientV1RpcClient(cocoaClientV1Url, (client) =>
+          client[COCOA_CLIENT_V1_METHODS.info]({
+            protocolRange: { minimum: 1, maximum: 1 },
+          }),
+        ),
+      );
+      assert.equal(cocoaClientV1Info.protocolVersion, 1);
+      assert.equal(
+        cocoaClientV1Info.environment.environmentId,
+        testEnvironmentDescriptor.environmentId,
+      );
+      assert.deepEqual(cocoaClientV1Info.capabilities, [
+        "orchestration.core",
+        "orchestration.resume",
+        "orchestration.search",
+        "orchestration.diff",
+      ]);
 
       const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
       const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
