@@ -13,20 +13,26 @@ import {
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
-import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
+import { makeBaselineCheckpointIdentity } from "../../checkpointing/CheckpointIds.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
+import {
+  type TurnDispatchId,
+  type TurnDispatchJournalEntry,
+  TurnDispatchJournalRepository,
+  type TurnDispatchError,
+} from "../../persistence/Services/TurnDispatchJournal.ts";
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
@@ -41,8 +47,30 @@ import {
 import { forkParked, ServerActivation } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProjectWorkspace, type ProjectWorkspaceError } from "../../project/ProjectWorkspace.ts";
+import {
+  CheckpointCoordinator,
+  CheckpointCoordinatorBlockedError,
+} from "../Services/CheckpointCoordinator.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+const isCheckpointCoordinatorBlockedError = Schema.is(CheckpointCoordinatorBlockedError);
+
+const retryableBaselineBlockCodes = new Set([
+  "provider_disconnected",
+  "provider_protocol_error",
+  "repository_unavailable",
+  "checkpoint_prepare_failed",
+  "checkpoint_outcome_unknown",
+  "checkpoint_projection_missing",
+  "persistence_failure",
+]);
+
+const indeterminateBaselineBlockCodes = new Set([
+  "checkpoint_indeterminate",
+  "repository_binding_changed",
+  "request_digest_changed",
+  "checkpoint_receipt_invalid",
+]);
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -81,11 +109,6 @@ function mapProviderSessionStatusToOrchestrationStatus(
   }
 }
 
-const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
-  event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
-
-const HANDLED_TURN_START_KEY_MAX = 10_000;
-const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const DEFAULT_THREAD_TITLE = "New thread";
 const MAX_REGENERATION_ATTACHMENTS = 4;
@@ -250,22 +273,11 @@ const make = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
   const projectWorkspace = yield* ProjectWorkspace;
+  const checkpointCoordinator = yield* CheckpointCoordinator;
+  const turnDispatchJournal = yield* TurnDispatchJournalRepository;
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
-  const handledTurnStartKeys = yield* Cache.make<string, true>({
-    capacity: HANDLED_TURN_START_KEY_MAX,
-    timeToLive: HANDLED_TURN_START_KEY_TTL,
-    lookup: () => Effect.succeed(true),
-  });
-
-  const hasHandledTurnStartRecently = (key: string) =>
-    Cache.getOption(handledTurnStartKeys, key).pipe(
-      Effect.flatMap((cached) =>
-        Cache.set(handledTurnStartKeys, key, true).pipe(Effect.as(Option.isSome(cached))),
-      ),
-    );
-
   const threadModelSelections = new Map<string, ModelSelection>();
 
   const appendProviderFailureActivity = (input: {
@@ -281,10 +293,15 @@ const make = Effect.gen(function* () {
     readonly turnId: TurnId | null;
     readonly createdAt: string;
     readonly requestId?: string;
+    readonly commandId?: CommandId;
+    readonly activityId?: EventId;
   }) =>
     Effect.all({
-      commandId: serverCommandId("provider-failure-activity"),
-      eventId: serverEventId(),
+      commandId:
+        input.commandId === undefined
+          ? serverCommandId("provider-failure-activity")
+          : Effect.succeed(input.commandId),
+      eventId: input.activityId === undefined ? serverEventId() : Effect.succeed(input.activityId),
     }).pipe(
       Effect.flatMap(({ commandId, eventId }) =>
         orchestrationEngine.dispatch({
@@ -308,23 +325,16 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const formatFailureDetail = (cause: Cause.Cause<unknown>): string => {
-    const failReason = cause.reasons.find(Cause.isFailReason);
-    const providerError = isProviderAdapterRequestError(failReason?.error)
-      ? failReason.error
-      : undefined;
-    if (providerError) {
-      return providerError.detail;
-    }
-    return Cause.pretty(cause);
-  };
-
   const setThreadSession = (input: {
     readonly threadId: ThreadId;
     readonly session: OrchestrationSession;
     readonly createdAt: string;
+    readonly commandId?: CommandId;
   }) =>
-    serverCommandId("provider-session-set").pipe(
+    (input.commandId === undefined
+      ? serverCommandId("provider-session-set")
+      : Effect.succeed(input.commandId)
+    ).pipe(
       Effect.flatMap((commandId) =>
         orchestrationEngine.dispatch({
           type: "thread.session.set",
@@ -340,6 +350,7 @@ const make = Effect.gen(function* () {
     readonly threadId: ThreadId;
     readonly detail: string;
     readonly createdAt: string;
+    readonly commandId?: CommandId;
   }) {
     const thread = yield* resolveThread(input.threadId);
     if (!thread) {
@@ -361,6 +372,7 @@ const make = Effect.gen(function* () {
         updatedAt: input.createdAt,
       },
       createdAt: input.createdAt,
+      ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
     });
   });
 
@@ -414,6 +426,7 @@ const make = Effect.gen(function* () {
     options?: {
       readonly modelSelection?: ModelSelection;
       readonly pendingTurnStart?: boolean;
+      readonly runtimeMode?: RuntimeMode;
     },
   ) {
     const thread = yield* resolveThread(threadId);
@@ -421,7 +434,7 @@ const make = Effect.gen(function* () {
       return yield* Effect.die(new Error(`Thread '${threadId}' was not found in read model.`));
     }
 
-    const desiredRuntimeMode = thread.runtimeMode;
+    const desiredRuntimeMode = options?.runtimeMode ?? thread.runtimeMode;
     const requestedModelSelection = options?.modelSelection;
     const resolveActiveSession = (threadId: ThreadId) =>
       providerService
@@ -693,6 +706,7 @@ const make = Effect.gen(function* () {
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
+    readonly runtimeMode: RuntimeMode;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -704,6 +718,7 @@ const make = Effect.gen(function* () {
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       pendingTurnStart: true,
+      runtimeMode: input.runtimeMode,
     });
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
@@ -976,117 +991,332 @@ const make = Effect.gen(function* () {
     processThreadTitleRegenerationSafely,
   );
 
-  const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
-    event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
-  ) {
-    const key = turnStartKeyForEvent(event);
-    if (yield* hasHandledTurnStartRecently(key)) {
-      return;
-    }
-
-    const thread = yield* resolveThread(event.payload.threadId);
-    if (!thread) {
-      return;
-    }
-
-    const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
-    if (!message || message.role !== "user") {
-      yield* appendProviderFailureActivity({
-        threadId: event.payload.threadId,
+  const finalizeDurableTurnDispatchFailure = Effect.fn("finalizeDurableTurnDispatchFailure")(
+    function* (entry: TurnDispatchJournalEntry, detail: string) {
+      if (entry.finalizedSequence !== null) return;
+      const deterministicSuffix = String(entry.dispatchId);
+      yield* setThreadSessionErrorOnTurnStartFailure({
+        threadId: entry.threadId,
+        detail,
+        createdAt: entry.updatedAt,
+        commandId: CommandId.make(`server:turn-dispatch-session-error:${deterministicSuffix}`),
+      });
+      const activity = yield* appendProviderFailureActivity({
+        threadId: entry.threadId,
         kind: "provider.turn.start.failed",
-        summary: "Provider turn start failed",
-        detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
+        summary:
+          entry.state === "indeterminate"
+            ? "Provider turn start indeterminate"
+            : "Provider turn start failed",
+        detail,
         turnId: null,
-        createdAt: event.payload.createdAt,
+        createdAt: entry.updatedAt,
+        commandId: CommandId.make(`server:turn-dispatch-failure:${deterministicSuffix}`),
+        activityId: EventId.make(`turn-dispatch-failure:${deterministicSuffix}`),
+      });
+      yield* turnDispatchJournal.markFinalized({
+        dispatchId: entry.dispatchId,
+        sequence: activity.sequence,
+        updatedAt: entry.updatedAt,
+      });
+    },
+  );
+
+  const recordDurableTurnDispatchFailure = Effect.fn("recordDurableTurnDispatchFailure")(
+    function* (input: {
+      readonly entry: TurnDispatchJournalEntry;
+      readonly state: "failed" | "indeterminate";
+      readonly error: TurnDispatchError;
+      readonly detail: string;
+      readonly updatedAt: string;
+    }) {
+      const current = Option.getOrUndefined(
+        yield* turnDispatchJournal.getByDispatchId({ dispatchId: input.entry.dispatchId }),
+      );
+      if (current === undefined || current.state === "started") return;
+      if (current.state !== "failed" && current.state !== "indeterminate") {
+        if (input.state === "indeterminate") {
+          yield* turnDispatchJournal.markIndeterminate({
+            dispatchId: current.dispatchId,
+            error: input.error,
+            updatedAt: input.updatedAt,
+          });
+        } else {
+          yield* turnDispatchJournal.markFailed({
+            dispatchId: current.dispatchId,
+            error: input.error,
+            updatedAt: input.updatedAt,
+          });
+        }
+      }
+      const terminal = Option.getOrUndefined(
+        yield* turnDispatchJournal.getByDispatchId({ dispatchId: input.entry.dispatchId }),
+      );
+      if (terminal?.state === "failed" || terminal?.state === "indeterminate") {
+        yield* finalizeDurableTurnDispatchFailure(terminal, input.detail);
+      }
+    },
+  );
+
+  const reconcileProviderInFlight = Effect.fn("reconcileProviderInFlight")(function* (
+    entry: TurnDispatchJournalEntry,
+  ) {
+    const candidates = (yield* providerService.listSessions()).filter(
+      (session) => session.threadId === entry.threadId,
+    );
+    const candidate = candidates.length === 1 ? candidates[0] : undefined;
+    if (
+      candidate !== undefined &&
+      candidate.providerInstanceId === entry.providerInstanceId &&
+      candidate.status === "running" &&
+      candidate.activeTurnId !== undefined
+    ) {
+      yield* turnDispatchJournal.markStarted({
+        dispatchId: entry.dispatchId,
+        providerTurnId: candidate.activeTurnId,
+        updatedAt: entry.updatedAt,
+      });
+      return;
+    }
+    yield* recordDurableTurnDispatchFailure({
+      entry,
+      state: "indeterminate",
+      error: { code: "provider_recovery_unproven", summary: "Provider turn identity unproven" },
+      detail: "The provider turn outcome could not be proven after recovery.",
+      updatedAt: entry.updatedAt,
+    });
+  });
+
+  type TurnStartRequestedEvent = Extract<
+    ProviderIntentEvent,
+    { type: "thread.turn-start-requested" }
+  >;
+  interface TurnDispatchWork {
+    readonly entry: TurnDispatchJournalEntry;
+    /** Raw title input is intentionally available only on the hot path. */
+    readonly event?: TurnStartRequestedEvent;
+  }
+
+  const processTurnDispatch = Effect.fn("processTurnDispatch")(function* (work: TurnDispatchWork) {
+    let entry = work.entry;
+
+    if (entry.state === "started") return;
+    if (entry.state === "failed" || entry.state === "indeterminate") {
+      yield* finalizeDurableTurnDispatchFailure(
+        entry,
+        entry.error?.summary ?? "The provider turn did not start.",
+      );
+      return;
+    }
+    if (entry.state === "provider_in_flight") {
+      yield* reconcileProviderInFlight(entry);
+      return;
+    }
+    if (entry.sourceCommandId === null) {
+      yield* recordDurableTurnDispatchFailure({
+        entry,
+        state: "failed",
+        error: { code: "source_command_missing", summary: "Source command identity missing" },
+        detail: "The accepted turn request is missing its source command identity.",
+        updatedAt: entry.createdAt,
+      });
+      return;
+    }
+
+    if (entry.state === "awaiting_baseline") {
+      const gated = yield* Effect.result(
+        checkpointCoordinator.gateBaseline({
+          sourceCommandId: entry.sourceCommandId,
+          sourceEventId: entry.sourceEventId,
+          projectId: entry.projectId,
+          threadId: entry.threadId,
+          messageId: entry.messageId,
+          checkpointTurnCount: entry.checkpointTurnCount,
+          createdAt: entry.createdAt,
+        }),
+      );
+      if (Result.isFailure(gated)) {
+        const code = isCheckpointCoordinatorBlockedError(gated.failure)
+          ? gated.failure.code
+          : "persistence_failure";
+        if (retryableBaselineBlockCodes.has(code)) {
+          yield* Effect.logWarning("baseline checkpoint remains retryable", {
+            dispatchId: entry.dispatchId,
+            providerInstanceId: entry.providerInstanceId,
+            code,
+          });
+          return;
+        }
+        yield* recordDurableTurnDispatchFailure({
+          entry,
+          state: indeterminateBaselineBlockCodes.has(code) ? "indeterminate" : "failed",
+          error: { code: `baseline_${code}`, summary: "Baseline checkpoint blocked" },
+          detail: `Baseline checkpoint blocked (${code.replaceAll("_", " ")}).`,
+          updatedAt: entry.createdAt,
+        });
+        return;
+      }
+      if (gated.success._tag === "NotApplicable") {
+        yield* turnDispatchJournal.markBaselineNotApplicable({
+          dispatchId: entry.dispatchId,
+          reason:
+            gated.success.reason === "not_repository" ? "not_repository" : "capability_unavailable",
+          updatedAt: entry.createdAt,
+        });
+      } else {
+        const identity = makeBaselineCheckpointIdentity({
+          providerInstanceId: entry.providerInstanceId,
+          threadId: entry.threadId,
+          sourceCommandId: entry.sourceCommandId,
+        });
+        if (identity.logicalCheckpointId !== gated.success.logicalCheckpointId) {
+          yield* recordDurableTurnDispatchFailure({
+            entry,
+            state: "failed",
+            error: { code: "baseline_identity_mismatch", summary: "Baseline identity mismatch" },
+            detail: "The baseline checkpoint identity did not match the accepted turn.",
+            updatedAt: entry.createdAt,
+          });
+          return;
+        }
+        yield* turnDispatchJournal.markBaselineReady({
+          dispatchId: entry.dispatchId,
+          baselineLogicalCheckpointId: gated.success.logicalCheckpointId,
+          baselineOperationId: identity.operationId,
+          updatedAt: entry.createdAt,
+        });
+      }
+      entry = Option.getOrThrow(
+        yield* turnDispatchJournal.getByDispatchId({ dispatchId: entry.dispatchId }),
+      );
+    }
+
+    const thread = yield* resolveThread(entry.threadId);
+    const project = thread === undefined ? undefined : yield* resolveProject(thread.projectId);
+    if (
+      thread === undefined ||
+      project === undefined ||
+      thread.projectId !== entry.projectId ||
+      project.providerInstanceId !== entry.providerInstanceId
+    ) {
+      yield* recordDurableTurnDispatchFailure({
+        entry,
+        state: "failed",
+        error: { code: "turn_intent_unavailable", summary: "Turn intent unavailable" },
+        detail: "The accepted provider turn intent could not be reconstructed exactly.",
+        updatedAt: entry.createdAt,
+      });
+      return;
+    }
+    const message = thread.messages.find((message) => message.id === entry.messageId);
+    if (message?.role !== "user") {
+      yield* recordDurableTurnDispatchFailure({
+        entry,
+        state: "failed",
+        error: { code: "turn_message_unavailable", summary: "Turn message unavailable" },
+        detail: "The accepted user message is unavailable for provider dispatch.",
+        updatedAt: entry.createdAt,
       });
       return;
     }
 
     const isFirstUserMessageTurn =
-      thread.messages.filter((entry) => entry.role === "user").length === 1;
-    if (isFirstUserMessageTurn) {
-      const project = yield* resolveProject(thread.projectId);
-      const generationCwd = project
-        ? resolveThreadWorkspaceCwd({ thread, projects: [project] })
-        : undefined;
-      const generationInput = {
-        messageText: message.text,
-        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-        ...(event.payload.titleSeed !== undefined ? { titleSeed: event.payload.titleSeed } : {}),
-      };
-
+      thread.messages.filter((candidate) => candidate.role === "user").length === 1;
+    if (work.event !== undefined && isFirstUserMessageTurn) {
+      const generationCwd = resolveThreadWorkspaceCwd({ thread, projects: [project] });
       if (
-        project &&
         generationCwd !== undefined &&
-        canReplaceThreadTitle(thread.title, event.payload.titleSeed)
+        canReplaceThreadTitle(thread.title, work.event.payload.titleSeed)
       ) {
         yield* maybeGenerateThreadTitleForFirstTurn({
-          threadId: event.payload.threadId,
+          threadId: entry.threadId,
           cwd: generationCwd,
-          providerInstanceId: project.providerInstanceId,
-          fallbackModelSelection: thread.modelSelection,
-          ...generationInput,
-        }).pipe(Effect.forkScoped);
+          providerInstanceId: entry.providerInstanceId,
+          fallbackModelSelection: entry.modelSelection,
+          messageText: message.text,
+          ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+          ...(work.event.payload.titleSeed !== undefined
+            ? { titleSeed: work.event.payload.titleSeed }
+            : {}),
+        });
       }
     }
 
-    const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
-      if (Cause.hasInterruptsOnly(cause)) {
-        return Effect.void;
-      }
-      const detail = formatFailureDetail(cause);
-      return setThreadSessionErrorOnTurnStartFailure({
-        threadId: event.payload.threadId,
-        detail,
-        createdAt: event.payload.createdAt,
-      }).pipe(
-        Effect.flatMap(() =>
-          appendProviderFailureActivity({
-            threadId: event.payload.threadId,
-            kind: "provider.turn.start.failed",
-            summary: "Provider turn start failed",
-            detail,
-            turnId: null,
-            createdAt: event.payload.createdAt,
-          }),
-        ),
-        Effect.asVoid,
-      );
-    };
-
-    const recoverTurnStartFailure = (cause: Cause.Cause<unknown>) =>
-      handleTurnStartFailure(cause).pipe(
-        Effect.catchCause((recoveryCause) =>
-          Effect.logWarning("provider command reactor failed to recover turn start failure", {
-            eventType: event.type,
-            threadId: event.payload.threadId,
-            cause: Cause.pretty(recoveryCause),
-            originalCause: Cause.pretty(cause),
-          }),
-        ),
-      );
-
-    const sendTurnRequest = yield* buildSendTurnRequestForThread({
-      threadId: event.payload.threadId,
-      messageText: message.text,
-      ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-      ...(event.payload.modelSelection !== undefined
-        ? { modelSelection: event.payload.modelSelection }
-        : {}),
-      interactionMode: event.payload.interactionMode,
-      createdAt: event.payload.createdAt,
-    }).pipe(
-      Effect.map(Option.some),
-      Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(Option.none()))),
+    const preparedTurn = yield* Effect.result(
+      buildSendTurnRequestForThread({
+        threadId: entry.threadId,
+        messageText: message.text,
+        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+        modelSelection: entry.modelSelection,
+        interactionMode: entry.interactionMode,
+        runtimeMode: entry.runtimeMode,
+        createdAt: entry.createdAt,
+      }),
     );
-
-    if (Option.isNone(sendTurnRequest)) {
+    if (Result.isFailure(preparedTurn)) {
+      const detail = isProviderAdapterRequestError(preparedTurn.failure)
+        ? preparedTurn.failure.detail
+        : "The provider turn could not be prepared.";
+      yield* recordDurableTurnDispatchFailure({
+        entry,
+        state: "failed",
+        error: { code: "turn_prepare_failed", summary: "Provider turn preparation failed" },
+        detail,
+        updatedAt: entry.createdAt,
+      });
       return;
     }
 
-    yield* providerService
-      .sendTurn(sendTurnRequest.value)
-      .pipe(Effect.catchCause(recoverTurnStartFailure), Effect.forkScoped);
+    yield* turnDispatchJournal.markProviderInFlight({
+      dispatchId: entry.dispatchId,
+      updatedAt: entry.createdAt,
+    });
+    entry = Option.getOrThrow(
+      yield* turnDispatchJournal.getByDispatchId({ dispatchId: entry.dispatchId }),
+    );
+    const sent = yield* Effect.result(providerService.sendTurn(preparedTurn.success));
+    if (Result.isFailure(sent) || sent.success.threadId !== entry.threadId) {
+      yield* recordDurableTurnDispatchFailure({
+        entry,
+        state: "indeterminate",
+        error: { code: "provider_turn_outcome_unknown", summary: "Provider turn outcome unknown" },
+        detail: "The provider turn outcome could not be determined.",
+        updatedAt: entry.createdAt,
+      });
+      return;
+    }
+    yield* turnDispatchJournal.markStarted({
+      dispatchId: entry.dispatchId,
+      providerTurnId: sent.success.turnId,
+      updatedAt: entry.createdAt,
+    });
+  });
+
+  const processTurnDispatchSafely = (work: TurnDispatchWork) =>
+    processTurnDispatch(work).pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+        return Effect.logWarning("provider command reactor failed to process durable turn", {
+          dispatchId: work.entry.dispatchId,
+          cause: Cause.pretty(cause),
+        });
+      }),
+    );
+
+  const turnDispatchWorker = yield* makeDrainableWorker(processTurnDispatchSafely);
+
+  const processTurnStartRequested = Effect.fn("processTurnStartRequested")(function* (
+    event: TurnStartRequestedEvent,
+  ) {
+    const entry = Option.getOrUndefined(
+      yield* turnDispatchJournal.getByIntent({ sourceEventId: event.eventId }),
+    );
+    if (entry === undefined) {
+      return yield* Effect.die(
+        `Durable turn dispatch '${event.eventId}' was not accepted before publication.`,
+      );
+    }
+    yield* turnDispatchWorker.enqueue({ entry, event });
   });
 
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
@@ -1292,6 +1522,45 @@ const make = Effect.gen(function* () {
 
   const worker = yield* makeDrainableWorker(processDomainEventSafely);
 
+  const recover: ProviderCommandReactorShape["recover"] = Effect.fn(
+    "ProviderCommandReactor.recover",
+  )(function* (providerInstanceId) {
+    yield* checkpointCoordinator.recover(providerInstanceId).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("baseline checkpoint recovery remains blocked", {
+          ...(providerInstanceId === undefined ? {} : { providerInstanceId }),
+          code: error.code,
+        }),
+      ),
+    );
+    let recoveryCursor:
+      | { readonly createdAt: string; readonly dispatchId: TurnDispatchId }
+      | undefined;
+    let recoveryCount = 0;
+    while (true) {
+      const rows = yield* turnDispatchJournal
+        .listRecovery({
+          ...(providerInstanceId === undefined ? {} : { providerInstanceId }),
+          ...(recoveryCursor === undefined ? {} : { after: recoveryCursor }),
+          limit: 500,
+        })
+        .pipe(Effect.orDie);
+      recoveryCount += rows.length;
+      yield* Effect.forEach(rows, (entry) => turnDispatchWorker.enqueue({ entry }), {
+        discard: true,
+      });
+      const last = rows.at(-1);
+      if (last === undefined || rows.length < 500) break;
+      recoveryCursor = { createdAt: last.createdAt, dispatchId: last.dispatchId };
+    }
+    yield* Effect.logDebug("provider command reactor durable recovery queued").pipe(
+      Effect.annotateLogs({
+        ...(providerInstanceId === undefined ? {} : { providerInstanceId }),
+        recoveryCount,
+      }),
+    );
+  });
+
   const start: ProviderCommandReactorShape["start"] = Effect.fn("start")(function* () {
     const interruptedTitleRegenerations = yield* findInterruptedThreadTitleRegenerations().pipe(
       Effect.catchCause((cause) => {
@@ -1304,25 +1573,25 @@ const make = Effect.gen(function* () {
         ).pipe(Effect.as([]));
       }),
     );
-    const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
-      if (
-        (event.type === "thread.meta-updated" && event.payload.regenerateTitle === true) ||
-        event.type === "thread.runtime-mode-set" ||
-        event.type === "thread.turn-start-requested" ||
-        event.type === "thread.turn-interrupt-requested" ||
-        event.type === "thread.approval-response-requested" ||
-        event.type === "thread.user-input-response-requested" ||
-        event.type === "thread.session-stop-requested"
-      ) {
-        return yield* worker.enqueue(event);
-      }
+    const isProviderIntentEvent = (event: OrchestrationEvent): event is ProviderIntentEvent =>
+      (event.type === "thread.meta-updated" && event.payload.regenerateTitle === true) ||
+      event.type === "thread.runtime-mode-set" ||
+      event.type === "thread.turn-start-requested" ||
+      event.type === "thread.turn-interrupt-requested" ||
+      event.type === "thread.approval-response-requested" ||
+      event.type === "thread.user-input-response-requested" ||
+      event.type === "thread.session-stop-requested";
+    const processLiveEvent = Effect.fn("processLiveEvent")(function* (event: OrchestrationEvent) {
+      if (!isProviderIntentEvent(event)) return;
+      yield* worker.enqueue(event);
     });
 
-    yield* forkParked(Stream.runForEach(orchestrationEngine.streamDomainEvents, processEvent));
+    yield* forkParked(Stream.runForEach(orchestrationEngine.streamDomainEvents, processLiveEvent));
 
-    // The domain event stream is hot, so work pending before this reactor
-    // starts cannot be resumed. Correlated completions only clear the request
-    // captured here, leaving any newer request untouched.
+    yield* recover();
+
+    // Correlated completions only clear the request captured here, leaving any
+    // newer request untouched.
     const clearInterrupted = clearInterruptedThreadTitleRegenerations(
       interruptedTitleRegenerations,
     ).pipe(
@@ -1348,8 +1617,10 @@ const make = Effect.gen(function* () {
 
   return {
     start,
+    recover,
     drain: Effect.gen(function* () {
       yield* worker.drain;
+      yield* turnDispatchWorker.drain;
       yield* threadTitleRegenerationWorker.drain;
     }),
   } satisfies ProviderCommandReactorShape;

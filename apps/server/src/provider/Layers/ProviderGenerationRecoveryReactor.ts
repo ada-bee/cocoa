@@ -26,6 +26,7 @@ import {
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import { ProviderCommandReactor } from "../../orchestration/Services/ProviderCommandReactor.ts";
 
 const RECOVERY_CONCURRENCY = 4;
 
@@ -54,6 +55,7 @@ export const makeProviderGenerationRecoveryReactor = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry;
   const directory = yield* ProviderSessionDirectory;
   const providerService = yield* ProviderService;
+  const providerCommandReactor = yield* ProviderCommandReactor;
   const startedRef = yield* Ref.make(false);
 
   const recoverGeneration = Effect.fn("ProviderGenerationRecoveryReactor.recoverGeneration")(
@@ -109,6 +111,10 @@ export const makeProviderGenerationRecoveryReactor = Effect.gen(function* () {
           ),
         { concurrency: RECOVERY_CONCURRENCY, discard: true },
       );
+      const current = yield* lifecycle.getCurrent;
+      if (isExactReadyGeneration(current, instance.instanceId, generationId)) {
+        yield* providerCommandReactor.recover(instance.instanceId);
+      }
     },
   );
 

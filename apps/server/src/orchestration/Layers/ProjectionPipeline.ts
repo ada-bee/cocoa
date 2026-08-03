@@ -34,6 +34,10 @@ import {
   ProjectionTurnRepository,
 } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
+import {
+  TurnDispatchId,
+  TurnDispatchJournalRepository,
+} from "../../persistence/Services/TurnDispatchJournal.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionStateRepositoryLive } from "../../persistence/Layers/ProjectionState.ts";
@@ -43,6 +47,10 @@ import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/La
 import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/ProjectionThreadSessions.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
+import {
+  TurnDispatchJournalRepositoryLive,
+  turnDispatchTitleSeedSha256,
+} from "../../persistence/Layers/TurnDispatchJournal.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   OrchestrationProjectionPipeline,
@@ -480,6 +488,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
     const projectionTurnRepository = yield* ProjectionTurnRepository;
     const projectionPendingApprovalRepository = yield* ProjectionPendingApprovalRepository;
+    const turnDispatchJournal = yield* TurnDispatchJournalRepository;
 
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -1095,6 +1104,25 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
         case "thread.turn-start-requested": {
+          yield* turnDispatchJournal
+            .getOrCreateInTransaction({
+              dispatchId: TurnDispatchId.make(String(event.eventId)),
+              sourceEventId: event.eventId,
+              sourceCommandId: event.commandId,
+              threadId: event.payload.threadId,
+              projectId: event.payload.projectId,
+              providerInstanceId: event.payload.providerInstanceId,
+              messageId: event.payload.messageId,
+              checkpointTurnCount: event.payload.checkpointTurnCount,
+              modelSelection: event.payload.modelSelection,
+              runtimeMode: event.payload.runtimeMode,
+              interactionMode: event.payload.interactionMode,
+              titleSeedSha256: turnDispatchTitleSeedSha256(event.payload.titleSeed),
+              createdAt: event.payload.createdAt,
+            })
+            .pipe(
+              Effect.mapError(toPersistenceSqlError("ProjectionPipeline.acceptTurnDispatchIntent")),
+            );
           yield* projectionTurnRepository.replacePendingTurnStart({
             threadId: event.payload.threadId,
             messageId: event.payload.messageId,
@@ -1712,4 +1740,5 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   Layer.provideMerge(ProjectionTurnRepositoryLive),
   Layer.provideMerge(ProjectionPendingApprovalRepositoryLive),
   Layer.provideMerge(ProjectionStateRepositoryLive),
+  Layer.provideMerge(TurnDispatchJournalRepositoryLive),
 );

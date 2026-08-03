@@ -104,13 +104,20 @@ export const TurnDispatchError = strict(
 );
 export type TurnDispatchError = typeof TurnDispatchError.Type;
 
-const ProviderTurnId = TrimmedNonEmptyString.check(
+export const TurnDispatchProviderTurnId = TrimmedNonEmptyString.check(
   Schema.isMaxLength(256),
-  Schema.makeFilter(
-    (value) =>
-      (!value.includes("/") && !value.includes("\\")) || "Provider turn ids must be path-free.",
-  ),
+  Schema.makeFilter((value) => {
+    const hasControl = Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x1f || code === 0x7f;
+    });
+    return (
+      (!hasControl && !value.includes("/") && !value.includes("\\")) ||
+      "Provider turn ids must be single-line and path-free."
+    );
+  }),
 );
+export type TurnDispatchProviderTurnId = typeof TurnDispatchProviderTurnId.Type;
 
 export const TurnDispatchJournalEntry = strict(
   Schema.Struct({
@@ -122,7 +129,8 @@ export const TurnDispatchJournalEntry = strict(
     projectId: ProjectId,
     providerInstanceId: ProviderInstanceId,
     messageId: MessageId,
-    modelSelection: Schema.NullOr(BoundedModelSelection),
+    checkpointTurnCount: NonNegativeInt,
+    modelSelection: BoundedModelSelection,
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
     titleSeedSha256: Schema.NullOr(CodexCheckpointHelperSha256),
@@ -130,7 +138,7 @@ export const TurnDispatchJournalEntry = strict(
     baselineOperationId: Schema.NullOr(CodexCheckpointHelperOperationId),
     baselineNotApplicableReason: Schema.NullOr(TurnDispatchBaselineNotApplicableReason),
     state: TurnDispatchState,
-    providerTurnId: Schema.NullOr(ProviderTurnId),
+    providerTurnId: Schema.NullOr(TurnDispatchProviderTurnId),
     error: Schema.NullOr(TurnDispatchError),
     createdAt: IsoDateTime,
     updatedAt: IsoDateTime,
@@ -230,7 +238,8 @@ export const PrepareTurnDispatchInput = strict(
     projectId: ProjectId,
     providerInstanceId: ProviderInstanceId,
     messageId: MessageId,
-    modelSelection: Schema.NullOr(BoundedModelSelection),
+    checkpointTurnCount: NonNegativeInt,
+    modelSelection: BoundedModelSelection,
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
     /** Hash of the exact title seed; the possibly user-authored title is not journaled. */
@@ -245,6 +254,11 @@ export type GetTurnDispatchInput = typeof GetTurnDispatchInput.Type;
 
 export const GetTurnDispatchByIntentInput = strict(Schema.Struct({ sourceEventId: EventId }));
 export type GetTurnDispatchByIntentInput = typeof GetTurnDispatchByIntentInput.Type;
+
+export const GetStartedTurnDispatchInput = strict(
+  Schema.Struct({ threadId: ThreadId, providerTurnId: TurnDispatchProviderTurnId }),
+);
+export type GetStartedTurnDispatchInput = typeof GetStartedTurnDispatchInput.Type;
 
 const TransitionInput = strict(
   Schema.Struct({ dispatchId: TurnDispatchId, updatedAt: IsoDateTime }),
@@ -273,7 +287,7 @@ export type MarkTurnDispatchProviderInFlightInput =
   typeof MarkTurnDispatchProviderInFlightInput.Type;
 
 export const MarkTurnDispatchStartedInput = strict(
-  Schema.Struct({ ...TransitionInput.fields, providerTurnId: ProviderTurnId }),
+  Schema.Struct({ ...TransitionInput.fields, providerTurnId: TurnDispatchProviderTurnId }),
 );
 export type MarkTurnDispatchStartedInput = typeof MarkTurnDispatchStartedInput.Type;
 
@@ -364,11 +378,22 @@ export interface TurnDispatchJournalRepositoryShape {
   readonly getOrCreate: (
     input: PrepareTurnDispatchInput,
   ) => Effect.Effect<GetOrCreateTurnDispatchResult, TurnDispatchJournalRepositoryError>;
+  /**
+   * Same immutable insert as getOrCreate, but participates in the caller's
+   * ambient SqlClient transaction. Reserved for projection/event acceptance.
+   */
+  readonly getOrCreateInTransaction: (
+    input: PrepareTurnDispatchInput,
+  ) => Effect.Effect<GetOrCreateTurnDispatchResult, TurnDispatchJournalRepositoryError>;
   readonly getByDispatchId: (
     input: GetTurnDispatchInput,
   ) => Effect.Effect<Option.Option<TurnDispatchJournalEntry>, TurnDispatchJournalRepositoryError>;
   readonly getByIntent: (
     input: GetTurnDispatchByIntentInput,
+  ) => Effect.Effect<Option.Option<TurnDispatchJournalEntry>, TurnDispatchJournalRepositoryError>;
+  /** Exact terminal lookup for post-turn checkpoint correlation. */
+  readonly getStartedByProviderTurn: (
+    input: GetStartedTurnDispatchInput,
   ) => Effect.Effect<Option.Option<TurnDispatchJournalEntry>, TurnDispatchJournalRepositoryError>;
   readonly markBaselineReady: (
     input: MarkTurnDispatchBaselineReadyInput,

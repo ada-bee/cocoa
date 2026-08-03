@@ -25,6 +25,7 @@ import {
   TurnDispatchId,
   TurnDispatchIntentConflictError,
   TurnDispatchJournalRepository,
+  TurnDispatchProviderTurnId,
   TurnDispatchTransitionError,
 } from "../Services/TurnDispatchJournal.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
@@ -44,6 +45,14 @@ const baselineCheckpointId = CodexCheckpointHelperCheckpointId.make(
 const baselineOperationId = CodexCheckpointHelperOperationId.make(
   "22222222-2222-4222-8222-222222222222",
 );
+
+it.effect("rejects provider turn ids containing control characters", () =>
+  Effect.gen(function* () {
+    const decode = Schema.decodeUnknownEffect(TurnDispatchProviderTurnId);
+    assert.isTrue(Schema.isSchemaError(yield* Effect.flip(decode("provider-turn\nforged"))));
+    assert.isTrue(Schema.isSchemaError(yield* Effect.flip(decode("provider-turn\u007fforged"))));
+  }),
+);
 const isIntentConflict = Schema.is(TurnDispatchIntentConflictError);
 const isTransitionError = Schema.is(TurnDispatchTransitionError);
 
@@ -58,6 +67,7 @@ const prepareInput = (
   projectId,
   providerInstanceId,
   messageId: MessageId.make(`message:${suffix}`),
+  checkpointTurnCount: 0,
   modelSelection: {
     instanceId: providerInstanceId,
     model: "gpt-5.6-sol",
@@ -177,6 +187,23 @@ repositoryLayer("TurnDispatchJournalRepository", (it) => {
       );
       assert.equal(started.state, "started");
       assert.equal(started.finalizedSequence, 0);
+      assert.equal(
+        Option.getOrThrow(
+          yield* repository.getStartedByProviderTurn({
+            threadId: input.threadId,
+            providerTurnId: "provider-turn-1",
+          }),
+        ).dispatchId,
+        input.dispatchId,
+      );
+      assert.isTrue(
+        Option.isNone(
+          yield* repository.getStartedByProviderTurn({
+            threadId: input.threadId,
+            providerTurnId: "provider-turn-missing",
+          }),
+        ),
+      );
       assert.deepStrictEqual(
         yield* repository.listRecovery({ providerInstanceId: startedProvider, limit: 100 }),
         [],

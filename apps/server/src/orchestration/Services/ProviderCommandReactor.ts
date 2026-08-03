@@ -7,6 +7,7 @@
  * @module ProviderCommandReactor
  */
 import * as Context from "effect/Context";
+import type { ProviderInstanceId } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 
@@ -24,6 +25,9 @@ export interface ProviderCommandReactorShape {
    * processing.
    */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+
+  /** Keyset-pages durable dispatch rows and retries only pre-provider work. */
+  readonly recover: (providerInstanceId?: ProviderInstanceId) => Effect.Effect<void>;
 
   /**
    * Resolves when the internal processing queue is empty and idle.

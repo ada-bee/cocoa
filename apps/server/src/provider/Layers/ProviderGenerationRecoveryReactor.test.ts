@@ -29,6 +29,10 @@ import {
   type ProviderSessionDirectoryShape,
 } from "../Services/ProviderSessionDirectory.ts";
 import { makeProviderGenerationRecoveryReactor } from "./ProviderGenerationRecoveryReactor.ts";
+import {
+  ProviderCommandReactor,
+  type ProviderCommandReactorShape,
+} from "../../orchestration/Services/ProviderCommandReactor.ts";
 
 const INSTANCE_ID = ProviderInstanceId.make("codex_remote");
 const OTHER_INSTANCE_ID = ProviderInstanceId.make("codex_other");
@@ -135,6 +139,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
   const bindings = yield* Ref.make(input.bindings);
   const registryChanges = yield* PubSub.unbounded<void>();
   const recoveries = yield* Queue.unbounded<RecoveryInput>();
+  const dispatchRecoveries = yield* Queue.unbounded<ProviderInstanceId | undefined>();
   const registryReleased = yield* Deferred.make<void>();
 
   const registry: ProviderInstanceRegistryShape = {
@@ -163,10 +168,17 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
     recoverSession: (request: RecoveryInput) =>
       Queue.offer(recoveries, request).pipe(Effect.andThen(recover(request))),
   } as ProviderServiceShape;
+  const providerCommandReactor: ProviderCommandReactorShape = {
+    start: () => Effect.die("unused"),
+    recover: (providerInstanceId) =>
+      Queue.offer(dispatchRecoveries, providerInstanceId).pipe(Effect.asVoid),
+    drain: Effect.void,
+  };
   const reactor = yield* makeProviderGenerationRecoveryReactor.pipe(
     Effect.provideService(ProviderInstanceRegistry, registry),
     Effect.provideService(ProviderSessionDirectory, directory),
     Effect.provideService(ProviderService, providerService),
+    Effect.provideService(ProviderCommandReactor, providerCommandReactor),
   );
   const ownerScope = yield* Scope.make("sequential");
 
@@ -174,6 +186,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
     reactor,
     ownerScope,
     recoveries,
+    dispatchRecoveries,
     registryReleased,
     setBindings: (next: ReadonlyArray<ProviderRuntimeBindingWithMetadata>) =>
       Ref.set(bindings, next),
@@ -200,6 +213,7 @@ it("recovers an initially ready generation", () =>
         threadId: expected.threadId,
         providerInstanceId: INSTANCE_ID,
       });
+      assert.equal(yield* Queue.take(harness.dispatchRecoveries), INSTANCE_ID);
       yield* Scope.close(harness.ownerScope, Exit.void);
     }),
   ));

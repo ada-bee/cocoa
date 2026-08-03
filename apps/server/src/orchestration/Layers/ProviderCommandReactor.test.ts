@@ -38,6 +38,8 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { TurnDispatchJournalRepositoryLive } from "../../persistence/Layers/TurnDispatchJournal.ts";
+import { TurnDispatchJournalRepository } from "../../persistence/Services/TurnDispatchJournal.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -67,6 +69,11 @@ import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../../git/GitWorkflowService.ts";
+import {
+  CheckpointCoordinator,
+  CheckpointCoordinatorBlockedError,
+  type CheckpointCoordinatorShape,
+} from "../Services/CheckpointCoordinator.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
@@ -97,7 +104,10 @@ async function waitFor(
 
 describe("ProviderCommandReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderCommandReactor | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderCommandReactor
+    | ProjectionSnapshotQuery
+    | TurnDispatchJournalRepository,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -158,6 +168,11 @@ describe("ProviderCommandReactor", () => {
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
     readonly validateWorkspaceRoot?: ProjectWorkspace.ProjectWorkspaceShape["validateRoot"];
+    readonly gateBaseline?: CheckpointCoordinatorShape["gateBaseline"];
+    readonly initialSessions?: ReadonlyArray<ProviderSession>;
+    readonly sendTurn?: ProviderServiceShape["sendTurn"];
+    readonly turnStartBeforeReactor?: boolean;
+    readonly preStartProviderInFlight?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -167,7 +182,7 @@ describe("ProviderCommandReactor", () => {
     createdStateDirs.add(stateDir);
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
     let nextSessionIndex = 1;
-    const runtimeSessions: Array<ProviderSession> = [];
+    const runtimeSessions: Array<ProviderSession> = [...(input?.initialSessions ?? [])];
     const modelSelection = input?.threadModelSelection ?? {
       instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5-codex",
@@ -235,11 +250,13 @@ describe("ProviderCommandReactor", () => {
         ),
       );
     });
-    const sendTurn = vi.fn((_: unknown) =>
-      Effect.succeed({
-        threadId: ThreadId.make("thread-1"),
-        turnId: asTurnId("turn-1"),
-      }),
+    const sendTurn = vi.fn(
+      input?.sendTurn ??
+        ((_: unknown) =>
+          Effect.succeed({
+            threadId: ThreadId.make("thread-1"),
+            turnId: asTurnId("turn-1"),
+          })),
     );
     const interruptTurn = vi.fn((_: unknown) => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
@@ -347,6 +364,8 @@ describe("ProviderCommandReactor", () => {
         });
       },
       rollbackConversation: () => unsupported(),
+      inspectConversation: () => unsupported(),
+      rollbackConversationChecked: () => unsupported(),
       get streamEvents() {
         return Stream.fromPubSub(runtimeEventPubSub);
       },
@@ -421,6 +440,20 @@ describe("ProviderCommandReactor", () => {
           validateRoot: validateWorkspaceRoot,
         }),
       ),
+      Layer.provideMerge(
+        Layer.succeed(
+          CheckpointCoordinator,
+          CheckpointCoordinator.of({
+            gateBaseline:
+              input?.gateBaseline ??
+              (() => Effect.succeed({ _tag: "NotApplicable", reason: "not_repository" })),
+            recover: () => Effect.succeed([]),
+          }),
+        ),
+      ),
+      Layer.provideMerge(
+        TurnDispatchJournalRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory)),
+      ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -429,6 +462,9 @@ describe("ProviderCommandReactor", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
+    const turnDispatchJournal = await runtime.runPromise(
+      Effect.service(TurnDispatchJournalRepository),
+    );
     const runEffect = <A, E>(effect: Effect.Effect<A, E>) => runtime!.runPromise(effect);
 
     await Effect.runPromise(
@@ -494,6 +530,53 @@ describe("ProviderCommandReactor", () => {
       );
     }
 
+    let preStartTurnEventId: EventId | undefined;
+    if (input?.turnStartBeforeReactor === true) {
+      const dispatched = await Effect.runPromise(
+        engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-before-reactor"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("message-turn-start-before-reactor"),
+            role: "user",
+            text: "recover this durable dispatch",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+      const events = Array.from(
+        await Effect.runPromise(Stream.runCollect(engine.readEvents(dispatched.sequence - 2, 2))),
+      );
+      const turnStart = events.find((event) => event.type === "thread.turn-start-requested");
+      if (turnStart?.type !== "thread.turn-start-requested") {
+        throw new Error("Pre-start turn request event was not persisted.");
+      }
+      preStartTurnEventId = turnStart.eventId;
+      if (input.preStartProviderInFlight === true) {
+        const dispatch = await Effect.runPromise(
+          turnDispatchJournal.getByIntent({ sourceEventId: turnStart.eventId }),
+        );
+        if (dispatch._tag !== "Some") throw new Error("Pre-start journal row was not projected.");
+        await Effect.runPromise(
+          turnDispatchJournal.markBaselineNotApplicable({
+            dispatchId: dispatch.value.dispatchId,
+            reason: "not_repository",
+            updatedAt: now,
+          }),
+        );
+        await Effect.runPromise(
+          turnDispatchJournal.markProviderInFlight({
+            dispatchId: dispatch.value.dispatchId,
+            updatedAt: now,
+          }),
+        );
+      }
+    }
+
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(reactor.drain);
@@ -513,9 +596,13 @@ describe("ProviderCommandReactor", () => {
       generateBranchName,
       generateThreadTitle,
       runtimeSessions,
+      preStartTurnEventId,
       stateDir,
       drain,
+      recover: reactor.recover,
       runEffect,
+      getTurnDispatch: (sourceEventId: EventId) =>
+        runEffect(turnDispatchJournal.getByIntent({ sourceEventId })),
       get titleRegenerationCompletionDispatchAttempts() {
         return titleRegenerationCompletionDispatchAttempts;
       },
@@ -526,7 +613,7 @@ describe("ProviderCommandReactor", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
+    const dispatched = await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.make("cmd-turn-start-1"),
@@ -565,6 +652,140 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+    const events = Array.from(
+      await Effect.runPromise(
+        Stream.runCollect(harness.engine.readEvents(dispatched.sequence - 2, 2)),
+      ),
+    );
+    const turnStart = events.find((event) => event.type === "thread.turn-start-requested");
+    expect(turnStart?.type).toBe("thread.turn-start-requested");
+    if (turnStart?.type === "thread.turn-start-requested") {
+      const dispatch = await harness.getTurnDispatch(turnStart.eventId);
+      expect(dispatch._tag).toBe("Some");
+      if (dispatch._tag === "Some") {
+        expect(dispatch.value).toMatchObject({
+          state: "started",
+          providerTurnId: "turn-1",
+          baselineNotApplicableReason: "not_repository",
+          projectId: "project-1",
+          providerInstanceId: "codex",
+          checkpointTurnCount: 0,
+          modelSelection: {
+            instanceId: "codex",
+            model: "gpt-5-codex",
+          },
+          finalizedSequence: 0,
+        });
+      }
+    }
+  });
+
+  it("retries a disconnected baseline after provider recovery without sending early", async () => {
+    let providerReady = false;
+    const harness = await createHarness({
+      gateBaseline: (intent) =>
+        providerReady
+          ? Effect.succeed({ _tag: "NotApplicable", reason: "not_repository" })
+          : Effect.fail(
+              new CheckpointCoordinatorBlockedError({
+                code: "provider_disconnected",
+                projectId: intent.projectId,
+                threadId: intent.threadId,
+              }),
+            ),
+    });
+    const dispatched = await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-baseline-blocked"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("message-baseline-blocked"),
+          role: "user",
+          text: "must not reach provider",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    const events = Array.from(
+      await Effect.runPromise(
+        Stream.runCollect(harness.engine.readEvents(dispatched.sequence - 2, 2)),
+      ),
+    );
+    const turnStart = events.find((event) => event.type === "thread.turn-start-requested");
+    if (turnStart?.type !== "thread.turn-start-requested") {
+      throw new Error("Turn start event was not persisted.");
+    }
+    const dispatch = await harness.getTurnDispatch(turnStart.eventId);
+    expect(dispatch._tag).toBe("Some");
+    if (dispatch._tag === "Some") {
+      expect(dispatch.value.state).toBe("awaiting_baseline");
+      expect(dispatch.value.finalizedSequence).toBeNull();
+    }
+    providerReady = true;
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
+    await harness.drain();
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+    const recovered = await harness.getTurnDispatch(turnStart.eventId);
+    expect(recovered._tag).toBe("Some");
+    if (recovered._tag === "Some") expect(recovered.value.state).toBe("started");
+  });
+
+  it("adopts only an exact authoritative provider turn during bounded startup recovery", async () => {
+    const harness = await createHarness({
+      turnStartBeforeReactor: true,
+      preStartProviderInFlight: true,
+      initialSessions: [
+        {
+          provider: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          runtimeMode: "approval-required",
+          model: "gpt-5-codex",
+          activeTurnId: asTurnId("turn-recovered"),
+          resumeCursor: { opaque: "resume-recovered" },
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    if (harness.preStartTurnEventId === undefined) {
+      throw new Error("Missing pre-start event id.");
+    }
+    const dispatch = await harness.getTurnDispatch(harness.preStartTurnEventId);
+    expect(dispatch._tag).toBe("Some");
+    if (dispatch._tag === "Some") {
+      expect(dispatch.value.state).toBe("started");
+      expect(dispatch.value.providerTurnId).toBe("turn-recovered");
+    }
+  });
+
+  it("marks an unprovable in-flight startup dispatch indeterminate without replay", async () => {
+    const harness = await createHarness({
+      turnStartBeforeReactor: true,
+      preStartProviderInFlight: true,
+      initialSessions: [],
+    });
+    await harness.drain();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    if (harness.preStartTurnEventId === undefined) {
+      throw new Error("Missing pre-start event id.");
+    }
+    const dispatch = await harness.getTurnDispatch(harness.preStartTurnEventId);
+    expect(dispatch._tag).toBe("Some");
+    if (dispatch._tag === "Some") {
+      expect(dispatch.value.state).toBe("indeterminate");
+      expect(dispatch.value.error?.code).toBe("provider_recovery_unproven");
+      expect(dispatch.value.finalizedSequence).not.toBeNull();
+    }
   });
 
   it.each([

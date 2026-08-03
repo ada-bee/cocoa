@@ -33,6 +33,7 @@ import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { ProviderCheckpointOperationRepositoryLive } from "./persistence/Layers/ProviderCheckpointOperations.ts";
+import { TurnDispatchJournalRepositoryLive } from "./persistence/Layers/TurnDispatchJournal.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -68,6 +69,7 @@ import {
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
+import { CheckpointCoordinatorLive } from "./orchestration/Layers/CheckpointCoordinator.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
@@ -219,16 +221,34 @@ const PlatformServicesLive = Layer.unwrap(
   }),
 );
 
-const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<ROut, E, RIn>) =>
-  Layer.empty.pipe(
+const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<ROut, E, RIn>) => {
+  const turnDispatchJournalLayer = TurnDispatchJournalRepositoryLive;
+  const checkpointCoordinatorLayer = CheckpointCoordinatorLive.pipe(
+    Layer.provide(ProjectRepositoryLayerLive),
+    Layer.provide(OrchestrationLayerLive),
+    Layer.provide(
+      ProviderCheckpointOperationRepositoryLive.pipe(Layer.provide(PersistenceLayerLive)),
+    ),
+  );
+  const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(
+    Layer.provide(turnDispatchJournalLayer),
+    Layer.provide(checkpointCoordinatorLayer),
+  );
+  const providerGenerationRecoveryLayer = ProviderGenerationRecoveryReactorLive.pipe(
+    Layer.provide(providerCommandReactorLayer),
+  );
+  return Layer.empty.pipe(
     Layer.provideMerge(orchestrationReactorLayer),
     Layer.provideMerge(ProviderRuntimeIngestionLive),
-    Layer.provideMerge(ProviderGenerationRecoveryReactorLive),
-    Layer.provideMerge(ProviderCommandReactorLive),
+    Layer.provideMerge(providerGenerationRecoveryLayer),
+    Layer.provideMerge(turnDispatchJournalLayer),
+    Layer.provideMerge(checkpointCoordinatorLayer),
+    Layer.provideMerge(providerCommandReactorLayer),
     Layer.provideMerge(CheckpointReactorLive),
     Layer.provideMerge(ThreadDeletionReactorLive),
     Layer.provideMerge(RuntimeReceiptBusLive),
   );
+};
 
 const LegacyOrchestrationReactorLive = OrchestrationReactorLive.pipe(
   Layer.provide(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),

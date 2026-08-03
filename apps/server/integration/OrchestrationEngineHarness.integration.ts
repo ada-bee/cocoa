@@ -55,6 +55,8 @@ import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/L
 import { RuntimeReceiptBusTest } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
+import { TurnDispatchJournalRepositoryLive } from "../src/persistence/Layers/TurnDispatchJournal.ts";
+import { CheckpointCoordinator } from "../src/orchestration/Services/CheckpointCoordinator.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
 import {
   OrchestrationEngineService,
@@ -334,6 +336,16 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(gitWorkflowLayer),
       Layer.provideMerge(textGenerationLayer),
       Layer.provideMerge(serverSettingsLayer),
+      Layer.provideMerge(TurnDispatchJournalRepositoryLive),
+      Layer.provideMerge(
+        Layer.succeed(
+          CheckpointCoordinator,
+          CheckpointCoordinator.of({
+            gateBaseline: () => Effect.succeed({ _tag: "NotApplicable", reason: "not_repository" }),
+            recover: () => Effect.succeed([]),
+          }),
+        ),
+      ),
     );
     const checkpointReactorLayer = CheckpointReactorLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),

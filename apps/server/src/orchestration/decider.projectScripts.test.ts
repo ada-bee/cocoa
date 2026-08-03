@@ -345,6 +345,9 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
       expect(turnStartEvent.payload).toMatchObject({
         threadId: ThreadId.make("thread-1"),
         messageId: asMessageId("message-user-1"),
+        projectId: asProjectId("project-1"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        checkpointTurnCount: 0,
         modelSelection: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.3-codex", [
           { id: "reasoningEffort", value: "high" },
           { id: "fastMode", value: true },

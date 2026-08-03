@@ -15,10 +15,11 @@ export default Effect.gen(function* () {
       project_id TEXT NOT NULL,
       provider_instance_id TEXT NOT NULL,
       message_id TEXT NOT NULL,
-      model_selection_json TEXT
+      checkpoint_turn_count INTEGER NOT NULL CHECK (checkpoint_turn_count >= 0),
+      model_selection_json TEXT NOT NULL
         CHECK (
-          model_selection_json IS NULL
-          OR (json_valid(model_selection_json) AND length(CAST(model_selection_json AS BLOB)) <= 8192)
+          json_valid(model_selection_json)
+          AND length(CAST(model_selection_json AS BLOB)) <= 8192
         ),
       runtime_mode TEXT NOT NULL
         CHECK (runtime_mode IN ('approval-required', 'auto-accept-edits', 'auto', 'full-access')),
@@ -50,6 +51,7 @@ export default Effect.gen(function* () {
             AND provider_turn_id = trim(provider_turn_id)
             AND instr(provider_turn_id, '/') = 0
             AND instr(provider_turn_id, char(92)) = 0
+            AND provider_turn_id NOT GLOB ('*[' || char(1) || '-' || char(31) || char(127) || ']*')
           )
         ),
       error_json TEXT
@@ -123,5 +125,11 @@ export default Effect.gen(function* () {
   yield* sql`
     CREATE INDEX turn_dispatch_journal_thread
     ON turn_dispatch_journal(provider_instance_id, project_id, thread_id, created_at, dispatch_id)
+  `;
+
+  yield* sql`
+    CREATE UNIQUE INDEX turn_dispatch_journal_started_provider_turn
+    ON turn_dispatch_journal(thread_id, provider_turn_id)
+    WHERE state = 'started'
   `;
 });

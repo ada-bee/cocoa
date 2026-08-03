@@ -27,6 +27,7 @@ import type { SqlError } from "effect/unstable/sql/SqlError";
 import { PersistenceDecodeError, PersistenceSqlError } from "../Errors.ts";
 import {
   GetTurnDispatchInput,
+  GetStartedTurnDispatchInput,
   MarkTurnDispatchBaselineNotApplicableInput,
   MarkTurnDispatchBaselineReadyInput,
   MarkTurnDispatchFailedInput,
@@ -89,7 +90,8 @@ const DbRow = strict(
     projectId: ProjectId,
     providerInstanceId: ProviderInstanceId,
     messageId: MessageId,
-    modelSelection: Schema.NullOr(BoundedModelSelectionDb),
+    checkpointTurnCount: NonNegativeInt,
+    modelSelection: BoundedModelSelectionDb,
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
     titleSeedSha256: Schema.NullOr(CodexCheckpointHelperSha256),
@@ -107,7 +109,7 @@ const DbRow = strict(
 
 const PrepareDbInput = PrepareTurnDispatchInput.mapFields(
   Struct.assign({
-    modelSelection: Schema.NullOr(BoundedModelSelectionDb),
+    modelSelection: BoundedModelSelectionDb,
   }),
 );
 
@@ -147,6 +149,7 @@ const make = Effect.gen(function* () {
       INSERT INTO turn_dispatch_journal (
         dispatch_id, intent_key, source_event_id, source_command_id,
         thread_id, project_id, provider_instance_id, message_id,
+        checkpoint_turn_count,
         model_selection_json, runtime_mode, interaction_mode, title_seed_sha256,
         baseline_logical_checkpoint_id, baseline_operation_id,
         baseline_not_applicable_reason, state, provider_turn_id, error_json,
@@ -154,6 +157,7 @@ const make = Effect.gen(function* () {
       ) VALUES (
         ${input.dispatchId}, ${input.intentKey}, ${input.sourceEventId}, ${input.sourceCommandId},
         ${input.threadId}, ${input.projectId}, ${input.providerInstanceId}, ${input.messageId},
+        ${input.checkpointTurnCount},
         ${input.modelSelection}, ${input.runtimeMode}, ${input.interactionMode}, ${input.titleSeedSha256},
         NULL, NULL, NULL, 'awaiting_baseline', NULL, NULL,
         ${input.createdAt}, ${input.createdAt}, NULL
@@ -168,6 +172,7 @@ const make = Effect.gen(function* () {
       source_event_id AS "sourceEventId", source_command_id AS "sourceCommandId",
       thread_id AS "threadId", project_id AS "projectId",
       provider_instance_id AS "providerInstanceId", message_id AS "messageId",
+      checkpoint_turn_count AS "checkpointTurnCount",
       model_selection_json AS "modelSelection", runtime_mode AS "runtimeMode",
       interaction_mode AS "interactionMode", title_seed_sha256 AS "titleSeedSha256",
       baseline_logical_checkpoint_id AS "baselineLogicalCheckpointId",
@@ -189,6 +194,16 @@ const make = Effect.gen(function* () {
     Request: Schema.Struct({ intentKey: CodexCheckpointHelperSha256 }),
     Result: DbRow,
     execute: ({ intentKey }) => sql.unsafe(`${selectEntry} WHERE intent_key = ?`, [intentKey]),
+  });
+
+  const findStartedByProviderTurn = SqlSchema.findOneOption({
+    Request: GetStartedTurnDispatchInput,
+    Result: DbRow,
+    execute: ({ threadId, providerTurnId }) =>
+      sql.unsafe(
+        `${selectEntry} WHERE thread_id = ? AND provider_turn_id = ? AND state = 'started'`,
+        [threadId, providerTurnId],
+      ),
   });
 
   const getChanges = SqlSchema.findOne({
@@ -328,49 +343,52 @@ const make = Effect.gen(function* () {
       .withTransaction(transition(dispatchId, requestedState, update))
       .pipe(Effect.mapError(mapError));
 
-  const getOrCreate: TurnDispatchJournalRepositoryShape["getOrCreate"] = (input) => {
+  const getOrCreateUnwrapped = (input: PrepareTurnDispatchInput) => {
     const intentKey = turnDispatchIntentKey(input.sourceEventId);
-    return sql
-      .withTransaction(
-        Effect.gen(function* () {
-          yield* insertAwaiting({ ...input, intentKey });
-          const { changes } = yield* getChanges(undefined);
-          const inserted = changes === 1;
-          const existing = yield* findByIntentKey({ intentKey });
-          if (Option.isNone(existing)) {
-            const collision = yield* findByDispatchId({ dispatchId: input.dispatchId });
-            return yield* new TurnDispatchIntentConflictError({
-              intentKey,
-              existingDispatchId: Option.match(collision, {
-                onNone: () => input.dispatchId,
-                onSome: (row) => row.dispatchId,
-              }),
-            });
-          }
-          const entry = yield* materialize(existing.value);
-          const sameImmutable =
-            entry.sourceEventId === input.sourceEventId &&
-            entry.sourceCommandId === input.sourceCommandId &&
-            entry.threadId === input.threadId &&
-            entry.projectId === input.projectId &&
-            entry.providerInstanceId === input.providerInstanceId &&
-            entry.messageId === input.messageId &&
-            stableJson(entry.modelSelection) === stableJson(input.modelSelection) &&
-            entry.runtimeMode === input.runtimeMode &&
-            entry.interactionMode === input.interactionMode &&
-            entry.titleSeedSha256 === input.titleSeedSha256 &&
-            entry.createdAt === input.createdAt;
-          if (!sameImmutable) {
-            return yield* new TurnDispatchIntentConflictError({
-              intentKey,
-              existingDispatchId: entry.dispatchId,
-            });
-          }
-          return { entry, inserted };
-        }),
-      )
-      .pipe(Effect.mapError(mapError));
+    return Effect.gen(function* () {
+      yield* insertAwaiting({ ...input, intentKey });
+      const { changes } = yield* getChanges(undefined);
+      const inserted = changes === 1;
+      const existing = yield* findByIntentKey({ intentKey });
+      if (Option.isNone(existing)) {
+        const collision = yield* findByDispatchId({ dispatchId: input.dispatchId });
+        return yield* new TurnDispatchIntentConflictError({
+          intentKey,
+          existingDispatchId: Option.match(collision, {
+            onNone: () => input.dispatchId,
+            onSome: (row) => row.dispatchId,
+          }),
+        });
+      }
+      const entry = yield* materialize(existing.value);
+      const sameImmutable =
+        entry.sourceEventId === input.sourceEventId &&
+        entry.sourceCommandId === input.sourceCommandId &&
+        entry.threadId === input.threadId &&
+        entry.projectId === input.projectId &&
+        entry.providerInstanceId === input.providerInstanceId &&
+        entry.messageId === input.messageId &&
+        entry.checkpointTurnCount === input.checkpointTurnCount &&
+        stableJson(entry.modelSelection) === stableJson(input.modelSelection) &&
+        entry.runtimeMode === input.runtimeMode &&
+        entry.interactionMode === input.interactionMode &&
+        entry.titleSeedSha256 === input.titleSeedSha256 &&
+        entry.createdAt === input.createdAt;
+      if (!sameImmutable) {
+        return yield* new TurnDispatchIntentConflictError({
+          intentKey,
+          existingDispatchId: entry.dispatchId,
+        });
+      }
+      return { entry, inserted };
+    });
   };
+
+  const getOrCreate: TurnDispatchJournalRepositoryShape["getOrCreate"] = (input) =>
+    sql.withTransaction(getOrCreateUnwrapped(input)).pipe(Effect.mapError(mapError));
+  const getOrCreateInTransaction: TurnDispatchJournalRepositoryShape["getOrCreateInTransaction"] = (
+    input,
+  ) => getOrCreateUnwrapped(input).pipe(Effect.mapError(mapError));
 
   const getByDispatchId: TurnDispatchJournalRepositoryShape["getByDispatchId"] = (input) =>
     findByDispatchId(input).pipe(
@@ -385,6 +403,19 @@ const make = Effect.gen(function* () {
 
   const getByIntent: TurnDispatchJournalRepositoryShape["getByIntent"] = (input) =>
     findByIntentKey({ intentKey: turnDispatchIntentKey(input.sourceEventId) }).pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.succeed(Option.none()),
+          onSome: (row) => materialize(row).pipe(Effect.map(Option.some)),
+        }),
+      ),
+      Effect.mapError(mapError),
+    );
+
+  const getStartedByProviderTurn: TurnDispatchJournalRepositoryShape["getStartedByProviderTurn"] = (
+    input,
+  ) =>
+    findStartedByProviderTurn(input).pipe(
       Effect.flatMap(
         Option.match({
           onNone: () => Effect.succeed(Option.none()),
@@ -474,8 +505,10 @@ const make = Effect.gen(function* () {
 
   return {
     getOrCreate,
+    getOrCreateInTransaction,
     getByDispatchId,
     getByIntent,
+    getStartedByProviderTurn,
     markBaselineReady,
     markBaselineNotApplicable,
     markProviderInFlight,

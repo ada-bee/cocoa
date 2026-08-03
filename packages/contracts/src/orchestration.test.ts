@@ -817,20 +817,27 @@ it.effect("accepts a source proposed plan reference in thread.turn.start", () =>
   }),
 );
 
-it.effect(
-  "decodes thread.turn-start-requested defaults for provider, runtime mode, and interaction mode",
-  () =>
-    Effect.gen(function* () {
-      const parsed = yield* decodeThreadTurnStartRequestedPayload({
-        threadId: "thread-1",
-        messageId: "msg-1",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      });
-      assert.strictEqual(parsed.modelSelection, undefined);
-      assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
-      assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
-      assert.strictEqual(parsed.sourceProposedPlan, undefined);
-    }),
+it.effect("decodes thread.turn-start-requested immutable routing and mode defaults", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartRequestedPayload({
+      threadId: "thread-1",
+      messageId: "msg-1",
+      projectId: "project-1",
+      providerInstanceId: "codex",
+      checkpointTurnCount: 0,
+      modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.projectId, "project-1");
+    assert.strictEqual(parsed.providerInstanceId, "codex");
+    assert.deepStrictEqual(parsed.modelSelection, {
+      instanceId: "codex",
+      model: "gpt-5-codex",
+    });
+    assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
+    assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+    assert.strictEqual(parsed.sourceProposedPlan, undefined);
+  }),
 );
 
 it.effect("decodes thread.turn-start-requested source proposed plan metadata when present", () =>
@@ -838,6 +845,10 @@ it.effect("decodes thread.turn-start-requested source proposed plan metadata whe
     const parsed = yield* decodeThreadTurnStartRequestedPayload({
       threadId: "thread-2",
       messageId: "msg-2",
+      projectId: "project-1",
+      providerInstanceId: "codex",
+      checkpointTurnCount: 0,
+      modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
       sourceProposedPlan: {
         threadId: "thread-1",
         planId: "plan-1",
@@ -856,6 +867,10 @@ it.effect("decodes thread.turn-start-requested title seed when present", () =>
     const parsed = yield* decodeThreadTurnStartRequestedPayload({
       threadId: "thread-2",
       messageId: "msg-2",
+      projectId: "project-1",
+      providerInstanceId: "codex",
+      checkpointTurnCount: 0,
+      modelSelection: { instanceId: "codex", model: "gpt-5-codex" },
       titleSeed: "Investigate reconnect failures",
       createdAt: "2026-01-01T00:00:00.000Z",
     });

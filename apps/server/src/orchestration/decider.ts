@@ -793,12 +793,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const project = yield* requireProject({
+        readModel,
+        command,
+        projectId: targetThread.projectId,
+      });
       if (command.modelSelection !== undefined) {
-        const project = yield* requireProject({
-          readModel,
-          command,
-          projectId: targetThread.projectId,
-        });
         yield* requireModelSelectionProviderMatchesProject({
           command,
           projectId: project.id,
@@ -862,9 +862,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           messageId: command.message.messageId,
-          ...(command.modelSelection !== undefined
-            ? { modelSelection: command.modelSelection }
-            : {}),
+          projectId: targetThread.projectId,
+          providerInstanceId: project.providerInstanceId,
+          checkpointTurnCount: targetThread.checkpoints.at(-1)?.checkpointTurnCount ?? 0,
+          modelSelection: command.modelSelection ?? targetThread.modelSelection,
           ...(command.titleSeed !== undefined ? { titleSeed: command.titleSeed } : {}),
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,

@@ -1087,7 +1087,10 @@ export const ThreadMessageSentPayload = Schema.Struct({
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
-  modelSelection: Schema.optional(ModelSelection),
+  projectId: ProjectId,
+  providerInstanceId: ProviderInstanceId,
+  checkpointTurnCount: NonNegativeInt,
+  modelSelection: ModelSelection,
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
   interactionMode: ProviderInteractionMode.pipe(

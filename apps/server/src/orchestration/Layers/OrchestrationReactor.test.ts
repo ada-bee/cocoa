@@ -52,6 +52,7 @@ describe("OrchestrationReactor", () => {
               started.push("provider-command-reactor");
               return Effect.void;
             },
+            recover: () => Effect.void,
             drain: Effect.void,
           }),
         ),
