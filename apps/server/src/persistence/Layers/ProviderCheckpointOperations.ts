@@ -14,6 +14,7 @@ import {
   CompleteProviderCheckpointOperationInput,
   FailProviderCheckpointOperationInput,
   FinalizeProviderCheckpointCaptureInput,
+  FinalizeProviderCheckpointRestoreInput,
   GetProviderCheckpointOperationInput,
   GetProviderCheckpointOperationByIntentInput,
   GetProviderNativeCheckpointInput,
@@ -24,7 +25,9 @@ import {
   MarkProviderCheckpointInFlightInput,
   MarkProviderCheckpointFinalizedInput,
   MarkProviderCheckpointOutcomeUnknownInput,
+  MarkRestoreObserveNotFoundInput,
   PrepareProviderCheckpointOperationInput,
+  ResetDeleteAfterObserveNotFoundInput,
   ProviderCheckpointCanonicalRequest,
   ProviderCheckpointOperation,
   ProviderCheckpointOperationError,
@@ -85,6 +88,7 @@ const OperationDbRow = strict(
     repositoryFingerprint: CodexCheckpointHelperSha256,
     repositoryObjectFormat: CodexCheckpointHelperObjectFormat,
     providerGeneration: Schema.NullOr(NonNegativeInt),
+    safeRetryCount: NonNegativeInt,
     state: CheckpointOperationState,
     receipt: Schema.NullOr(Schema.fromJsonString(CodexCheckpointHelperMutationReceipt)),
     result: Schema.NullOr(Schema.fromJsonString(MutationResult)),
@@ -307,6 +311,32 @@ const make = Effect.gen(function* () {
     `,
   });
 
+  const updateRestoreObserveNotFound = SqlSchema.void({
+    Request: MarkRestoreObserveNotFoundInput.mapFields(
+      Struct.assign({ error: Schema.fromJsonString(ProviderCheckpointOperationError) }),
+    ),
+    execute: (input) => sql`
+      UPDATE checkpoint_operations
+      SET state = 'indeterminate', receipt_json = NULL, result_json = NULL,
+          error_json = ${input.error}, updated_at = ${input.updatedAt}
+      WHERE operation_id = ${input.operationId}
+        AND operation_kind = 'restore'
+        AND state IN ('in_flight', 'outcome_unknown')
+    `,
+  });
+
+  const resetDeleteAfterObserveNotFoundDb = SqlSchema.void({
+    Request: ResetDeleteAfterObserveNotFoundInput,
+    execute: (input) => sql`
+      UPDATE checkpoint_operations
+      SET state = 'prepared', receipt_json = NULL, result_json = NULL, error_json = NULL,
+          safe_retry_count = safe_retry_count + 1, updated_at = ${input.updatedAt}
+      WHERE operation_id = ${input.operationId}
+        AND operation_kind = 'delete'
+        AND state = 'outcome_unknown'
+    `,
+  });
+
   const updateFinalized = SqlSchema.void({
     Request: MarkProviderCheckpointFinalizedInput,
     execute: (input) => sql`
@@ -359,7 +389,8 @@ const make = Effect.gen(function* () {
       canonical_request_json AS "canonicalRequest", request_sha256 AS "requestSha256",
       repository_fingerprint AS "repositoryFingerprint",
       repository_object_format AS "repositoryObjectFormat",
-      provider_generation AS "providerGeneration", state, receipt_json AS "receipt",
+      provider_generation AS "providerGeneration", safe_retry_count AS "safeRetryCount",
+      state, receipt_json AS "receipt",
       result_json AS "result", error_json AS "error", prepared_at AS "preparedAt",
       updated_at AS "updatedAt", finalized_sequence AS "finalizedSequence"
     FROM checkpoint_operations
@@ -435,6 +466,7 @@ const make = Effect.gen(function* () {
         objectFormat: row.repositoryObjectFormat,
       },
       providerGeneration: row.providerGeneration,
+      safeRetryCount: row.safeRetryCount,
       state: row.state,
       receipt: row.receipt,
       result: row.result,
@@ -692,6 +724,81 @@ const make = Effect.gen(function* () {
       ),
       Effect.mapError(mapError),
     );
+  const finalizeRestore: ProviderCheckpointOperationRepositoryShape["finalizeRestore"] = (input) =>
+    Schema.decodeUnknownEffect(FinalizeProviderCheckpointRestoreInput)(input).pipe(
+      Effect.flatMap((validated) =>
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const operationRow = yield* findOperation({
+              operationId: validated.completion.operationId,
+            });
+            const checkpointRow = yield* findCheckpoint({
+              logicalCheckpointId: validated.targetCheckpoint.logicalCheckpointId,
+            });
+            if (Option.isNone(operationRow) || Option.isNone(checkpointRow)) {
+              return yield* new ProviderCheckpointCompletionConflictError({
+                operationId: validated.completion.operationId,
+              });
+            }
+
+            const operation = yield* materializeOperation(operationRow.value);
+            const checkpoint = yield* materializeCheckpoint(checkpointRow.value);
+            const request = operation.canonicalRequest;
+            const result = validated.completion.result;
+            const receipt = result?.operation === "restore" ? result.receipt : null;
+            const target = validated.targetCheckpoint;
+            const exact =
+              operation.operationKind === "restore" &&
+              request.operation === "restore" &&
+              request.operationId === operation.operationId &&
+              request.checkpointId === operation.logicalCheckpointId &&
+              request.expectedCheckpointOid === target.checkpointOid &&
+              operation.logicalCheckpointId === target.logicalCheckpointId &&
+              operation.targets.length === 1 &&
+              operation.targets[0]?.logicalCheckpointId === target.logicalCheckpointId &&
+              operation.targets[0]?.expectedCheckpointOid === target.checkpointOid &&
+              operation.providerInstanceId === target.providerInstanceId &&
+              operation.projectId === target.projectId &&
+              operation.threadId === target.threadId &&
+              operation.repository.fingerprint === target.repository.fingerprint &&
+              operation.repository.objectFormat === target.repository.objectFormat &&
+              checkpoint.logicalCheckpointId === target.logicalCheckpointId &&
+              checkpoint.providerInstanceId === target.providerInstanceId &&
+              checkpoint.projectId === target.projectId &&
+              checkpoint.threadId === target.threadId &&
+              checkpoint.turnId === target.turnId &&
+              checkpoint.repository.fingerprint === target.repository.fingerprint &&
+              checkpoint.repository.objectFormat === target.repository.objectFormat &&
+              checkpoint.captureOperationId === target.captureOperationId &&
+              checkpoint.checkpointRef === target.checkpointRef &&
+              checkpoint.checkpointOid === target.checkpointOid &&
+              checkpoint.treeOid === target.treeOid &&
+              checkpoint.receiptRef === target.receiptRef &&
+              checkpoint.receiptObjectOid === target.receiptObjectOid &&
+              receipt !== null &&
+              receipt.operationId === operation.operationId &&
+              receipt.requestSha256 === operation.requestSha256 &&
+              receipt.repositoryFingerprint === operation.repository.fingerprint &&
+              receipt.checkpointId === target.logicalCheckpointId &&
+              receipt.checkpointRef === target.checkpointRef &&
+              receipt.checkpointOid === target.checkpointOid &&
+              (validated.completion.receipt === null ||
+                stableJson(validated.completion.receipt) === stableJson(receipt));
+            if (!exact) {
+              return yield* new ProviderCheckpointCompletionConflictError({
+                operationId: validated.completion.operationId,
+              });
+            }
+            yield* transition(
+              validated.completion.operationId,
+              "completed",
+              updateCompleted(validated.completion),
+            );
+          }),
+        ),
+      ),
+      Effect.mapError(mapError),
+    );
   const finalizeDelete: ProviderCheckpointOperationRepositoryShape["finalizeDelete"] = (input) =>
     sql
       .withTransaction(
@@ -736,6 +843,12 @@ const make = Effect.gen(function* () {
   const markIndeterminate: ProviderCheckpointOperationRepositoryShape["markIndeterminate"] = (
     input,
   ) => runTransition(input.operationId, "indeterminate", updateIndeterminate(input));
+  const markRestoreObserveNotFound: ProviderCheckpointOperationRepositoryShape["markRestoreObserveNotFound"] =
+    (input) =>
+      runTransition(input.operationId, "indeterminate", updateRestoreObserveNotFound(input));
+  const resetDeleteAfterObserveNotFound: ProviderCheckpointOperationRepositoryShape["resetDeleteAfterObserveNotFound"] =
+    (input) =>
+      runTransition(input.operationId, "prepared", resetDeleteAfterObserveNotFoundDb(input));
   const markFinalized: ProviderCheckpointOperationRepositoryShape["markFinalized"] = (input) =>
     sql
       .withTransaction(
@@ -850,9 +963,12 @@ const make = Effect.gen(function* () {
     markOutcomeUnknown,
     complete,
     finalizeCapture,
+    finalizeRestore,
     finalizeDelete,
     fail,
     markIndeterminate,
+    markRestoreObserveNotFound,
+    resetDeleteAfterObserveNotFound,
     markFinalized,
     getByOperationId,
     listPendingRecovery,

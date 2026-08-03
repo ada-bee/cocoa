@@ -44,6 +44,9 @@ const operationI = "13131313-1313-4131-8131-131313131313";
 const operationJ = "16161616-1616-4161-8161-161616161616";
 const operationK = "18181818-1818-4181-8181-181818181818";
 const operationL = "19191919-1919-4191-8191-191919191919";
+const operationM = "23232323-2323-4232-8232-232323232323";
+const operationN = "24242424-2424-4242-8242-242424242424";
+const operationO = "25252525-2525-4252-8252-252525252525";
 const checkpointA = "22222222-2222-4222-8222-222222222222";
 const checkpointB = "44444444-4444-4444-8444-444444444444";
 const checkpointC = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -89,6 +92,36 @@ const captureInput = (
     sourceEventId: EventId.make(`event:${operationId}`),
     messageId: MessageId.make(`message:${operationId}`),
     checkpointTurnCount: 0,
+  },
+});
+
+const restoreInput = (
+  operationId: string,
+  logicalCheckpointId: string,
+  expectedCheckpointOid: string,
+): PrepareProviderCheckpointOperationInput => ({
+  operationId,
+  logicalCheckpointId,
+  providerInstanceId,
+  projectId,
+  threadId,
+  turnId: null,
+  operationKind: "restore",
+  canonicalRequest: {
+    operation: "restore",
+    operationId,
+    checkpointId: logicalCheckpointId,
+    expectedCheckpointOid,
+  },
+  requestSha256: fingerprint,
+  repository: { fingerprint, objectFormat: "sha1" },
+  providerGeneration: 7,
+  preparedAt: now,
+  intentContext: {
+    kind: "restore",
+    sourceRevertEventId: EventId.make(`event:${operationId}`),
+    sourceCommandId: null,
+    requestedTurnCount: 1,
   },
 });
 
@@ -345,6 +378,148 @@ repositoryLayer("ProviderCheckpointOperationRepository", (it) => {
       assert.isTrue(
         Option.isNone(yield* repository.getLogicalCheckpoint({ logicalCheckpointId: checkpointD })),
       );
+    }),
+  );
+
+  it.effect("atomically validates every restore receipt and retained target binding", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProviderCheckpointOperationRepository;
+      const target = checkpointProjection(operationO, checkpointB, checkpointOidB);
+      yield* repository.prepare(captureInput(operationO, checkpointB));
+      yield* repository.markInFlight({ operationId: operationO, updatedAt: later });
+      yield* repository.finalizeCapture({
+        completion: {
+          operationId: operationO,
+          updatedAt: later,
+          receipt: null,
+          result: captureResult(operationO, checkpointB, checkpointOidB),
+        },
+        checkpoint: target,
+      });
+      yield* repository.prepare(restoreInput(operationB, checkpointB, checkpointOidB));
+      yield* repository.markInFlight({ operationId: operationB, updatedAt: later });
+
+      const receipt = {
+        operation: "restore" as const,
+        operationId: operationB,
+        receiptRef: `refs/cocoa/checkpoint-receipts/v1/${operationB}`,
+        requestSha256: fingerprint,
+        repositoryFingerprint: fingerprint,
+        status: "succeeded" as const,
+        checkpointId: checkpointB,
+        checkpointRef: target.checkpointRef,
+        checkpointOid: checkpointOidB,
+      };
+      const mismatchedReceipt = { ...receipt, requestSha256: "f".repeat(64) };
+      const conflict = yield* Effect.flip(
+        repository.finalizeRestore({
+          completion: {
+            operationId: operationB,
+            updatedAt: later,
+            receipt: mismatchedReceipt,
+            result: {
+              operation: "restore",
+              receipt: mismatchedReceipt,
+              receiptObjectOid,
+            },
+          },
+          targetCheckpoint: target,
+        }),
+      );
+      assert.isTrue(Schema.is(ProviderCheckpointCompletionConflictError)(conflict));
+      assert.equal(
+        Option.getOrThrow(yield* repository.getByOperationId({ operationId: operationB })).state,
+        "in_flight",
+      );
+
+      yield* repository.finalizeRestore({
+        completion: {
+          operationId: operationB,
+          updatedAt: later,
+          receipt,
+          result: { operation: "restore", receipt, receiptObjectOid },
+        },
+        targetCheckpoint: target,
+      });
+      assert.equal(
+        Option.getOrThrow(yield* repository.getByOperationId({ operationId: operationB })).state,
+        "completed",
+      );
+    }),
+  );
+
+  it.effect("retries only delete after observe:not_found and never retries restore", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProviderCheckpointOperationRepository;
+      const deleteInput: PrepareProviderCheckpointOperationInput = {
+        operationId: operationM,
+        logicalCheckpointId: checkpointA,
+        providerInstanceId,
+        projectId,
+        threadId,
+        turnId: null,
+        operationKind: "delete",
+        canonicalRequest: {
+          operation: "delete",
+          operationId: operationM,
+          checkpoints: [{ checkpointId: checkpointA, expectedCheckpointOid: checkpointOidA }],
+        },
+        requestSha256: fingerprint,
+        repository: { fingerprint, objectFormat: "sha1" },
+        providerGeneration: 7,
+        preparedAt: now,
+        intentContext: {
+          kind: "delete",
+          sourceRevertEventId: EventId.make("event:safe-delete-retry"),
+          sourceCommandId: null,
+          requestedTurnCount: 1,
+          batchOrdinal: 0,
+        },
+      };
+      yield* repository.prepare(deleteInput);
+      yield* repository.markInFlight({ operationId: operationM, updatedAt: later });
+      yield* repository.markOutcomeUnknown({
+        operationId: operationM,
+        updatedAt: later,
+        error: { code: "disconnected" },
+      });
+      yield* repository.resetDeleteAfterObserveNotFound({
+        operationId: operationM,
+        updatedAt: later,
+      });
+      const retriedDelete = Option.getOrThrow(
+        yield* repository.getByOperationId({ operationId: operationM }),
+      );
+      assert.equal(retriedDelete.state, "prepared");
+      assert.equal(retriedDelete.safeRetryCount, 1);
+      assert.isNull(retriedDelete.error);
+      assert.equal(retriedDelete.requestSha256, deleteInput.requestSha256);
+      assert.deepStrictEqual(retriedDelete.canonicalRequest, deleteInput.canonicalRequest);
+
+      yield* repository.prepare(restoreInput(operationN, checkpointA, checkpointOidA));
+      yield* repository.markInFlight({ operationId: operationN, updatedAt: later });
+      yield* repository.markOutcomeUnknown({
+        operationId: operationN,
+        updatedAt: later,
+        error: { code: "disconnected" },
+      });
+      const unsafeRetry = yield* Effect.flip(
+        repository.resetDeleteAfterObserveNotFound({
+          operationId: operationN,
+          updatedAt: later,
+        }),
+      );
+      assert.isTrue(Schema.is(ProviderCheckpointOperationTransitionError)(unsafeRetry));
+      yield* repository.markRestoreObserveNotFound({
+        operationId: operationN,
+        updatedAt: later,
+        error: { code: "receipt_not_found" },
+      });
+      const restore = Option.getOrThrow(
+        yield* repository.getByOperationId({ operationId: operationN }),
+      );
+      assert.equal(restore.state, "indeterminate");
+      assert.equal(restore.safeRetryCount, 0);
     }),
   );
 

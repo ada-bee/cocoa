@@ -191,6 +191,8 @@ export const ProviderCheckpointOperation = strict(
     requestSha256: CodexCheckpointHelperSha256,
     repository: ProviderCheckpointRepositoryDiagnostic,
     providerGeneration: Schema.NullOr(NonNegativeInt),
+    /** Auditable count of delete retries authorized only after observe:not_found. */
+    safeRetryCount: NonNegativeInt,
     state: CheckpointOperationState,
     receipt: Schema.NullOr(CodexCheckpointHelperMutationReceipt),
     result: Schema.NullOr(ProviderCheckpointMutationResult),
@@ -402,6 +404,14 @@ export const IndeterminateProviderCheckpointOperationInput = FailProviderCheckpo
 export type IndeterminateProviderCheckpointOperationInput =
   typeof IndeterminateProviderCheckpointOperationInput.Type;
 
+/** Restore observe:not_found is terminally ambiguous and must never be replayed. */
+export const MarkRestoreObserveNotFoundInput = IndeterminateProviderCheckpointOperationInput;
+export type MarkRestoreObserveNotFoundInput = typeof MarkRestoreObserveNotFoundInput.Type;
+
+/** Delete is the sole mutation safe to retry after an exact observe:not_found result. */
+export const ResetDeleteAfterObserveNotFoundInput = TransitionInput;
+export type ResetDeleteAfterObserveNotFoundInput = typeof ResetDeleteAfterObserveNotFoundInput.Type;
+
 export const MarkProviderCheckpointFinalizedInput = strict(
   Schema.Struct({
     ...TransitionInput.fields,
@@ -469,6 +479,35 @@ export const FinalizeProviderCheckpointCaptureInput = strict(
 );
 export type FinalizeProviderCheckpointCaptureInput =
   typeof FinalizeProviderCheckpointCaptureInput.Type;
+
+export const FinalizeProviderCheckpointRestoreInput = strict(
+  Schema.Struct({
+    completion: CompleteProviderCheckpointOperationInput,
+    targetCheckpoint: ProviderNativeCheckpoint,
+  }).check(
+    Schema.makeFilter((input) => {
+      const result = input.completion.result;
+      if (result?.operation !== "restore") return "Restore finalization requires a restore result.";
+      const receipt = result.receipt;
+      return (
+        (input.completion.operationId === receipt.operationId &&
+          receipt.checkpointId === input.targetCheckpoint.logicalCheckpointId &&
+          receipt.checkpointRef === input.targetCheckpoint.checkpointRef &&
+          receipt.checkpointOid === input.targetCheckpoint.checkpointOid &&
+          receipt.repositoryFingerprint === input.targetCheckpoint.repository.fingerprint &&
+          (input.completion.receipt === null ||
+            (input.completion.receipt.operation === "restore" &&
+              input.completion.receipt.operationId === receipt.operationId &&
+              input.completion.receipt.receiptRef === receipt.receiptRef &&
+              input.completion.receipt.requestSha256 === receipt.requestSha256 &&
+              input.completion.receipt.repositoryFingerprint === receipt.repositoryFingerprint))) ||
+        "Restore result and retained native checkpoint metadata must match exactly."
+      );
+    }),
+  ),
+);
+export type FinalizeProviderCheckpointRestoreInput =
+  typeof FinalizeProviderCheckpointRestoreInput.Type;
 
 export const GetProviderNativeCheckpointInput = strict(
   Schema.Struct({ logicalCheckpointId: CodexCheckpointHelperCheckpointId }),
@@ -598,6 +637,10 @@ export interface ProviderCheckpointOperationRepositoryShape {
   readonly finalizeCapture: (
     input: FinalizeProviderCheckpointCaptureInput,
   ) => Effect.Effect<void, ProviderCheckpointOperationRepositoryError>;
+  /** Completes restore only after atomically validating its durable request and retained target. */
+  readonly finalizeRestore: (
+    input: FinalizeProviderCheckpointRestoreInput,
+  ) => Effect.Effect<void, ProviderCheckpointOperationRepositoryError>;
   /** Atomically completes delete and removes every target projection. */
   readonly finalizeDelete: (
     input: CompleteProviderCheckpointOperationInput,
@@ -607,6 +650,14 @@ export interface ProviderCheckpointOperationRepositoryShape {
   ) => Effect.Effect<void, ProviderCheckpointOperationRepositoryError>;
   readonly markIndeterminate: (
     input: IndeterminateProviderCheckpointOperationInput,
+  ) => Effect.Effect<void, ProviderCheckpointOperationRepositoryError>;
+  /** Records restore observe:not_found as indeterminate; there is intentionally no restore retry. */
+  readonly markRestoreObserveNotFound: (
+    input: MarkRestoreObserveNotFoundInput,
+  ) => Effect.Effect<void, ProviderCheckpointOperationRepositoryError>;
+  /** Resets only an outcome-unknown delete after observe:not_found and increments its audit counter. */
+  readonly resetDeleteAfterObserveNotFound: (
+    input: ResetDeleteAfterObserveNotFoundInput,
   ) => Effect.Effect<void, ProviderCheckpointOperationRepositoryError>;
   /** Marks terminal native state as durably reflected in domain events/projections. */
   readonly markFinalized: (

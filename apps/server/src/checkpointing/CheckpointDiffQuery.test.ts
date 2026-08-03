@@ -168,6 +168,7 @@ const testLayer = (options: TestOptions = {}) => {
       requestSha256: fingerprint,
       repository: checkpoint.repository,
       providerGeneration: 1,
+      safeRetryCount: 0,
       state: "completed",
       receipt,
       result: { operation: "capture", receipt, receiptObjectOid: checkpoint.receiptObjectOid },

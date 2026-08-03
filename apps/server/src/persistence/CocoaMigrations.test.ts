@@ -21,6 +21,8 @@ layer("Cocoa migrations", (it) => {
       assert.deepStrictEqual(cocoaMigrationManifest, [
         [1, "ProviderCheckpointOperations"],
         [2, "TurnDispatchJournal"],
+        [3, "PostTurnCheckpointIntents"],
+        [4, "CheckpointRevertSagas"],
       ]);
 
       yield* sql`
@@ -43,6 +45,8 @@ layer("Cocoa migrations", (it) => {
       assert.deepStrictEqual(cocoa, [
         { migrationId: 1, name: "ProviderCheckpointOperations" },
         { migrationId: 2, name: "TurnDispatchJournal" },
+        { migrationId: 3, name: "PostTurnCheckpointIntents" },
+        { migrationId: 4, name: "CheckpointRevertSagas" },
       ]);
     }),
   );
