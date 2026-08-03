@@ -11,15 +11,13 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import * as MobileSecureStorage from "../persistence/mobile-secure-storage";
-import { migrateLegacyConnectionCatalog } from "./migration";
-
-export const CONNECTION_CATALOG_KEY = "t3code.connection-catalog.v1";
-export const LEGACY_CONNECTIONS_KEY = "t3code.connections";
+export const CONNECTION_CATALOG_KEY = "cocoa.connection-catalog.v1";
 
 function catalogError(operation: string, cause: unknown) {
+  void cause;
   return new ConnectionTransientError({
     reason: "remote-unavailable",
-    detail: `Could not ${operation} the local connection catalog: ${String(cause)}`,
+    detail: `Could not ${operation} the local connection catalog.`,
   });
 }
 
@@ -59,27 +57,6 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
   const state = yield* Ref.make<Option.Option<ConnectionCatalogDocumentType>>(Option.none());
   const lock = yield* Semaphore.make(1);
 
-  const loadLegacyCatalog = Effect.fn("mobile.connectionStorage.loadLegacyCatalog")(function* () {
-    const legacyRaw = yield* getItem(LEGACY_CONNECTIONS_KEY);
-    const catalog =
-      legacyRaw === null || legacyRaw.trim() === ""
-        ? EMPTY_CONNECTION_CATALOG_DOCUMENT
-        : yield* migrateLegacyConnectionCatalog(legacyRaw).pipe(
-            Effect.mapError((cause) => catalogError("migrate", cause)),
-            Effect.catch((error) =>
-              Effect.logWarning("Discarding corrupt legacy mobile connections", error).pipe(
-                Effect.as(EMPTY_CONNECTION_CATALOG_DOCUMENT),
-              ),
-            ),
-          );
-    if (legacyRaw !== null && legacyRaw.trim() !== "") {
-      const encoded = yield* encodeCatalog(catalog);
-      yield* setItem(CONNECTION_CATALOG_KEY, encoded);
-      yield* deleteItem(LEGACY_CONNECTIONS_KEY);
-    }
-    return catalog;
-  });
-
   const loadUnlocked = Effect.fn("mobile.connectionStorage.loadCatalog")(function* () {
     const cached = yield* Ref.get(state);
     if (Option.isSome(cached)) {
@@ -89,15 +66,15 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
     let catalog: ConnectionCatalogDocumentType;
     if (raw !== null && raw.trim() !== "") {
       catalog = yield* decodeCatalog(raw).pipe(
-        Effect.catch((error) =>
-          Effect.logWarning("Discarding corrupt mobile connection catalog", error).pipe(
+        Effect.catch(() =>
+          Effect.logWarning("Discarding corrupt mobile connection catalog.").pipe(
             Effect.andThen(deleteItem(CONNECTION_CATALOG_KEY)),
-            Effect.andThen(loadLegacyCatalog()),
+            Effect.as(EMPTY_CONNECTION_CATALOG_DOCUMENT),
           ),
         ),
       );
     } else {
-      catalog = yield* loadLegacyCatalog();
+      catalog = EMPTY_CONNECTION_CATALOG_DOCUMENT;
     }
     yield* Ref.set(state, Option.some(catalog));
     return catalog;

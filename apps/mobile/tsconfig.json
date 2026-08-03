@@ -3,5 +3,15 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true,
     "strict": true
-  }
+  },
+  "exclude": [
+    "src/features/cloud/**",
+    "src/features/agent-awareness/**",
+    "src/features/connection/CloudEnvironmentRows.tsx",
+    "src/features/connection/environmentSections.ts",
+    "src/features/connection/environmentSections.test.ts",
+    "src/features/observability/**",
+    "src/features/settings/SettingsAuthRouteScreen.tsx",
+    "src/state/relay.ts"
+  ]
 }

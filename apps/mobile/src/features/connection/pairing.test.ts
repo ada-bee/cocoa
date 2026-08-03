@@ -25,6 +25,12 @@ describe("buildPairingUrl", () => {
       "https://192.168.1.100:3773/#token=pairing-token",
     );
   });
+
+  it("requires a separate one-time pairing code", () => {
+    expect(() => buildPairingUrl("https://remote.example.com", "")).toThrow(
+      "Enter the one-time pairing code from the gateway.",
+    );
+  });
 });
 
 describe("extractPairingUrlFromQrPayload", () => {
@@ -48,17 +54,28 @@ describe("extractPairingUrlFromQrPayload", () => {
       "Scanned QR code did not contain a pairing URL.",
     );
   });
+
+  it("rejects non-HTTP pairing targets and embedded URL credentials", () => {
+    expect(() => extractPairingUrlFromQrPayload("ssh://host.example/pair#token=secret")).toThrow(
+      "Pairing links must use HTTP or HTTPS.",
+    );
+    expect(() =>
+      extractPairingUrlFromQrPayload("https://user:password@host.example/pair#token=secret"),
+    ).toThrow("Gateway URLs must not contain embedded credentials.");
+  });
 });
 
 describe("parsePairingUrl", () => {
-  it("reads hosted pairing links into backend host fields", () => {
-    expect(
-      parsePairingUrl(
-        "https://app.t3.codes/pair?host=https%3A%2F%2Fdesktop.tailnet.ts.net%2F#token=pairing-token",
-      ),
-    ).toEqual({
+  it("reads direct pairing links into gateway host fields", () => {
+    expect(parsePairingUrl("https://desktop.tailnet.ts.net/pair#token=pairing-token")).toEqual({
       host: "https://desktop.tailnet.ts.net",
       code: "pairing-token",
     });
+  });
+
+  it("rejects unrelated URL fragments", () => {
+    expect(() => parsePairingUrl("https://desktop.example/#section")).toThrow(
+      "Pairing links may only use a token fragment.",
+    );
   });
 });

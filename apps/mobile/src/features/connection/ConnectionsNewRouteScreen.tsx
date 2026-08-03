@@ -40,7 +40,8 @@ export function ConnectionsNewRouteScreen({
 
   const headerIconColor = useThemeColor("--color-icon");
 
-  const connectDisabled = isSubmitting || hostInput.trim().length === 0;
+  const connectDisabled =
+    isSubmitting || hostInput.trim().length === 0 || codeInput.trim().length === 0;
 
   useEffect(() => {
     const { host, code } = parsePairingUrl(connectionPairingUrl);
@@ -119,7 +120,17 @@ export function ConnectionsNewRouteScreen({
   const handleSubmit = useCallback(async () => {
     setIsSubmitting(true);
 
-    const pairingUrl = buildPairingUrl(hostInput, codeInput);
+    let pairingUrl: string;
+    try {
+      pairingUrl = buildPairingUrl(hostInput, codeInput);
+    } catch (cause) {
+      setIsSubmitting(false);
+      Alert.alert(
+        "Invalid gateway URL",
+        cause instanceof Error ? cause.message : "Enter a valid Cocoa gateway URL.",
+      );
+      return;
+    }
     onChangeConnectionPairingUrl(pairingUrl);
     const result = await onConnectPress(pairingUrl);
     if (AsyncResult.isSuccess(result)) {
