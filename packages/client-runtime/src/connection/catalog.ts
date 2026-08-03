@@ -1,14 +1,8 @@
-import { DesktopSshEnvironmentTargetSchema, EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import {
-  BearerConnectionTarget,
-  PrimaryConnectionTarget,
-  RelayConnectionTarget,
-  SshConnectionTarget,
-  type ConnectionTarget,
-} from "./model.ts";
+import { BearerConnectionTarget, PrimaryConnectionTarget, type ConnectionTarget } from "./model.ts";
 
 const ConnectionProfileBase = {
   connectionId: Schema.String,
@@ -25,15 +19,7 @@ export class BearerConnectionProfile extends Schema.TaggedClass<BearerConnection
   },
 ) {}
 
-export class SshConnectionProfile extends Schema.TaggedClass<SshConnectionProfile>()(
-  "SshConnectionProfile",
-  {
-    ...ConnectionProfileBase,
-    target: DesktopSshEnvironmentTargetSchema,
-  },
-) {}
-
-export const ConnectionProfile = Schema.Union([BearerConnectionProfile, SshConnectionProfile]);
+export const ConnectionProfile = BearerConnectionProfile;
 export type ConnectionProfile = typeof ConnectionProfile.Type;
 
 export interface ConnectionCatalogEntry {
@@ -58,13 +44,6 @@ export class PrimaryConnectionRegistration extends Schema.TaggedClass<PrimaryCon
   },
 ) {}
 
-export class RelayConnectionRegistration extends Schema.TaggedClass<RelayConnectionRegistration>()(
-  "RelayConnectionRegistration",
-  {
-    target: RelayConnectionTarget,
-  },
-) {}
-
 export class BearerConnectionRegistration extends Schema.TaggedClass<BearerConnectionRegistration>()(
   "BearerConnectionRegistration",
   {
@@ -74,19 +53,7 @@ export class BearerConnectionRegistration extends Schema.TaggedClass<BearerConne
   },
 ) {}
 
-export class SshConnectionRegistration extends Schema.TaggedClass<SshConnectionRegistration>()(
-  "SshConnectionRegistration",
-  {
-    target: SshConnectionTarget,
-    profile: SshConnectionProfile,
-  },
-) {}
-
-export const ConnectionRegistration = Schema.Union([
-  RelayConnectionRegistration,
-  BearerConnectionRegistration,
-  SshConnectionRegistration,
-]);
+export const ConnectionRegistration = BearerConnectionRegistration;
 export type ConnectionRegistration = typeof ConnectionRegistration.Type;
 
 /**
@@ -115,13 +82,11 @@ export function connectionRegistrationCatalogEntry(
 ): ConnectionCatalogEntry {
   switch (registration._tag) {
     case "PrimaryConnectionRegistration":
-    case "RelayConnectionRegistration":
       return {
         target: registration.target,
         profile: Option.none(),
       };
     case "BearerConnectionRegistration":
-    case "SshConnectionRegistration":
       return {
         target: registration.target,
         profile: Option.some(registration.profile),

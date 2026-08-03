@@ -23,34 +23,10 @@ export class BearerConnectionTarget extends Schema.TaggedClass<BearerConnectionT
   },
 ) {}
 
-export class RelayConnectionTarget extends Schema.TaggedClass<RelayConnectionTarget>()(
-  "RelayConnectionTarget",
-  {
-    ...ConnectionTargetBase,
-  },
-) {}
-
-export class SshConnectionTarget extends Schema.TaggedClass<SshConnectionTarget>()(
-  "SshConnectionTarget",
-  {
-    ...ConnectionTargetBase,
-    connectionId: Schema.String,
-  },
-) {}
-
-export const ConnectionTarget = Schema.Union([
-  PrimaryConnectionTarget,
-  BearerConnectionTarget,
-  RelayConnectionTarget,
-  SshConnectionTarget,
-]);
+export const ConnectionTarget = Schema.Union([PrimaryConnectionTarget, BearerConnectionTarget]);
 export type ConnectionTarget = typeof ConnectionTarget.Type;
 
-export const PersistedConnectionTarget = Schema.Union([
-  BearerConnectionTarget,
-  RelayConnectionTarget,
-  SshConnectionTarget,
-]);
+export const PersistedConnectionTarget = BearerConnectionTarget;
 export type PersistedConnectionTarget = typeof PersistedConnectionTarget.Type;
 
 export type ConnectionTargetKind = ConnectionTarget["_tag"];
@@ -103,15 +79,10 @@ export class ConnectionBlockedError extends Schema.TaggedErrorClass<ConnectionBl
 
 export type ConnectionAttemptError = ConnectionTransientError | ConnectionBlockedError;
 
-export type PreparedHttpAuthorization =
-  | {
-      readonly _tag: "Bearer";
-      readonly token: string;
-    }
-  | {
-      readonly _tag: "Dpop";
-      readonly accessToken: string;
-    };
+export interface PreparedHttpAuthorization {
+  readonly _tag: "Bearer";
+  readonly token: string;
+}
 
 export interface PreparedConnection {
   readonly environmentId: EnvironmentId;
