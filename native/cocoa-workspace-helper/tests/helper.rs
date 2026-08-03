@@ -210,22 +210,85 @@ fn direct_listing_is_sorted_and_truncated_by_entry_and_response_caps() {
 }
 
 #[test]
-fn list_rejects_ambiguous_recursive_limits() {
+fn recursive_listing_honors_depth_and_normalizes_relative_paths() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("workspace");
-    fs::create_dir(&root).unwrap();
+    fs::create_dir_all(root.join("dir/deep")).unwrap();
+    fs::write(root.join("root-file"), b"root").unwrap();
+    fs::write(root.join("dir/child"), b"child").unwrap();
+    fs::write(root.join("dir/deep/grandchild"), b"grandchild").unwrap();
     let identity = validate(&root);
-    for depth in [0, 2] {
+
+    let expected = [
+        (0, Vec::<&str>::new()),
+        (1, vec!["dir", "root-file"]),
+        (2, vec!["dir", "dir/child", "dir/deep", "root-file"]),
+        (
+            3,
+            vec![
+                "dir",
+                "dir/child",
+                "dir/deep",
+                "dir/deep/grandchild",
+                "root-file",
+            ],
+        ),
+    ];
+    for (depth, expected_paths) in expected {
         let mut request = rooted_request("list", &root, &identity);
         request["limits"] = json!({
-            "maxEntries": 10,
+            "maxEntries": 100,
             "maxDepth": depth,
-            "maxDirectories": 1,
-            "maxResponseBytes": 1024,
+            "maxDirectories": 100,
+            "maxResponseBytes": 8192,
         });
         let (response, _, _) = invoke(request);
-        assert_eq!(response["error"]["code"], "limit_exceeded");
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["result"]["truncated"], false);
+        let paths: Vec<_> = response["result"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, expected_paths);
     }
+}
+
+#[test]
+fn recursive_listing_bounds_scanned_directories_and_never_follows_symlinks() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().join("workspace");
+    let outside = temp.path().join("outside");
+    fs::create_dir_all(root.join("a")).unwrap();
+    fs::create_dir_all(root.join("b")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    fs::write(root.join("a/inside-a"), b"a").unwrap();
+    fs::write(root.join("b/inside-b"), b"b").unwrap();
+    fs::write(outside.join("secret"), b"secret").unwrap();
+    symlink(&outside, root.join("escape")).unwrap();
+    let identity = validate(&root);
+
+    let mut request = rooted_request("list", &root, &identity);
+    request["limits"] = json!({
+        "maxEntries": 100,
+        "maxDepth": 4,
+        "maxDirectories": 2,
+        "maxResponseBytes": 8192,
+    });
+    let (response, _, _) = invoke(request);
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["result"]["truncated"], true);
+    let paths: Vec<_> = response["result"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["path"].as_str().unwrap())
+        .collect();
+    assert!(paths.contains(&"a/inside-a"));
+    assert!(!paths.contains(&"b/inside-b"));
+    assert!(paths.contains(&"escape"));
+    assert!(!paths.iter().any(|path| path.contains("secret")));
 }
 
 #[test]

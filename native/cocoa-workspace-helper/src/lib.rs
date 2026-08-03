@@ -3,6 +3,7 @@
 #[cfg(not(unix))]
 compile_error!("cocoa-workspace-helper v1 supports POSIX hosts only");
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
@@ -348,7 +349,7 @@ fn dispatch(request: Request) -> HelperResult<(Value, usize)> {
             let root = verify_root(&root, &expected_root)?;
             let components = split_relative(&relative_path)?;
             let directory = open_relative_directory(&root.dir, &components)?;
-            let result = list_directory(&directory, limits.max_entries)?;
+            let result = list_directory(&directory, &limits)?;
             let value = success_json(result)?;
             let value = fit_list_response(value, limits.max_response_bytes)?;
             Ok((value, limits.max_response_bytes))
@@ -382,6 +383,7 @@ fn validate_list_limits(limits: &ListLimits) -> HelperResult<()> {
         ));
     }
     if limits.max_depth > MAX_LIST_DEPTH
+        || limits.max_directories == 0
         || limits.max_directories > MAX_LIST_DIRECTORIES
         || limits.max_response_bytes == 0
         || limits.max_response_bytes > MAX_RESPONSE_BYTES
@@ -389,12 +391,6 @@ fn validate_list_limits(limits: &ListLimits) -> HelperResult<()> {
         return Err(HelperError::new(
             ErrorCode::LimitExceeded,
             "Invalid directory listing limit.",
-        ));
-    }
-    if limits.max_depth != 1 || limits.max_directories != 1 {
-        return Err(HelperError::new(
-            ErrorCode::LimitExceeded,
-            "Version 1 supports direct directory listings only.",
         ));
     }
     Ok(())
@@ -606,6 +602,11 @@ fn open_relative_directory(root: &Dir, components: &[&str]) -> HelperResult<Dir>
     Ok(current)
 }
 
+fn open_owned_relative_directory(root: &Dir, components: &[String]) -> HelperResult<Dir> {
+    let borrowed: Vec<_> = components.iter().map(String::as_str).collect();
+    open_relative_directory(root, &borrowed)
+}
+
 fn open_parent<'a>(root: &Dir, components: &'a [&'a str]) -> HelperResult<(Dir, Option<&'a str>)> {
     match components.split_last() {
         None => Ok((open_relative_directory(root, &[])?, None)),
@@ -677,44 +678,72 @@ fn system_time_ms(value: SystemTime) -> Option<i64> {
     }
 }
 
-fn list_directory(directory: &Dir, max_entries: usize) -> HelperResult<ListResult> {
-    let iterator = directory
-        .entries()
-        .map_err(|error| map_io_error(error, ErrorCode::PathNotDirectory))?;
-    let mut entries = Vec::with_capacity(max_entries.min(1_024));
+fn list_directory(directory: &Dir, limits: &ListLimits) -> HelperResult<ListResult> {
+    if limits.max_depth == 0 {
+        return Ok(ListResult {
+            operation: "list",
+            entries: Vec::new(),
+            truncated: false,
+        });
+    }
+
+    let mut pending = VecDeque::from([(Vec::<String>::new(), 0_usize)]);
+    let mut directories_scanned = 0_usize;
+    let mut entries = Vec::with_capacity(limits.max_entries.min(1_024));
     let mut truncated = false;
-    for entry in iterator {
-        let entry = entry.map_err(|error| map_io_error(error, ErrorCode::OperationFailed))?;
-        if entries.len() == max_entries {
+
+    while let Some((relative_directory, depth)) = pending.pop_front() {
+        if directories_scanned == limits.max_directories {
             truncated = true;
             break;
         }
-        let name = entry.file_name().into_string().map_err(|_| {
-            HelperError::new(
-                ErrorCode::OperationFailed,
-                "Directory contains a non-UTF-8 entry name.",
-            )
-        })?;
-        if name.is_empty()
-            || name == "."
-            || name == ".."
-            || name.contains('/')
-            || name.contains('\\')
-            || name.contains('\0')
-            || name.len() > MAX_PATH_BYTES
-        {
-            return Err(HelperError::new(
-                ErrorCode::OperationFailed,
-                "Directory contains an invalid entry name.",
-            ));
+        directories_scanned += 1;
+        let opened = open_owned_relative_directory(directory, &relative_directory)?;
+        let iterator = opened
+            .entries()
+            .map_err(|error| map_io_error(error, ErrorCode::PathNotDirectory))?;
+        let mut direct_entries = Vec::new();
+        for entry in iterator {
+            let entry = entry.map_err(|error| map_io_error(error, ErrorCode::OperationFailed))?;
+            if entries.len() + direct_entries.len() == limits.max_entries {
+                truncated = true;
+                break;
+            }
+            let name = entry.file_name().into_string().map_err(|_| {
+                HelperError::new(
+                    ErrorCode::OperationFailed,
+                    "Directory contains a non-UTF-8 entry name.",
+                )
+            })?;
+            validate_entry_name(&name)?;
+            let value = opened
+                .symlink_metadata(&name)
+                .map_err(|error| map_io_error(error, ErrorCode::OperationFailed))?;
+            direct_entries.push((name, entry_kind(&value)));
         }
-        let value = directory
-            .symlink_metadata(&name)
-            .map_err(|error| map_io_error(error, ErrorCode::OperationFailed))?;
-        entries.push(ListEntry {
-            path: name,
-            kind: entry_kind(&value),
-        });
+        direct_entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+        for (name, kind) in direct_entries {
+            let mut components = relative_directory.clone();
+            components.push(name);
+            let path = components.join("/");
+            let child_depth = depth + 1;
+            if matches!(kind, EntryKind::Directory) && child_depth < limits.max_depth {
+                if directories_scanned + pending.len() < limits.max_directories {
+                    pending.push_back((components, child_depth));
+                } else {
+                    truncated = true;
+                }
+            }
+            entries.push(ListEntry { path, kind });
+        }
+
+        if entries.len() == limits.max_entries {
+            if !pending.is_empty() {
+                truncated = true;
+            }
+            break;
+        }
     }
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(ListResult {
@@ -722,6 +751,23 @@ fn list_directory(directory: &Dir, max_entries: usize) -> HelperResult<ListResul
         entries,
         truncated,
     })
+}
+
+fn validate_entry_name(name: &str) -> HelperResult<()> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name.len() > MAX_PATH_BYTES
+    {
+        return Err(HelperError::new(
+            ErrorCode::OperationFailed,
+            "Directory contains an invalid entry name.",
+        ));
+    }
+    Ok(())
 }
 
 fn fit_list_response(value: Value, max_bytes: usize) -> HelperResult<Value> {
