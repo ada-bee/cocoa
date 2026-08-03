@@ -104,12 +104,12 @@ interface. A configured provider instance should expose focused capabilities:
 
 ```ts
 interface ProviderInstance {
-  instanceId: ProviderInstanceId
-  driverKind: ProviderDriverKind
-  adapter: ProviderSessionAdapter
-  workspace?: ProviderWorkspaceAdapter
-  execution?: ProviderExecutionAdapter
-  vcs?: ProviderVcsAdapter
+  instanceId: ProviderInstanceId;
+  driverKind: ProviderDriverKind;
+  adapter: ProviderSessionAdapter;
+  workspace?: ProviderWorkspaceAdapter;
+  execution?: ProviderExecutionAdapter;
+  vcs?: ProviderVcsAdapter;
 }
 ```
 
@@ -232,9 +232,16 @@ Move every project-scoped operation behind the provider instance:
 - shell commands and long-lived terminals
 - Git status, diff, branches, commits, and checkpoint refs
 
-The first implementation should use Codex app-server filesystem methods directly.
-Do not add a gateway-to-host file-sharing protocol or mount the Mac workspace into
-the Pi container.
+Use Codex app-server workspace methods only when their declared semantics are safe
+for the requested operation. In the initial 0.146.0 baseline, `fs/readFile` returns
+an unbounded whole-file base64 payload, `fs/getMetadata` reports no byte size, and
+the absolute-path API has no root-scoped canonicalization primitive. It therefore
+cannot be the containment or bounded-I/O boundary for arbitrary project files.
+Legacy `fs/readFile` must not be used for file preview. Add and capability-probe
+the narrowest provider-host operation that performs root-relative containment and
+bounded reads on the host; if it is unavailable, report the workspace operation as
+unsupported. Do not add a gateway-to-host file-sharing protocol, mount the remote
+workspace into the Pi container, or fall back to the gateway filesystem.
 
 Client-facing workspace operations take a `ProjectId` plus a relative path, not
 an arbitrary host path. The gateway resolves the project to its provider
@@ -383,6 +390,12 @@ two fake endpoints prove correct routing for the same workspace path.
 
 - Implement filesystem capabilities in `ProviderWorkspaceAdapter`.
 - Route project discovery, directory browsing, file metadata, and reads through it.
+- Capability-gate a provider-host root-relative workspace operation. It must
+  confine the operation on the provider host and bound file and directory results
+  before they cross the shared endpoint connection.
+- Treat the 0.146.0 absolute-path filesystem methods as version-sensitive
+  interoperability primitives, not proof of containment. Never call its legacy
+  unbounded `fs/readFile` for an arbitrary project path.
 - Add capability-aware errors for unsupported or disconnected endpoints.
 - Remove direct gateway filesystem access for project operations.
 
