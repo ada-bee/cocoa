@@ -19,8 +19,8 @@ import {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
-  type ProviderInstanceId,
-  type ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
 } from "@t3tools/contracts";
@@ -34,7 +34,9 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import {
   increment,
@@ -49,9 +51,18 @@ import {
 import {
   type ProviderAdapterError,
   type ProviderServiceError,
+  ProviderCheckedRollbackUnsupportedError,
+  ProviderRollbackActiveTurnError,
+  ProviderRollbackOutcomeUnknownError,
+  ProviderRollbackPreimageMismatchError,
   ProviderValidationError,
 } from "../Errors.ts";
-import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import {
+  providerCheckedConversationRollbackMode,
+  providerConversationReadMode,
+  type ProviderAdapterShape,
+  type ProviderThreadSnapshot,
+} from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
@@ -60,6 +71,12 @@ import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
+import {
+  digestProviderTurnSequence,
+  hashProviderContinuationIdentity,
+  PROVIDER_TURN_SEQUENCE_DIGEST_VERSION,
+  type ProviderTurnSequenceDigest,
+} from "../ProviderTurnSequenceDigest.ts";
 const isModelSelection = Schema.is(ModelSelection);
 
 /**
@@ -80,6 +97,36 @@ type ProviderServiceMethod<Name extends keyof ProviderService.ProviderService["S
 const ProviderRollbackConversationInput = Schema.Struct({
   threadId: ThreadId,
   numTurns: NonNegativeInt,
+});
+
+const ProviderTurnSequenceDigestInput = Schema.Struct({
+  version: Schema.Literal(PROVIDER_TURN_SEQUENCE_DIGEST_VERSION),
+  turnCount: NonNegativeInt,
+  sha256: Schema.String.check(
+    Schema.isMinLength(64),
+    Schema.isMaxLength(64),
+    Schema.makeFilter((value) => /^[0-9a-f]{64}$/.test(value) || "sha256 must be lowercase hex."),
+  ),
+});
+
+const ProviderInspectConversationInput = Schema.Struct({
+  threadId: ThreadId,
+  providerInstanceId: ProviderInstanceId,
+  targetTurnCount: NonNegativeInt,
+});
+
+const ProviderRollbackConversationCheckedInput = Schema.Struct({
+  threadId: ThreadId,
+  providerInstanceId: ProviderInstanceId,
+  numTurns: NonNegativeInt,
+  expectedPreimage: ProviderTurnSequenceDigestInput,
+  expectedTarget: ProviderTurnSequenceDigestInput,
+  expectedDriverKind: ProviderDriverKind,
+  expectedContinuationIdentitySha256: Schema.String.check(
+    Schema.isMinLength(64),
+    Schema.isMaxLength(64),
+    Schema.makeFilter((value) => /^[0-9a-f]{64}$/.test(value) || "sha256 must be lowercase hex."),
+  ),
 });
 
 function toValidationError(
@@ -396,6 +443,38 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
   const recoveryFlights = yield* Ref.make(new Map<ThreadId, RecoveryDeferred>());
 
+  const threadMutationLocks = yield* SynchronizedRef.make(
+    new Map<ThreadId, { readonly semaphore: Semaphore.Semaphore; readonly users: number }>(),
+  );
+  const withThreadMutationLock = <A, E, R>(threadId: ThreadId, effect: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      SynchronizedRef.modifyEffect(threadMutationLocks, (locks) => {
+        const existing = locks.get(threadId);
+        if (existing) {
+          const next = new Map(locks);
+          next.set(threadId, { semaphore: existing.semaphore, users: existing.users + 1 });
+          return Effect.succeed([existing.semaphore, next] as const);
+        }
+        return Semaphore.make(1).pipe(
+          Effect.map((semaphore) => {
+            const next = new Map(locks);
+            next.set(threadId, { semaphore, users: 1 });
+            return [semaphore, next] as const;
+          }),
+        );
+      }),
+      (semaphore) => semaphore.withPermits(1)(effect),
+      (semaphore) =>
+        SynchronizedRef.update(threadMutationLocks, (locks) => {
+          const current = locks.get(threadId);
+          if (!current || current.semaphore !== semaphore) return locks;
+          const next = new Map(locks);
+          if (current.users === 1) next.delete(threadId);
+          else next.set(threadId, { semaphore, users: current.users - 1 });
+          return next;
+        }),
+    );
+
   const recoverSessionFromBinding = Effect.fn("recoverSessionFromBinding")(function* (input: {
     readonly binding: ProviderSessionDirectory.ProviderRuntimeBinding;
     readonly bindingInstanceId: ProviderInstanceId;
@@ -575,6 +654,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     readonly threadId: ThreadId;
     readonly operation: string;
     readonly allowRecovery: boolean;
+    readonly expectedProviderInstanceId?: ProviderInstanceId;
   }) {
     const bindingOption = yield* directory.getBinding(input.threadId);
     const binding = Option.getOrUndefined(bindingOption);
@@ -585,7 +665,26 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
     const instanceId = yield* requireBindingInstanceId(input.operation, binding);
+    if (
+      input.expectedProviderInstanceId !== undefined &&
+      instanceId !== input.expectedProviderInstanceId
+    ) {
+      return yield* toValidationError(
+        input.operation,
+        `Thread '${input.threadId}' is bound to provider instance '${instanceId}', not '${input.expectedProviderInstanceId}'.`,
+      );
+    }
+    const instanceInfo = yield* registry.getInstanceInfo(instanceId);
     const adapter = yield* registry.getByInstance(instanceId);
+    if (
+      binding.provider !== instanceInfo.driverKind ||
+      adapter.provider !== instanceInfo.driverKind
+    ) {
+      return yield* toValidationError(
+        input.operation,
+        `Provider route mismatch for thread '${input.threadId}': binding '${binding.provider}', instance '${instanceInfo.driverKind}', adapter '${adapter.provider}'.`,
+      );
+    }
 
     const hasRequestedSession = yield* adapter.hasSession(input.threadId);
     if (hasRequestedSession) {
@@ -594,6 +693,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         instanceId,
         threadId: input.threadId,
         isActive: true,
+        continuationIdentity: instanceInfo.continuationIdentity,
       } as const;
     }
 
@@ -603,6 +703,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         instanceId,
         threadId: input.threadId,
         isActive: false,
+        continuationIdentity: instanceInfo.continuationIdentity,
       } as const;
     }
 
@@ -610,11 +711,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       threadId: input.threadId,
       providerInstanceId: instanceId,
     });
+    const recoveredInstanceInfo = yield* registry.getInstanceInfo(instanceId);
+    const recoveredAdapter = yield* registry.getByInstance(instanceId);
+    if (
+      binding.provider !== recoveredInstanceInfo.driverKind ||
+      recoveredAdapter.provider !== recoveredInstanceInfo.driverKind
+    ) {
+      return yield* toValidationError(
+        input.operation,
+        `Provider route changed while recovering thread '${input.threadId}'.`,
+      );
+    }
     return {
-      adapter,
+      adapter: recoveredAdapter,
       instanceId,
       threadId: input.threadId,
       isActive: true,
+      continuationIdentity: recoveredInstanceInfo.continuationIdentity,
     } as const;
   });
 
@@ -805,47 +918,50 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     });
     let metricProvider = "unknown";
     let metricModel = input.modelSelection?.model;
-    return yield* Effect.gen(function* () {
-      const routed = yield* resolveRoutableSession({
-        threadId: input.threadId,
-        operation: "ProviderService.sendTurn",
-        allowRecovery: true,
-      });
-      metricProvider = routed.adapter.provider;
-      metricModel = input.modelSelection?.model;
-      yield* Effect.annotateCurrentSpan({
-        "provider.kind": routed.adapter.provider,
-        ...(input.modelSelection?.model ? { "provider.model": input.modelSelection.model } : {}),
-      });
-      // A turn is the clearest sign a session is still alive. The MCP
-      // credential is minted once at session start and cannot be rotated into
-      // an already-spawned agent process, so we keep the existing token valid
-      // rather than issuing a new one: sessions that go a long time between
-      // browser tool calls used to lose the toolkit outright.
-      yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
-      const turn = yield* routed.adapter.sendTurn(input);
-      yield* directory.upsert({
-        threadId: input.threadId,
-        provider: routed.adapter.provider,
-        providerInstanceId: routed.instanceId,
-        status: "running",
-        ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
-        runtimePayload: {
-          ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
-          activeTurnId: turn.turnId,
-          lastRuntimeEvent: "provider.sendTurn",
-          lastRuntimeEventAt: yield* nowIso,
-        },
-      });
-      yield* analytics.record("provider.turn.sent", {
-        provider: routed.adapter.provider,
-        model: input.modelSelection?.model,
-        interactionMode: input.interactionMode,
-        attachmentCount: input.attachments.length,
-        hasInput: typeof input.input === "string" && input.input.trim().length > 0,
-      });
-      return turn;
-    }).pipe(
+    return yield* withThreadMutationLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.sendTurn",
+          allowRecovery: true,
+        });
+        metricProvider = routed.adapter.provider;
+        metricModel = input.modelSelection?.model;
+        yield* Effect.annotateCurrentSpan({
+          "provider.kind": routed.adapter.provider,
+          ...(input.modelSelection?.model ? { "provider.model": input.modelSelection.model } : {}),
+        });
+        // A turn is the clearest sign a session is still alive. The MCP
+        // credential is minted once at session start and cannot be rotated into
+        // an already-spawned agent process, so we keep the existing token valid
+        // rather than issuing a new one: sessions that go a long time between
+        // browser tool calls used to lose the toolkit outright.
+        yield* McpSessionRegistry.touchActiveMcpThread(input.threadId);
+        const turn = yield* routed.adapter.sendTurn(input);
+        yield* directory.upsert({
+          threadId: input.threadId,
+          provider: routed.adapter.provider,
+          providerInstanceId: routed.instanceId,
+          status: "running",
+          ...(turn.resumeCursor !== undefined ? { resumeCursor: turn.resumeCursor } : {}),
+          runtimePayload: {
+            ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+            activeTurnId: turn.turnId,
+            lastRuntimeEvent: "provider.sendTurn",
+            lastRuntimeEventAt: yield* nowIso,
+          },
+        });
+        yield* analytics.record("provider.turn.sent", {
+          provider: routed.adapter.provider,
+          model: input.modelSelection?.model,
+          interactionMode: input.interactionMode,
+          attachmentCount: input.attachments.length,
+          hasInput: typeof input.input === "string" && input.input.trim().length > 0,
+        });
+        return turn;
+      }),
+    ).pipe(
       withMetrics({
         counter: providerTurnsTotal,
         timer: providerTurnDuration,
@@ -1152,6 +1268,247 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const digestSnapshot = (snapshot: ProviderThreadSnapshot) =>
+    digestProviderTurnSequence(snapshot.turns.map((turn) => turn.id)).pipe(
+      Effect.mapError((cause) =>
+        toValidationError(
+          "ProviderService.inspectConversation",
+          "Provider returned an invalid ordered turn snapshot.",
+          cause,
+        ),
+      ),
+    );
+
+  const sameDigest = (
+    left: ProviderTurnSequenceDigest,
+    right: ProviderTurnSequenceDigest,
+  ): boolean =>
+    left.version === right.version &&
+    left.turnCount === right.turnCount &&
+    left.sha256 === right.sha256;
+
+  const requireCheckedCapabilities = (input: {
+    readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+    readonly instanceId: ProviderInstanceId;
+  }) => {
+    if (providerConversationReadMode(input.adapter.capabilities) !== "ordered-turn-ids-v1") {
+      return Effect.fail(
+        new ProviderCheckedRollbackUnsupportedError({
+          provider: input.adapter.provider,
+          providerInstanceId: input.instanceId,
+          capability: "conversation-read",
+        }),
+      );
+    }
+    if (
+      providerCheckedConversationRollbackMode(input.adapter.capabilities) !== "ordered-turn-ids-v1"
+    ) {
+      return Effect.fail(
+        new ProviderCheckedRollbackUnsupportedError({
+          provider: input.adapter.provider,
+          providerInstanceId: input.instanceId,
+          capability: "checked-rollback",
+        }),
+      );
+    }
+    return Effect.void;
+  };
+
+  const inspectConversation: ProviderServiceMethod<"inspectConversation"> = Effect.fn(
+    "inspectConversation",
+  )(function* (rawInput) {
+    const input = yield* decodeInputOrValidationError({
+      operation: "ProviderService.inspectConversation",
+      schema: ProviderInspectConversationInput,
+      payload: rawInput,
+    });
+    return yield* withThreadMutationLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.inspectConversation",
+          allowRecovery: true,
+          expectedProviderInstanceId: input.providerInstanceId,
+        });
+        yield* requireCheckedCapabilities(routed);
+        const snapshot = yield* routed.adapter.readThread(routed.threadId);
+        if (snapshot.threadId !== routed.threadId) {
+          return yield* toValidationError(
+            "ProviderService.inspectConversation",
+            `Provider returned snapshot for thread '${snapshot.threadId}', not '${routed.threadId}'.`,
+          );
+        }
+        if (input.targetTurnCount > snapshot.turns.length) {
+          return yield* toValidationError(
+            "ProviderService.inspectConversation",
+            "Target turn count exceeds the provider conversation preimage.",
+          );
+        }
+        const orderedTurnIds = snapshot.turns.map((turn) => turn.id);
+        return {
+          threadId: routed.threadId,
+          providerInstanceId: routed.instanceId,
+          binding: {
+            driverKind: routed.adapter.provider,
+            continuationIdentitySha256: hashProviderContinuationIdentity(
+              routed.continuationIdentity,
+            ),
+          },
+          preimage: yield* digestProviderTurnSequence(orderedTurnIds).pipe(
+            Effect.mapError((cause) =>
+              toValidationError(
+                "ProviderService.inspectConversation",
+                "Provider returned an invalid ordered turn snapshot.",
+                cause,
+              ),
+            ),
+          ),
+          target: yield* digestProviderTurnSequence(
+            orderedTurnIds.slice(0, input.targetTurnCount),
+          ).pipe(
+            Effect.mapError((cause) =>
+              toValidationError(
+                "ProviderService.inspectConversation",
+                "Provider returned an invalid ordered turn snapshot.",
+                cause,
+              ),
+            ),
+          ),
+        };
+      }),
+    );
+  });
+
+  const rollbackConversationChecked: ProviderServiceMethod<"rollbackConversationChecked"> =
+    Effect.fn("rollbackConversationChecked")(function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.rollbackConversationChecked",
+        schema: ProviderRollbackConversationCheckedInput,
+        payload: rawInput,
+      });
+      if (input.numTurns < 1) {
+        return yield* toValidationError(
+          "ProviderService.rollbackConversationChecked",
+          "numTurns must be an integer >= 1.",
+        );
+      }
+      return yield* withThreadMutationLock(
+        input.threadId,
+        Effect.gen(function* () {
+          const routed = yield* resolveRoutableSession({
+            threadId: input.threadId,
+            operation: "ProviderService.rollbackConversationChecked",
+            allowRecovery: true,
+            expectedProviderInstanceId: input.providerInstanceId,
+          });
+          yield* requireCheckedCapabilities(routed);
+          const actualContinuationIdentitySha256 = hashProviderContinuationIdentity(
+            routed.continuationIdentity,
+          );
+          if (
+            routed.adapter.provider !== input.expectedDriverKind ||
+            actualContinuationIdentitySha256 !== input.expectedContinuationIdentitySha256
+          ) {
+            return yield* toValidationError(
+              "ProviderService.rollbackConversationChecked",
+              "Provider continuation binding changed before rollback.",
+            );
+          }
+          const activeSession = (yield* routed.adapter.listSessions()).find(
+            (session) => session.threadId === input.threadId,
+          );
+          if (activeSession?.activeTurnId !== undefined || activeSession?.status === "running") {
+            return yield* new ProviderRollbackActiveTurnError({
+              providerInstanceId: routed.instanceId,
+              threadId: input.threadId,
+              ...(activeSession.activeTurnId !== undefined
+                ? { turnId: activeSession.activeTurnId }
+                : {}),
+            });
+          }
+          const before = yield* routed.adapter.readThread(routed.threadId);
+          if (before.threadId !== routed.threadId) {
+            return yield* toValidationError(
+              "ProviderService.rollbackConversationChecked",
+              `Provider returned preimage for thread '${before.threadId}', not '${routed.threadId}'.`,
+            );
+          }
+          const actualPreimage = yield* digestSnapshot(before);
+          if (!sameDigest(actualPreimage, input.expectedPreimage)) {
+            return yield* new ProviderRollbackPreimageMismatchError({
+              providerInstanceId: routed.instanceId,
+              threadId: input.threadId,
+              expectedSha256: input.expectedPreimage.sha256,
+              actualSha256: actualPreimage.sha256,
+            });
+          }
+          if (
+            actualPreimage.turnCount < input.numTurns ||
+            input.expectedTarget.turnCount !== actualPreimage.turnCount - input.numTurns
+          ) {
+            return yield* toValidationError(
+              "ProviderService.rollbackConversationChecked",
+              "Expected target turn count does not match the requested rollback.",
+            );
+          }
+
+          const returned = yield* routed.adapter
+            .rollbackThread(routed.threadId, input.numTurns)
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderRollbackOutcomeUnknownError({
+                    provider: routed.adapter.provider,
+                    providerInstanceId: routed.instanceId,
+                    threadId: input.threadId,
+                    reason: "request-failed",
+                    issue: "Rollback request failed after dispatch.",
+                    cause,
+                  }),
+              ),
+            );
+          const returnedDigest = yield* digestProviderTurnSequence(
+            returned.turns.map((turn) => turn.id),
+          ).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderRollbackOutcomeUnknownError({
+                  provider: routed.adapter.provider,
+                  providerInstanceId: routed.instanceId,
+                  threadId: input.threadId,
+                  reason: "returned-target-mismatch",
+                  issue: "Provider returned an invalid rollback target snapshot.",
+                  cause,
+                }),
+            ),
+          );
+          if (
+            returned.threadId !== routed.threadId ||
+            !sameDigest(returnedDigest, input.expectedTarget)
+          ) {
+            return yield* new ProviderRollbackOutcomeUnknownError({
+              provider: routed.adapter.provider,
+              providerInstanceId: routed.instanceId,
+              threadId: input.threadId,
+              reason: "returned-target-mismatch",
+              issue: "Provider returned a rollback target that did not match the expected target.",
+            });
+          }
+          return {
+            threadId: routed.threadId,
+            providerInstanceId: routed.instanceId,
+            binding: {
+              driverKind: routed.adapter.provider,
+              continuationIdentitySha256: actualContinuationIdentitySha256,
+            },
+            preimage: actualPreimage,
+            target: returnedDigest,
+          };
+        }),
+      );
+    });
+
   const runStopAll = Effect.fn("runStopAll")(function* () {
     const threadIds = yield* directory.listThreadIds();
     const currentAdapters = yield* getAdapterEntries;
@@ -1224,6 +1581,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getCapabilities,
     getInstanceInfo,
     rollbackConversation,
+    inspectConversation,
+    rollbackConversationChecked,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each
     // independently receive all runtime events.

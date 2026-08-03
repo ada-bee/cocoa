@@ -24,13 +24,28 @@ import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
+export type ProviderConversationReadMode = "ordered-turn-ids-v1" | "unsupported";
+export type ProviderCheckedConversationRollbackMode = "ordered-turn-ids-v1" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
   /**
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+  /** Defaults to unsupported for adapters that predate checked rollback. */
+  readonly conversationRead?: ProviderConversationReadMode;
+  /** Defaults to unsupported for adapters that predate checked rollback. */
+  readonly checkedConversationRollback?: ProviderCheckedConversationRollbackMode;
 }
+
+export const providerConversationReadMode = (
+  capabilities: ProviderAdapterCapabilities,
+): ProviderConversationReadMode => capabilities.conversationRead ?? "unsupported";
+
+export const providerCheckedConversationRollbackMode = (
+  capabilities: ProviderAdapterCapabilities,
+): ProviderCheckedConversationRollbackMode =>
+  capabilities.checkedConversationRollback ?? "unsupported";
 
 export interface ProviderThreadTurnSnapshot {
   readonly id: TurnId;

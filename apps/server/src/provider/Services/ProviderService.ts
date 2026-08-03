@@ -14,6 +14,7 @@
 import type {
   ProviderInterruptTurnInput,
   ProviderInstanceId,
+  ProviderDriverKind,
   ProviderRespondToRequestInput,
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
@@ -31,6 +32,20 @@ import type * as Stream from "effect/Stream";
 import type { ProviderServiceError } from "../Errors.ts";
 import type { ProviderAdapterCapabilities } from "./ProviderAdapter.ts";
 import type { ProviderInstanceRoutingInfo } from "./ProviderAdapterRegistry.ts";
+import type { ProviderTurnSequenceDigest } from "../ProviderTurnSequenceDigest.ts";
+
+export interface ProviderConversationBinding {
+  readonly driverKind: ProviderDriverKind;
+  readonly continuationIdentitySha256: string;
+}
+
+export interface ProviderConversationInspection {
+  readonly threadId: ThreadId;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly binding: ProviderConversationBinding;
+  readonly preimage: ProviderTurnSequenceDigest;
+  readonly target: ProviderTurnSequenceDigest;
+}
 
 /**
  * ProviderServiceShape - Service API for provider session and turn orchestration.
@@ -115,6 +130,22 @@ export interface ProviderServiceShape {
     readonly threadId: ThreadId;
     readonly numTurns: number;
   }) => Effect.Effect<void, ProviderServiceError>;
+
+  readonly inspectConversation: (input: {
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly targetTurnCount: number;
+  }) => Effect.Effect<ProviderConversationInspection, ProviderServiceError>;
+
+  readonly rollbackConversationChecked: (input: {
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly numTurns: number;
+    readonly expectedPreimage: ProviderTurnSequenceDigest;
+    readonly expectedTarget: ProviderTurnSequenceDigest;
+    readonly expectedDriverKind: ProviderDriverKind;
+    readonly expectedContinuationIdentitySha256: string;
+  }) => Effect.Effect<ProviderConversationInspection, ProviderServiceError>;
 
   /**
    * Canonical provider runtime event stream.

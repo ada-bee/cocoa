@@ -39,12 +39,17 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
   ProviderAdapterRequestError,
+  ProviderAdapterSessionClosedError,
   ProviderAdapterSessionNotFoundError,
+  ProviderCheckedRollbackUnsupportedError,
+  ProviderRollbackActiveTurnError,
+  ProviderRollbackOutcomeUnknownError,
+  ProviderRollbackPreimageMismatchError,
   ProviderUnsupportedError,
   ProviderValidationError,
   type ProviderAdapterError,
 } from "../Errors.ts";
-import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import type { ProviderAdapterShape, ProviderThreadSnapshot } from "../Services/ProviderAdapter.ts";
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
@@ -62,6 +67,10 @@ import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
+import {
+  digestProviderTurnSequence,
+  hashProviderContinuationIdentity,
+} from "../ProviderTurnSequenceDigest.ts";
 
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
 
@@ -74,6 +83,10 @@ const claudeAgentInstanceId = ProviderInstanceId.make("claudeAgent");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const codexContinuationIdentitySha256 = hashProviderContinuationIdentity({
+  driverKind: CODEX_DRIVER,
+  continuationKey: "codex:instance:codex",
+});
 
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
@@ -179,15 +192,7 @@ function makeFakeCodexAdapter(
   );
 
   const readThread = vi.fn(
-    (
-      threadId: ThreadId,
-    ): Effect.Effect<
-      {
-        threadId: ThreadId;
-        turns: ReadonlyArray<{ id: TurnId; items: readonly [] }>;
-      },
-      ProviderAdapterError
-    > =>
+    (threadId: ThreadId): Effect.Effect<ProviderThreadSnapshot, ProviderAdapterError> =>
       Effect.succeed({
         threadId,
         turns: [{ id: asTurnId("turn-1"), items: [] }],
@@ -198,7 +203,7 @@ function makeFakeCodexAdapter(
     (
       threadId: ThreadId,
       _numTurns: number,
-    ): Effect.Effect<{ threadId: ThreadId; turns: readonly [] }, ProviderAdapterError> =>
+    ): Effect.Effect<ProviderThreadSnapshot, ProviderAdapterError> =>
       Effect.succeed({ threadId, turns: [] }),
   );
 
@@ -213,6 +218,12 @@ function makeFakeCodexAdapter(
     provider,
     capabilities: {
       sessionModelSwitch: "in-session",
+      ...(provider === CODEX_DRIVER
+        ? {
+            conversationRead: "ordered-turn-ids-v1" as const,
+            checkedConversationRollback: "ordered-turn-ids-v1" as const,
+          }
+        : {}),
     },
     startSession,
     sendTurn,
@@ -291,19 +302,24 @@ function makeProviderServiceLayer(options?: {
     [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
     [ProviderDriverKind.make("cursor")]: cursor.adapter,
   });
-  const registry =
-    options?.gatewayMcpMode === undefined
-      ? registryBase
-      : {
-          ...registryBase,
-          getInstanceInfo: (instanceId: ProviderInstanceId) =>
-            registryBase.getInstanceInfo(instanceId).pipe(
-              Effect.map((info) => ({
-                ...info,
-                gatewayMcpMode: options.gatewayMcpMode ?? "inject",
-              })),
-            ),
-        };
+  const continuationKeys = new Map<ProviderInstanceId, string>();
+  const registry = {
+    ...registryBase,
+    getInstanceInfo: (instanceId: ProviderInstanceId) =>
+      registryBase.getInstanceInfo(instanceId).pipe(
+        Effect.map((info) => ({
+          ...info,
+          ...(options?.gatewayMcpMode === undefined
+            ? {}
+            : { gatewayMcpMode: options.gatewayMcpMode }),
+          continuationIdentity: {
+            ...info.continuationIdentity,
+            continuationKey:
+              continuationKeys.get(instanceId) ?? info.continuationIdentity.continuationKey,
+          },
+        })),
+      ),
+  };
 
   const providerAdapterLayer = Layer.succeed(
     ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -340,6 +356,10 @@ function makeProviderServiceLayer(options?: {
     claude,
     cursor,
     layer,
+    setContinuationKey: (instanceId: ProviderInstanceId, continuationKey?: string): void => {
+      if (continuationKey === undefined) continuationKeys.delete(instanceId);
+      else continuationKeys.set(instanceId, continuationKey);
+    },
   };
 }
 
@@ -987,6 +1007,462 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("inspects and rolls back an exact Codex route with checked turn digests", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-checked-success");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+
+      const inspected = yield* provider.inspectConversation({
+        threadId,
+        providerInstanceId: codexInstanceId,
+        targetTurnCount: 0,
+      });
+      const result = yield* provider.rollbackConversationChecked({
+        threadId,
+        providerInstanceId: codexInstanceId,
+        numTurns: 1,
+        expectedPreimage: inspected.preimage,
+        expectedTarget: inspected.target,
+        expectedDriverKind: inspected.binding.driverKind,
+        expectedContinuationIdentitySha256: inspected.binding.continuationIdentitySha256,
+      });
+
+      assert.equal(inspected.providerInstanceId, codexInstanceId);
+      assert.deepEqual(inspected.binding, {
+        driverKind: CODEX_DRIVER,
+        continuationIdentitySha256: codexContinuationIdentitySha256,
+      });
+      assert.deepEqual(result.target, inspected.target);
+      assert.deepEqual(routing.codex.rollbackThread.mock.calls, [[threadId, 1]]);
+      yield* provider.stopSession({ threadId });
+      routing.codex.rollbackThread.mockClear();
+      routing.codex.readThread.mockClear();
+    }),
+  );
+
+  it.effect("rejects route and preimage mismatches before provider mutation", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-checked-preimage");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      const wrong = yield* digestProviderTurnSequence(["different-turn"]);
+      const target = yield* digestProviderTurnSequence([]);
+      const rollbackCallsBefore = routing.codex.rollbackThread.mock.calls.length;
+
+      const routeError = yield* Effect.flip(
+        provider.inspectConversation({
+          threadId,
+          providerInstanceId: claudeAgentInstanceId,
+          targetTurnCount: 0,
+        }),
+      );
+      assert.instanceOf(routeError, ProviderValidationError);
+      assert.equal(routing.claude.readThread.mock.calls.length, 0);
+
+      const preimageError = yield* Effect.flip(
+        provider.rollbackConversationChecked({
+          threadId,
+          providerInstanceId: codexInstanceId,
+          numTurns: 1,
+          expectedPreimage: wrong,
+          expectedTarget: target,
+          expectedDriverKind: CODEX_DRIVER,
+          expectedContinuationIdentitySha256: codexContinuationIdentitySha256,
+        }),
+      );
+      assert.instanceOf(preimageError, ProviderRollbackPreimageMismatchError);
+      assert.equal(routing.codex.rollbackThread.mock.calls.length, rollbackCallsBefore);
+      yield* provider.stopSession({ threadId });
+      routing.codex.rollbackThread.mockClear();
+      routing.codex.readThread.mockClear();
+    }),
+  );
+
+  it.effect("derives preimage and requested target-prefix digests from one locked snapshot", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-inspect-target-prefix");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      routing.codex.readThread.mockImplementation((requestedThreadId) =>
+        Effect.succeed({
+          threadId: requestedThreadId,
+          turns: ["turn-1", "turn-2", "turn-3"].map((id) => ({
+            id: asTurnId(id),
+            items: [],
+          })),
+        }),
+      );
+
+      const targetTwo = yield* provider.inspectConversation({
+        threadId,
+        providerInstanceId: codexInstanceId,
+        targetTurnCount: 2,
+      });
+      assert.deepEqual(
+        targetTwo.preimage,
+        yield* digestProviderTurnSequence(["turn-1", "turn-2", "turn-3"]),
+      );
+      assert.deepEqual(targetTwo.target, yield* digestProviderTurnSequence(["turn-1", "turn-2"]));
+
+      const targetZero = yield* provider.inspectConversation({
+        threadId,
+        providerInstanceId: codexInstanceId,
+        targetTurnCount: 0,
+      });
+      assert.deepEqual(targetZero.target, yield* digestProviderTurnSequence([]));
+      assert.instanceOf(
+        yield* Effect.flip(
+          provider.inspectConversation({
+            threadId,
+            providerInstanceId: codexInstanceId,
+            targetTurnCount: 4,
+          }),
+        ),
+        ProviderValidationError,
+      );
+
+      routing.codex.readThread.mockImplementation((requestedThreadId) =>
+        Effect.succeed({
+          threadId: requestedThreadId,
+          turns: [{ id: asTurnId("turn-1"), items: [] }],
+        }),
+      );
+      yield* provider.stopSession({ threadId });
+      routing.codex.readThread.mockClear();
+    }),
+  );
+
+  it.effect("rejects continuation replacement between inspection and rollback", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-checked-continuation-replaced");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      const inspected = yield* provider.inspectConversation({
+        threadId,
+        providerInstanceId: codexInstanceId,
+        targetTurnCount: 0,
+      });
+      const target = yield* digestProviderTurnSequence([]);
+      const readCallsBefore = routing.codex.readThread.mock.calls.length;
+      const rollbackCallsBefore = routing.codex.rollbackThread.mock.calls.length;
+      routing.setContinuationKey(codexInstanceId, "codex:replacement:generation-2");
+
+      const error = yield* Effect.flip(
+        provider.rollbackConversationChecked({
+          threadId,
+          providerInstanceId: codexInstanceId,
+          numTurns: 1,
+          expectedPreimage: inspected.preimage,
+          expectedTarget: target,
+          expectedDriverKind: inspected.binding.driverKind,
+          expectedContinuationIdentitySha256: inspected.binding.continuationIdentitySha256,
+        }),
+      );
+      assert.instanceOf(error, ProviderValidationError);
+      assert.equal(routing.codex.readThread.mock.calls.length, readCallsBefore);
+      assert.equal(routing.codex.rollbackThread.mock.calls.length, rollbackCallsBefore);
+
+      routing.setContinuationKey(codexInstanceId);
+      yield* provider.stopSession({ threadId });
+      routing.codex.rollbackThread.mockClear();
+      routing.codex.readThread.mockClear();
+    }),
+  );
+
+  it.effect("rejects checked rollback while the provider reports an active turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-checked-active");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      routing.codex.updateSession(threadId, (session) => ({
+        ...session,
+        status: "running",
+        activeTurnId: asTurnId("turn-active"),
+      }));
+      const preimage = yield* digestProviderTurnSequence(["turn-1"]);
+      const target = yield* digestProviderTurnSequence([]);
+      const readCallsBefore = routing.codex.readThread.mock.calls.length;
+      const rollbackCallsBefore = routing.codex.rollbackThread.mock.calls.length;
+
+      const error = yield* Effect.flip(
+        provider.rollbackConversationChecked({
+          threadId,
+          providerInstanceId: codexInstanceId,
+          numTurns: 1,
+          expectedPreimage: preimage,
+          expectedTarget: target,
+          expectedDriverKind: CODEX_DRIVER,
+          expectedContinuationIdentitySha256: codexContinuationIdentitySha256,
+        }),
+      );
+      assert.instanceOf(error, ProviderRollbackActiveTurnError);
+      assert.equal(routing.codex.readThread.mock.calls.length, readCallsBefore);
+      assert.equal(routing.codex.rollbackThread.mock.calls.length, rollbackCallsBefore);
+      yield* provider.stopSession({ threadId });
+      routing.codex.rollbackThread.mockClear();
+      routing.codex.readThread.mockClear();
+    }),
+  );
+
+  it.effect("serializes checked rollback with concurrent sendTurn for the same thread", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-checked-serialization");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      const rollbackStarted = yield* Deferred.make<void>();
+      const allowRollback = yield* Deferred.make<void>();
+      routing.codex.rollbackThread.mockImplementation((requestedThreadId) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(rollbackStarted, undefined);
+          yield* Deferred.await(allowRollback);
+          return { threadId: requestedThreadId, turns: [] } as const;
+        }),
+      );
+      const preimage = yield* digestProviderTurnSequence(["turn-1"]);
+      const target = yield* digestProviderTurnSequence([]);
+
+      const rollbackFiber = yield* provider
+        .rollbackConversationChecked({
+          threadId,
+          providerInstanceId: codexInstanceId,
+          numTurns: 1,
+          expectedPreimage: preimage,
+          expectedTarget: target,
+          expectedDriverKind: CODEX_DRIVER,
+          expectedContinuationIdentitySha256: codexContinuationIdentitySha256,
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(rollbackStarted);
+      const sendFiber = yield* provider
+        .sendTurn({ threadId, input: "after rollback", attachments: [] })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.yieldNow;
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+      yield* Deferred.succeed(allowRollback, undefined);
+      yield* Fiber.join(rollbackFiber);
+      yield* Fiber.join(sendFiber);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      yield* provider.stopSession({ threadId });
+      routing.codex.rollbackThread.mockImplementation((requestedThreadId) =>
+        Effect.succeed({ threadId: requestedThreadId, turns: [] }),
+      );
+      routing.codex.rollbackThread.mockClear();
+      routing.codex.readThread.mockClear();
+      routing.codex.sendTurn.mockClear();
+    }),
+  );
+
+  it.effect("classifies every post-dispatch failure and target mismatch as outcome unknown", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-checked-unknown");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      const preimage = yield* digestProviderTurnSequence(["turn-1"]);
+      const target = yield* digestProviderTurnSequence([]);
+      const checked = () =>
+        provider.rollbackConversationChecked({
+          threadId,
+          providerInstanceId: codexInstanceId,
+          numTurns: 1,
+          expectedPreimage: preimage,
+          expectedTarget: target,
+          expectedDriverKind: CODEX_DRIVER,
+          expectedContinuationIdentitySha256: codexContinuationIdentitySha256,
+        });
+
+      routing.codex.rollbackThread.mockImplementation(() =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: CODEX_DRIVER,
+            method: "thread/rollback",
+            detail: "timeout",
+          }),
+        ),
+      );
+      assert.instanceOf(yield* Effect.flip(checked()), ProviderRollbackOutcomeUnknownError);
+
+      routing.codex.rollbackThread.mockImplementation(() =>
+        Effect.fail(
+          new ProviderAdapterSessionClosedError({
+            provider: CODEX_DRIVER,
+            threadId,
+          }),
+        ),
+      );
+      assert.instanceOf(yield* Effect.flip(checked()), ProviderRollbackOutcomeUnknownError);
+
+      routing.codex.rollbackThread.mockImplementation((requestedThreadId) =>
+        Effect.succeed({
+          threadId: requestedThreadId,
+          turns: [{ id: asTurnId("wrong-target"), items: [] }],
+        }),
+      );
+      const mismatch = yield* Effect.flip(checked());
+      assert.instanceOf(mismatch, ProviderRollbackOutcomeUnknownError);
+      if (mismatch._tag === "ProviderRollbackOutcomeUnknownError") {
+        assert.equal(mismatch.reason, "returned-target-mismatch");
+      }
+      yield* provider.stopSession({ threadId });
+      routing.codex.rollbackThread.mockImplementation((requestedThreadId) =>
+        Effect.succeed({ threadId: requestedThreadId, turns: [] }),
+      );
+      routing.codex.rollbackThread.mockClear();
+      routing.codex.readThread.mockClear();
+    }),
+  );
+
+  it.effect("serializes inspection with concurrent sendTurn for the same thread", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-inspect-serialization");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      const readStarted = yield* Deferred.make<void>();
+      const allowRead = yield* Deferred.make<void>();
+      routing.codex.readThread.mockImplementation((requestedThreadId) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(readStarted, undefined);
+          yield* Deferred.await(allowRead);
+          return {
+            threadId: requestedThreadId,
+            turns: [{ id: asTurnId("turn-1"), items: [] }],
+          } as const;
+        }),
+      );
+
+      const inspectFiber = yield* provider
+        .inspectConversation({
+          threadId,
+          providerInstanceId: codexInstanceId,
+          targetTurnCount: 0,
+        })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(readStarted);
+      const sendFiber = yield* provider
+        .sendTurn({ threadId, input: "after inspection", attachments: [] })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Effect.yieldNow;
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 0);
+      yield* Deferred.succeed(allowRead, undefined);
+      yield* Fiber.join(inspectFiber);
+      yield* Fiber.join(sendFiber);
+      assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+
+      routing.codex.readThread.mockImplementation((requestedThreadId) =>
+        Effect.succeed({
+          threadId: requestedThreadId,
+          turns: [{ id: asTurnId("turn-1"), items: [] }],
+        }),
+      );
+      yield* provider.stopSession({ threadId });
+      routing.codex.readThread.mockClear();
+      routing.codex.sendTurn.mockClear();
+    }),
+  );
+
+  it.effect("rejects absent capabilities and digest-version skew explicitly", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const unsupportedThread = asThreadId("thread-checked-unsupported");
+      yield* provider.startSession(unsupportedThread, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId: unsupportedThread,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      assert.instanceOf(
+        yield* Effect.flip(
+          provider.inspectConversation({
+            threadId: unsupportedThread,
+            providerInstanceId: claudeAgentInstanceId,
+            targetTurnCount: 0,
+          }),
+        ),
+        ProviderCheckedRollbackUnsupportedError,
+      );
+
+      const codexThread = asThreadId("thread-checked-version");
+      yield* provider.startSession(codexThread, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId: codexThread,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      const preimage = yield* digestProviderTurnSequence(["turn-1"]);
+      const target = yield* digestProviderTurnSequence([]);
+      const rollbackCallsBefore = routing.codex.rollbackThread.mock.calls.length;
+      const versionError = yield* Effect.flip(
+        provider.rollbackConversationChecked({
+          threadId: codexThread,
+          providerInstanceId: codexInstanceId,
+          numTurns: 1,
+          expectedPreimage: { ...preimage, version: "future-v2" } as never,
+          expectedTarget: target,
+          expectedDriverKind: CODEX_DRIVER,
+          expectedContinuationIdentitySha256: codexContinuationIdentitySha256,
+        }),
+      );
+      assert.instanceOf(versionError, ProviderValidationError);
+      assert.equal(routing.codex.rollbackThread.mock.calls.length, rollbackCallsBefore);
+      yield* provider.stopSession({ threadId: unsupportedThread });
+      yield* provider.stopSession({ threadId: codexThread });
+      routing.codex.rollbackThread.mockClear();
+      routing.codex.readThread.mockClear();
+      routing.claude.readThread.mockClear();
+      routing.claude.startSession.mockClear();
+    }),
+  );
+
   it.effect("routes provider operations and rollback conversation", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

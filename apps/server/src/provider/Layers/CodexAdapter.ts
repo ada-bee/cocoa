@@ -1716,6 +1716,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     provider: PROVIDER,
     capabilities: {
       sessionModelSwitch: "in-session",
+      conversationRead: "ordered-turn-ids-v1",
+      checkedConversationRollback: "ordered-turn-ids-v1",
     },
     startSession,
     sendTurn,

@@ -85,6 +85,63 @@ export class ProviderAdapterProcessError extends Schema.TaggedErrorClass<Provide
   }
 }
 
+/** The rollback request was dispatched, but its final provider state is not authoritative. */
+export class ProviderRollbackOutcomeUnknownError extends Schema.TaggedErrorClass<ProviderRollbackOutcomeUnknownError>()(
+  "ProviderRollbackOutcomeUnknownError",
+  {
+    provider: Schema.String,
+    providerInstanceId: Schema.String,
+    threadId: Schema.String,
+    reason: Schema.Literals(["request-failed", "returned-target-mismatch"]),
+    issue: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Provider rollback outcome is unknown (${this.provider}) for thread ${this.threadId}: ${this.issue}`;
+  }
+}
+
+export class ProviderRollbackPreimageMismatchError extends Schema.TaggedErrorClass<ProviderRollbackPreimageMismatchError>()(
+  "ProviderRollbackPreimageMismatchError",
+  {
+    providerInstanceId: Schema.String,
+    threadId: Schema.String,
+    expectedSha256: Schema.String,
+    actualSha256: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Provider rollback preimage no longer matches for thread ${this.threadId}`;
+  }
+}
+
+export class ProviderCheckedRollbackUnsupportedError extends Schema.TaggedErrorClass<ProviderCheckedRollbackUnsupportedError>()(
+  "ProviderCheckedRollbackUnsupportedError",
+  {
+    provider: Schema.String,
+    providerInstanceId: Schema.String,
+    capability: Schema.Literals(["conversation-read", "checked-rollback"]),
+  },
+) {
+  override get message(): string {
+    return `Provider '${this.provider}' instance '${this.providerInstanceId}' does not support ${this.capability}`;
+  }
+}
+
+export class ProviderRollbackActiveTurnError extends Schema.TaggedErrorClass<ProviderRollbackActiveTurnError>()(
+  "ProviderRollbackActiveTurnError",
+  {
+    providerInstanceId: Schema.String,
+    threadId: Schema.String,
+    turnId: Schema.optional(Schema.String),
+  },
+) {
+  override get message(): string {
+    return `Cannot roll back provider thread '${this.threadId}' while a turn is active`;
+  }
+}
+
 /**
  * ProviderValidationError - Invalid provider API input.
  */
@@ -200,5 +257,9 @@ export type ProviderServiceError =
   | ProviderInstanceNotFoundError
   | ProviderSessionNotFoundError
   | ProviderSessionDirectoryPersistenceError
+  | ProviderRollbackOutcomeUnknownError
+  | ProviderRollbackPreimageMismatchError
+  | ProviderCheckedRollbackUnsupportedError
+  | ProviderRollbackActiveTurnError
   | ProviderAdapterError
   | CheckpointServiceError;
