@@ -1,0 +1,40 @@
+/** Cocoa-owned migrations, deliberately isolated from the upstream T3 chain. */
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Migrator from "effect/unstable/sql/Migrator";
+
+import Migration0001 from "./CocoaMigrations/001_ProviderCheckpointOperations.ts";
+
+export const cocoaMigrationEntries = [[1, "ProviderCheckpointOperations", Migration0001]] as const;
+
+export const cocoaMigrationManifest = cocoaMigrationEntries.map(
+  ([id, name]) => [id, name] as const,
+);
+
+export const makeCocoaMigrationLoader = (throughId?: number) =>
+  Migrator.fromRecord(
+    Object.fromEntries(
+      cocoaMigrationEntries
+        .filter(([id]) => throughId === undefined || id <= throughId)
+        .map(([id, name, migration]) => [`${id}_${name}`, migration]),
+    ),
+  );
+
+const run = Migrator.make({});
+
+export const runCocoaMigrations = Effect.fn("runCocoaMigrations")(function* (
+  options: { readonly toMigrationInclusive?: number } = {},
+) {
+  const executed = yield* run({
+    loader: makeCocoaMigrationLoader(options.toMigrationInclusive),
+    table: "cocoa_sql_migrations",
+  });
+  yield* executed.length === 0
+    ? Effect.logDebug("Cocoa database schema is current")
+    : Effect.log("Cocoa migrations ran successfully").pipe(
+        Effect.annotateLogs({ migrations: executed.map(([id, name]) => `${id}_${name}`) }),
+      );
+  return executed;
+});
+
+export const CocoaMigrationsLive = Layer.effectDiscard(runCocoaMigrations());

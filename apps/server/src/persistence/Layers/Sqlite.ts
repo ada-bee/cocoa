@@ -6,6 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { SqlError } from "effect/unstable/sql/SqlError";
 
 import { runMigrations } from "../Migrations.ts";
+import { runCocoaMigrations } from "../CocoaMigrations.ts";
 import { ServerConfig } from "../../config.ts";
 import * as ServiceLauncherClient from "../../cloud/serviceLauncherClient.ts";
 
@@ -39,6 +40,7 @@ const setup = (trial: boolean) =>
       if (!trial) {
         yield* sql`PRAGMA journal_mode = WAL;`;
         yield* runMigrations();
+        yield* runCocoaMigrations();
       }
     }),
   );
