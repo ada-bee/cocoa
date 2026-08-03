@@ -11,6 +11,7 @@ const projects: ReadonlyArray<EnvironmentProject> = [
   {
     environmentId: EnvironmentId.make("moonbase-terminal"),
     id: ProjectId.make("t3code"),
+    providerInstanceId: ProviderInstanceId.make("codex"),
     title: "T3 Code",
     workspaceRoot: "/workspace/t3code",
     repositoryIdentity: null,
@@ -22,6 +23,7 @@ const projects: ReadonlyArray<EnvironmentProject> = [
   {
     environmentId: EnvironmentId.make("suspense-station"),
     id: ProjectId.make("react"),
+    providerInstanceId: ProviderInstanceId.make("codex"),
     title: "React",
     workspaceRoot: "/workspace/react",
     repositoryIdentity: null,

@@ -107,7 +107,7 @@ function OpenContentSearchDialog(props: {
 
   const search = useProjectContentSearch({
     environmentId: target.environmentId,
-    cwd: target.cwd,
+    target: target.workspaceTarget,
     query,
     caseSensitive,
     wholeWord,

@@ -1100,10 +1100,15 @@ describe("getVisibleThreadsForProject", () => {
 });
 
 function makeProject(overrides: Partial<Project> = {}): Project {
-  const { defaultModelSelection, ...rest } = overrides;
+  const {
+    defaultModelSelection,
+    providerInstanceId = ProviderInstanceId.make("codex"),
+    ...rest
+  } = overrides;
   return {
     id: ProjectId.make("project-1"),
     environmentId: localEnvironmentId,
+    providerInstanceId,
     title: "Project",
     workspaceRoot: "/tmp/project",
     repositoryIdentity: null,

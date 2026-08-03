@@ -3,7 +3,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectWorkspaceTarget, ScopedThreadRef } from "@t3tools/contracts";
 import {
   buildCollapsedProposedPlanPreviewMarkdown,
   buildProposedPlanMarkdownFilename,
@@ -39,12 +39,14 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   threadRef,
   cwd,
   workspaceRoot,
+  workspaceTarget,
 }: {
   planMarkdown: string;
   environmentId: EnvironmentId;
   threadRef?: ScopedThreadRef | undefined;
   cwd: string | undefined;
   workspaceRoot: string | undefined;
+  workspaceTarget: ProjectWorkspaceTarget | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
@@ -85,7 +87,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
   };
 
   const openSaveDialog = () => {
-    if (!workspaceRoot) {
+    if (!workspaceTarget) {
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -101,7 +103,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
 
   const handleSaveToWorkspace = () => {
     const relativePath = savePath.trim();
-    if (!workspaceRoot) {
+    if (!workspaceTarget) {
       return;
     }
     if (!relativePath) {
@@ -117,7 +119,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
       const result = await writeProjectFile({
         environmentId,
         input: {
-          cwd: workspaceRoot,
+          target: workspaceTarget,
           relativePath,
           contents: saveContents,
         },
@@ -163,7 +165,7 @@ export const ProposedPlanCard = memo(function ProposedPlanCard({
               {isCopied ? "Copied!" : "Copy to clipboard"}
             </MenuItem>
             <MenuItem onClick={handleDownload}>Download as markdown</MenuItem>
-            <MenuItem onClick={openSaveDialog} disabled={!workspaceRoot || isSavingToWorkspace}>
+            <MenuItem onClick={openSaveDialog} disabled={!workspaceTarget || isSavingToWorkspace}>
               Save to workspace
             </MenuItem>
           </MenuPopup>

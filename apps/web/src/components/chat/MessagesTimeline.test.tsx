@@ -190,6 +190,7 @@ function buildProps() {
     resolvedTheme: "light" as const,
     timestampFormat: "locale" as const,
     workspaceRoot: undefined,
+    workspaceTarget: null,
     anchorMessageId: null,
     onAnchorReady: () => {},
     onAnchorSizeChanged: () => {},

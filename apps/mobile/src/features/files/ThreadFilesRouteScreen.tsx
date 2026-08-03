@@ -193,6 +193,8 @@ function useThreadFilesWorkspace(params: {
     projectName: project?.title ?? "Files",
     selectedThread,
     threadId,
+    workspaceTarget:
+      selectedThread && threadId ? { projectId: selectedThread.projectId, threadId } : null,
   };
 }
 
@@ -246,15 +248,14 @@ export function ThreadFilesTreeScreen(props: ThreadFilesRouteScreenProps) {
   const isAndroid = Platform.OS === "android";
   const highlightTheme = colorScheme === "dark" ? "dark" : "light";
   const iconColor = String(useThemeColor("--color-icon-muted"));
-  const { cwd, environmentId, projectName, selectedThread, threadId } = useThreadFilesWorkspace(
-    props.route.params,
-  );
+  const { cwd, environmentId, projectName, selectedThread, threadId, workspaceTarget } =
+    useThreadFilesWorkspace(props.route.params);
   const revealedInspectorRef = useRef(false);
   const entriesQuery = useEnvironmentQuery(
-    environmentId !== null && cwd !== null && !fileInspector.supported
+    environmentId !== null && workspaceTarget !== null && !fileInspector.supported
       ? projectEnvironment.listEntries({
           environmentId,
-          input: { cwd },
+          input: { target: workspaceTarget },
         })
       : null,
   );
@@ -297,31 +298,32 @@ export function ThreadFilesTreeScreen(props: ThreadFilesRouteScreenProps) {
   );
   const renderInspector = useCallback(
     (headerInset: number) =>
-      environmentId !== null && cwd !== null ? (
+      environmentId !== null && cwd !== null && workspaceTarget !== null ? (
         <ThreadFileNavigatorPane
           cwd={cwd}
           environmentId={environmentId}
+          target={workspaceTarget}
           headerInset={headerInset}
           projectName={projectName}
           selectedPath={null}
           onSelectFile={handleSelectFile}
         />
       ) : null,
-    [cwd, environmentId, handleSelectFile, projectName],
+    [cwd, environmentId, handleSelectFile, projectName, workspaceTarget],
   );
   const handlePreviewFile = useCallback(
     (relativePath: string) => {
-      if (environmentId === null || cwd === null) {
+      if (environmentId === null || workspaceTarget === null) {
         return;
       }
       preloadWorkspaceFileContents({
-        cwd,
         environmentId,
+        target: workspaceTarget,
         relativePath,
         theme: highlightTheme,
       });
     },
-    [cwd, environmentId, highlightTheme],
+    [environmentId, highlightTheme, workspaceTarget],
   );
   useEffect(() => {
     if (fileInspector.supported && cwd !== null && !revealedInspectorRef.current) {
@@ -468,9 +470,8 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
   const params = props.route.params;
   const relativePath = normalizeRoutePath(params.path);
   const targetLine = normalizeRouteLine(firstRouteParam(params.line));
-  const { cwd, environmentId, projectName, selectedThread, threadId } = useThreadFilesWorkspace(
-    props.route.params,
-  );
+  const { cwd, environmentId, projectName, selectedThread, threadId, workspaceTarget } =
+    useThreadFilesWorkspace(props.route.params);
   const [modeOverride, setModeOverride] = useState<{
     readonly path: string;
     readonly mode: FileViewMode;
@@ -500,10 +501,10 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
     relativePath !== null &&
     (resolvedActiveMode === "source" || isMarkdownPreviewFile(relativePath));
   const fileQuery = useEnvironmentQuery(
-    environmentId !== null && cwd !== null && relativePath !== null && needsFileContents
+    environmentId !== null && workspaceTarget !== null && relativePath !== null && needsFileContents
       ? projectEnvironment.readFile({
           environmentId,
-          input: { cwd, relativePath },
+          input: { target: workspaceTarget, relativePath },
         })
       : null,
   );
@@ -521,10 +522,14 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
   );
   const renderInspector = useCallback(
     (headerInset: number) =>
-      fileInspector.supported && environmentId !== null && cwd !== null ? (
+      fileInspector.supported &&
+      environmentId !== null &&
+      cwd !== null &&
+      workspaceTarget !== null ? (
         <ThreadFileNavigatorPane
           cwd={cwd}
           environmentId={environmentId}
+          target={workspaceTarget}
           headerInset={headerInset}
           projectName={projectName}
           selectedPath={relativePath}

@@ -2,7 +2,7 @@ import type {
   ContextMenuItem as TreeContextMenuItem,
   ContextMenuOpenContext as TreeContextMenuOpenContext,
 } from "@pierre/trees";
-import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectEntry, ProjectWorkspaceTarget } from "@t3tools/contracts";
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { RotateCw } from "lucide-react";
@@ -24,6 +24,7 @@ import { useProjectEntriesQuery } from "./projectFilesQueryState";
 
 interface FileBrowserPanelProps {
   environmentId: EnvironmentId;
+  target: ProjectWorkspaceTarget;
   cwd: string;
   projectName: string;
   /** File currently open in the preview pane; revealed and selected in the tree. */
@@ -100,6 +101,7 @@ function FileSearchField(props: {
 
 export default function FileBrowserPanel({
   environmentId,
+  target,
   cwd,
   projectName,
   selectedPath,
@@ -108,7 +110,7 @@ export default function FileBrowserPanel({
 }: FileBrowserPanelProps) {
   const { resolvedTheme } = useTheme();
   const composerRef = useComposerHandleContext();
-  const entriesQuery = useProjectEntriesQuery(environmentId, cwd);
+  const entriesQuery = useProjectEntriesQuery(environmentId, target);
   const entries = entriesQuery.data?.entries ?? [];
   const entryKinds = useMemo(
     () => new Map(entries.map((entry) => [entry.path, entry.kind] as const)),

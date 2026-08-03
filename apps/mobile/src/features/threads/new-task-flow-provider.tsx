@@ -254,9 +254,12 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     if (!editingPendingTask || !creation) {
       return null;
     }
+    const providerInstanceId = editingPendingTask.modelSelection?.instanceId;
+    if (!providerInstanceId) return null;
     return {
       environmentId: editingPendingTask.environmentId,
       id: creation.projectId,
+      providerInstanceId,
       title: creation.projectTitle ?? "Unknown project",
       // Deliberately empty when the snapshot has no cwd — downstream consumers
       // (branch queries, worktree bootstrap) must skip it, not receive a

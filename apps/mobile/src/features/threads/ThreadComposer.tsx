@@ -362,7 +362,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   }, [composerSelection, props.draftMessage]);
   const pathSearch = useComposerPathSearch({
     environmentId: props.environmentId,
-    cwd: composerTrigger?.kind === "path" ? props.projectCwd : null,
+    target:
+      composerTrigger?.kind === "path"
+        ? { projectId: props.selectedThread.projectId, threadId: props.selectedThread.id }
+        : null,
     query: composerTrigger?.kind === "path" ? composerTrigger.query : null,
   });
 

@@ -1,4 +1,9 @@
-import type { EnvironmentId, OrchestrationThread, ThreadId } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  OrchestrationThread,
+  ProjectWorkspaceTarget,
+  ThreadId,
+} from "@t3tools/contracts";
 import {
   createThreadSearchResultsAtomFamily,
   makeThreadSearchKey,
@@ -48,7 +53,7 @@ export interface ThreadDetailView {
 
 export interface ComposerPathSearchTarget {
   readonly environmentId: EnvironmentId | null;
-  readonly cwd: string | null;
+  readonly target: ProjectWorkspaceTarget | null;
   readonly query: string | null;
 }
 
@@ -129,20 +134,26 @@ export function useComposerPathSearch(target: ComposerPathSearchTarget) {
   const normalizedTarget = useMemo(
     () => ({
       environmentId: target.environmentId,
-      cwd: target.cwd,
+      target:
+        target.target === null
+          ? null
+          : {
+              projectId: target.target.projectId,
+              ...(target.target.threadId ? { threadId: target.target.threadId } : {}),
+            },
       query: normalizeComposerPathSearchQuery(target.query),
     }),
-    [target.cwd, target.environmentId, target.query],
+    [target.environmentId, target.query, target.target?.projectId, target.target?.threadId],
   );
   const debouncedTarget = useDebouncedValue(normalizedTarget, COMPOSER_PATH_SEARCH_DEBOUNCE_MS);
   const result = useEnvironmentQuery(
     debouncedTarget.environmentId !== null &&
-      debouncedTarget.cwd !== null &&
+      debouncedTarget.target !== null &&
       debouncedTarget.query.length > 0
       ? projectEnvironment.searchEntries({
           environmentId: debouncedTarget.environmentId,
           input: {
-            cwd: debouncedTarget.cwd,
+            target: debouncedTarget.target,
             query: debouncedTarget.query,
             limit: COMPOSER_PATH_SEARCH_LIMIT,
           },

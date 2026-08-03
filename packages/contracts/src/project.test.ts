@@ -1,32 +1,36 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
+import { ProjectId, ThreadId } from "./baseSchemas.ts";
 import {
   ProjectReadFileError,
   ProjectSearchContentsError,
   ProjectSearchContentsInput,
   ProjectSearchEntriesError,
   ProjectSearchEntriesInput,
-  ProjectWriteFileError,
+  ProjectWorkspaceFailure,
 } from "./project.ts";
 
+const projectId = ProjectId.make("project");
+const target = { projectId, threadId: ThreadId.make("thread") };
 const decodeSearchEntriesInput = Schema.decodeUnknownSync(ProjectSearchEntriesInput);
 const decodeSearchContentsInput = Schema.decodeUnknownSync(ProjectSearchContentsInput);
 
 describe("project search inputs", () => {
-  it("allows an empty entries query for bounded frecency browsing", () => {
+  it("scopes entries search by project and allows an empty query", () => {
     const decoded = decodeSearchEntriesInput({
-      cwd: "/workspace",
+      target,
       query: "   ",
       limit: 10,
       kind: "file",
     });
+    expect(decoded.target).toEqual(target);
     expect(decoded.query).toBe("");
   });
 
   it("preserves whitespace in content search queries", () => {
     const decoded = decodeSearchContentsInput({
-      cwd: "/workspace",
+      target,
       query: " foo ",
       limit: 10,
       caseSensitive: false,
@@ -38,72 +42,54 @@ describe("project search inputs", () => {
 });
 
 describe("project RPC errors", () => {
-  it("derives stable messages from structured request context while retaining causes", () => {
-    const cause = new Error("sensitive platform detail");
-    const searchError = new ProjectSearchEntriesError({
-      cwd: "/workspace",
-      queryLength: "authorization: Bearer secret-token".length,
-      limit: 20,
-      failure: "search_index_search_failed",
-      normalizedCwd: "/workspace",
-      detail: "index unavailable",
-      cause,
-    });
-    const readError = new ProjectReadFileError({
-      cwd: "/workspace",
-      relativePath: "src/index.ts",
-      failure: "operation_failed",
-      operation: "read",
-      operationPath: "/workspace/src/index.ts",
-      resolvedPath: "/workspace/src/index.ts",
-      cause,
-    });
-
-    expect(searchError.message).toBe("Failed to search workspace entries in '/workspace'.");
-    expect(searchError.message).not.toContain(cause.message);
-    expect(searchError.normalizedCwd).toBe("/workspace");
-    expect(searchError.queryLength).toBe("authorization: Bearer secret-token".length);
-    expect(searchError).not.toHaveProperty("query");
-    expect(searchError.message).not.toMatch(/Bearer|secret-token/);
-    expect(searchError.cause).toBe(cause);
-    expect(readError.message).toBe("Failed to read workspace file 'src/index.ts' in '/workspace'.");
-    expect(readError.message).not.toContain(cause.message);
-    expect(readError.cause).toBe(cause);
-
-    const contentSearchError = new ProjectSearchContentsError({
-      cwd: "/workspace",
-      queryLength: "authorization: Bearer secret-token".length,
-      limit: 100,
-      failure: "search_index_search_failed",
-      cause,
-    });
-    expect(contentSearchError.message).toBe("Failed to search workspace contents in '/workspace'.");
-    expect(contentSearchError.message).not.toContain(cause.message);
-    expect(contentSearchError).not.toHaveProperty("query");
-    expect(contentSearchError.cause).toBe(cause);
+  it.each([
+    "thread_not_found",
+    "thread_project_mismatch",
+    "path_not_directory",
+    "symlink_rejected",
+    "protocol_incompatible",
+  ] as const)("decodes the stable %s failure code", (failure) => {
+    expect(Schema.decodeUnknownSync(ProjectWorkspaceFailure)(failure)).toBe(failure);
   });
 
-  it("decodes legacy message-only errors during rolling upgrades", () => {
-    const decodeSearchError = Schema.decodeUnknownSync(ProjectSearchEntriesError);
-    const decodeWriteError = Schema.decodeUnknownSync(ProjectWriteFileError);
-
-    const searchError = decodeSearchError({
-      _tag: "ProjectSearchEntriesError",
-      message: "Legacy project search failure.",
-      query: "legacy sensitive query",
+  it("exposes provider-neutral failure metadata without host paths", () => {
+    const searchError = new ProjectSearchEntriesError({
+      target,
+      queryLength: "authorization: Bearer secret-token".length,
+      limit: 20,
+      failure: "provider_unavailable",
+      operation: "search-entries",
+      retryable: true,
     });
-    const writeError = decodeWriteError({
-      _tag: "ProjectWriteFileError",
-      message: "Legacy project write failure.",
+    const readError = new ProjectReadFileError({
+      target,
+      relativePath: "src/index.ts",
+      failure: "operation_failed",
+      operation: "read-file",
+      retryable: false,
     });
 
-    expect(searchError.message).toBe("Legacy project search failure.");
-    expect(searchError.cwd).toBeUndefined();
-    expect(searchError.queryLength).toBeUndefined();
-    expect(searchError).not.toHaveProperty("query");
-    expect(searchError.failure).toBeUndefined();
-    expect(writeError.message).toBe("Legacy project write failure.");
-    expect(writeError.relativePath).toBeUndefined();
-    expect(writeError.failure).toBeUndefined();
+    expect(searchError.message).toBe("Failed to search workspace entries.");
+    expect(searchError.queryLength).toBe("authorization: Bearer secret-token".length);
+    expect(searchError.failure).toBe("provider_unavailable");
+    expect(searchError.retryable).toBe(true);
+    expect(searchError).not.toHaveProperty("cwd");
+    expect(searchError).not.toHaveProperty("normalizedCwd");
+    expect(searchError).not.toHaveProperty("detail");
+    expect(searchError.message).not.toMatch(/Bearer|secret-token/);
+    expect(readError.message).toBe("Failed to read workspace file 'src/index.ts'.");
+    expect(readError).not.toHaveProperty("resolvedPath");
+    expect(readError).not.toHaveProperty("operationPath");
+
+    const contentSearchError = new ProjectSearchContentsError({
+      target,
+      queryLength: "authorization: Bearer secret-token".length,
+      limit: 100,
+      failure: "unsupported_operation",
+      operation: "search-contents",
+      retryable: false,
+    });
+    expect(contentSearchError.message).toBe("Failed to search workspace contents.");
+    expect(contentSearchError).not.toHaveProperty("query");
   });
 });

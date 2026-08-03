@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   EnvironmentId,
   ProjectId,
+  ProviderInstanceId,
   CommandId,
   SourceControlDiscoveryResult,
 } from "@t3tools/contracts";
@@ -17,6 +18,8 @@ import {
   sortAddProjectProviderSources,
 } from "./projects.ts";
 import type { EnvironmentProject } from "../state/models.ts";
+
+const providerInstanceId = ProviderInstanceId.make("codex");
 
 describe("add project shared logic", () => {
   it("only allows project creation in connected environments", () => {
@@ -105,6 +108,7 @@ describe("add project shared logic", () => {
     const projects: EnvironmentProject[] = [
       {
         environmentId: other,
+        providerInstanceId,
         id: ProjectId.make("same-path-other-env"),
         title: "Other",
         workspaceRoot: "/repo",
@@ -116,6 +120,7 @@ describe("add project shared logic", () => {
       },
       {
         environmentId: env,
+        providerInstanceId,
         id: ProjectId.make("project"),
         title: "Repo",
         workspaceRoot: "/repo/",
@@ -127,9 +132,10 @@ describe("add project shared logic", () => {
       },
     ];
 
-    expect(findExistingAddProject({ projects, environmentId: env, path: "/repo" })?.id).toBe(
-      "project",
-    );
+    expect(
+      findExistingAddProject({ projects, environmentId: env, providerInstanceId, path: "/repo" })
+        ?.id,
+    ).toBe("project");
   });
 
   it("builds the existing project.create command shape", () => {
@@ -137,6 +143,7 @@ describe("add project shared logic", () => {
       buildProjectCreateCommand({
         commandId: CommandId.make("command"),
         projectId: ProjectId.make("project"),
+        providerInstanceId,
         workspaceRoot: "/work/repo",
         createdAt: "2026-01-01T00:00:00.000Z",
       }),
@@ -144,6 +151,7 @@ describe("add project shared logic", () => {
       type: "project.create",
       commandId: "command",
       projectId: "project",
+      providerInstanceId: "codex",
       title: "repo",
       workspaceRoot: "/work/repo",
       createWorkspaceRootIfMissing: true,

@@ -1,4 +1,9 @@
-import { type EnvironmentId, type ProjectReadFileResult, WS_METHODS } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type ProjectReadFileResult,
+  type ProjectWorkspaceTarget,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -31,12 +36,17 @@ export interface OptimisticProjectFile {
 
 export interface OptimisticProjectFileTarget {
   readonly environmentId: EnvironmentId;
-  readonly cwd: string;
+  readonly target: ProjectWorkspaceTarget;
   readonly relativePath: string;
 }
 
 function optimisticProjectFileKey(target: OptimisticProjectFileTarget): string {
-  return JSON.stringify([target.environmentId, target.cwd, target.relativePath]);
+  return JSON.stringify([
+    target.environmentId,
+    target.target.projectId,
+    target.target.threadId ?? null,
+    target.relativePath,
+  ]);
 }
 
 export function createProjectEnvironmentAtoms<R, E>(
@@ -99,7 +109,12 @@ export function createProjectEnvironmentAtoms<R, E>(
       concurrency: {
         mode: "serial",
         key: ({ environmentId, input }) =>
-          JSON.stringify([environmentId, input.cwd, input.relativePath]),
+          JSON.stringify([
+            environmentId,
+            input.target.projectId,
+            input.target.threadId ?? null,
+            input.relativePath,
+          ]),
       },
     }),
   };

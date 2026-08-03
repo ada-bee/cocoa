@@ -3,6 +3,7 @@ import {
   EnvironmentId,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
   type ClientOrchestrationCommand,
 } from "@t3tools/contracts";
@@ -80,6 +81,7 @@ describe("environment commands", () => {
 
       const result = yield* createProject({
         projectId: ProjectId.make("project-1"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
         title: "Project",
         workspaceRoot: "/workspace/project",
         createdAt: "2026-06-06T00:00:00.000Z",
@@ -91,6 +93,7 @@ describe("environment commands", () => {
           type: "project.create",
           commandId: "00000000-0000-4000-8000-000000000000",
           projectId: "project-1",
+          providerInstanceId: "codex",
           title: "Project",
           workspaceRoot: "/workspace/project",
           createdAt: "2026-06-06T00:00:00.000Z",

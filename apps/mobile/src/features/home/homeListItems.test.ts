@@ -22,6 +22,7 @@ function makeProject(id: string, title: string): EnvironmentProject {
   return {
     environmentId,
     id: ProjectId.make(id),
+    providerInstanceId: ProviderInstanceId.make("codex"),
     title,
     workspaceRoot: `/workspaces/${id}`,
     repositoryIdentity: null,

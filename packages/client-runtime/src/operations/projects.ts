@@ -4,6 +4,7 @@ import type {
   EnvironmentId,
   OrchestrationCommand,
   ProjectId,
+  ProviderInstanceId,
   SourceControlDiscoveryResult,
   SourceControlProviderKind,
   SourceControlRepositoryInfo,
@@ -198,11 +199,16 @@ export function resolveAddProjectPath(input: {
 export function findExistingAddProject(input: {
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly environmentId: EnvironmentId;
+  readonly providerInstanceId: ProviderInstanceId;
   readonly path: string;
 }): EnvironmentProject | null {
   return (
     findProjectByPath(
-      input.projects.filter((project) => project.environmentId === input.environmentId),
+      input.projects.filter(
+        (project) =>
+          project.environmentId === input.environmentId &&
+          project.providerInstanceId === input.providerInstanceId,
+      ),
       input.path,
     ) ?? null
   );
@@ -211,6 +217,7 @@ export function findExistingAddProject(input: {
 export function buildProjectCreateCommand(input: {
   readonly commandId: CommandId;
   readonly projectId: ProjectId;
+  readonly providerInstanceId: ProviderInstanceId;
   readonly workspaceRoot: string;
   readonly createdAt: string;
 }): Extract<OrchestrationCommand, { type: "project.create" }> {
@@ -218,6 +225,7 @@ export function buildProjectCreateCommand(input: {
     type: "project.create",
     commandId: input.commandId,
     projectId: input.projectId,
+    providerInstanceId: input.providerInstanceId,
     title: inferProjectTitleFromPath(input.workspaceRoot),
     workspaceRoot: input.workspaceRoot,
     createWorkspaceRootIfMissing: true,

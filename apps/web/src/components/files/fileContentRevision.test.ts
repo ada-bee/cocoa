@@ -5,6 +5,12 @@ import {
   projectFileCacheKey,
   projectFileEditorCacheKey,
 } from "./fileContentRevision";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
+
+const target = {
+  projectId: ProjectId.make("project"),
+  threadId: ThreadId.make("thread"),
+};
 
 describe("fileContentRevision", () => {
   it("changes for same-length edits", () => {
@@ -12,16 +18,16 @@ describe("fileContentRevision", () => {
   });
 
   it("keeps identical contents stable", () => {
-    expect(projectFileCacheKey("/repo", "file.json", "contents")).toBe(
-      projectFileCacheKey("/repo", "file.json", "contents"),
+    expect(projectFileCacheKey(target, "file.json", "contents")).toBe(
+      projectFileCacheKey(target, "file.json", "contents"),
     );
   });
 
   it("keeps editor identity stable for locally edited contents", () => {
-    const cacheKey = projectFileEditorCacheKey("local", "/repo", "file.json", "after", undefined);
+    const cacheKey = projectFileEditorCacheKey("local", target, "file.json", "after", undefined);
 
     expect(
-      projectFileEditorCacheKey("local", "/repo", "file.json", "after edit", {
+      projectFileEditorCacheKey("local", target, "file.json", "after edit", {
         cacheKey,
         contents: "after edit",
       }),
@@ -29,13 +35,13 @@ describe("fileContentRevision", () => {
   });
 
   it("rotates editor identity for external contents and environments", () => {
-    const cacheKey = projectFileEditorCacheKey("local", "/repo", "file.json", "before", undefined);
+    const cacheKey = projectFileEditorCacheKey("local", target, "file.json", "before", undefined);
     const editorFile = { cacheKey, contents: "before" };
 
     expect(
-      projectFileEditorCacheKey("local", "/repo", "file.json", "external edit", editorFile),
+      projectFileEditorCacheKey("local", target, "file.json", "external edit", editorFile),
     ).not.toBe(cacheKey);
-    expect(projectFileEditorCacheKey("remote", "/repo", "file.json", "before", undefined)).not.toBe(
+    expect(projectFileEditorCacheKey("remote", target, "file.json", "before", undefined)).not.toBe(
       cacheKey,
     );
   });

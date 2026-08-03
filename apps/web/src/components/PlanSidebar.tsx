@@ -3,7 +3,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectWorkspaceTarget, ScopedThreadRef } from "@t3tools/contracts";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
@@ -63,6 +63,7 @@ interface PlanSidebarProps {
   threadRef?: ScopedThreadRef | undefined;
   markdownCwd: string | undefined;
   workspaceRoot: string | undefined;
+  workspaceTarget: ProjectWorkspaceTarget | null;
   timestampFormat: TimestampFormat;
   mode?: "sheet" | "sidebar" | "embedded";
 }
@@ -75,6 +76,7 @@ const PlanSidebar = memo(function PlanSidebar({
   threadRef,
   markdownCwd,
   workspaceRoot,
+  workspaceTarget,
   timestampFormat,
   mode = "sidebar",
 }: PlanSidebarProps) {
@@ -101,14 +103,14 @@ const PlanSidebar = memo(function PlanSidebar({
   }, [planMarkdown]);
 
   const handleSaveToWorkspace = useCallback(() => {
-    if (!workspaceRoot || !planMarkdown) return;
+    if (!workspaceTarget || !planMarkdown) return;
     const filename = buildProposedPlanMarkdownFilename(planMarkdown);
     setIsSavingToWorkspace(true);
     void (async () => {
       const result = await writeProjectFile({
         environmentId,
         input: {
-          cwd: workspaceRoot,
+          target: workspaceTarget,
           relativePath: filename,
           contents: normalizePlanMarkdownForExport(planMarkdown),
         },
@@ -133,7 +135,7 @@ const PlanSidebar = memo(function PlanSidebar({
         );
       }
     })();
-  }, [environmentId, planMarkdown, workspaceRoot, writeProjectFile]);
+  }, [environmentId, planMarkdown, workspaceTarget, writeProjectFile]);
 
   return (
     <div

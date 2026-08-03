@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectWorkspaceTarget } from "@t3tools/contracts";
 
 export interface ComposerPathSearchEntry {
   readonly path: string;
@@ -14,6 +14,6 @@ export interface ComposerPathSearchState {
 
 export interface ComposerPathSearchTarget {
   readonly environmentId: EnvironmentId | null;
-  readonly cwd: string | null;
+  readonly target: ProjectWorkspaceTarget | null;
   readonly query: string | null;
 }

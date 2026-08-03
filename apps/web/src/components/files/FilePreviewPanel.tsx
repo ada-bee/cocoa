@@ -1,6 +1,8 @@
 import type {
   EditorId,
   EnvironmentId,
+  ProjectId,
+  ProjectWorkspaceTarget,
   ResolvedKeybindingsConfig,
   ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -66,6 +68,7 @@ import {
 
 interface FilePreviewPanelProps {
   environmentId: EnvironmentId;
+  projectId: ProjectId;
   cwd: string;
   projectName: string;
   relativePath: string | null;
@@ -373,6 +376,7 @@ function useFileLineReveal(
 
 interface EditableFileSurfaceProps {
   environmentId: EnvironmentId;
+  target: ProjectWorkspaceTarget;
   cwd: string;
   relativePath: string;
   composerDraftTarget: ScopedThreadRef | DraftId;
@@ -391,12 +395,13 @@ interface FileSelectionOverride {
 
 function useFileSaveCoordinator({
   environmentId,
+  target,
   cwd,
   relativePath,
   onPendingChange,
 }: Pick<
   EditableFileSurfaceProps,
-  "environmentId" | "cwd" | "relativePath" | "onPendingChange"
+  "environmentId" | "target" | "cwd" | "relativePath" | "onPendingChange"
 >): FileSaveCoordinator {
   const writeFile = useAtomCommand(projectEnvironment.writeFile);
   const coordinator = useMemo(
@@ -407,13 +412,13 @@ function useFileSaveCoordinator({
         persist: (nextContents) =>
           writeFile({
             environmentId,
-            input: { cwd, relativePath, contents: nextContents },
+            input: { target, relativePath, contents: nextContents },
           }),
         onConfirmed: (confirmedContents) => {
-          confirmProjectFileQueryData(environmentId, cwd, relativePath, confirmedContents);
+          confirmProjectFileQueryData(environmentId, target, relativePath, confirmedContents);
         },
       }),
-    [cwd, environmentId, onPendingChange, relativePath, writeFile],
+    [environmentId, onPendingChange, relativePath, target, writeFile],
   );
 
   useEffect(() => () => coordinator.dispose(), [coordinator]);
@@ -422,6 +427,7 @@ function useFileSaveCoordinator({
 
 function EditableFileSurface({
   environmentId,
+  target,
   cwd,
   relativePath,
   composerDraftTarget,
@@ -448,6 +454,7 @@ function EditableFileSurface({
   const selectionFrameRef = useRef<number | null>(null);
   const saveCoordinator = useFileSaveCoordinator({
     environmentId,
+    target,
     cwd,
     relativePath,
     onPendingChange,
@@ -458,7 +465,7 @@ function EditableFileSurface({
         persistState: true,
         persistStateStorage: "inMemory",
         onChange: (file, nextLineAnnotations) => {
-          setProjectFileQueryData(environmentId, cwd, relativePath, file.contents);
+          setProjectFileQueryData(environmentId, target, relativePath, file.contents);
           saveCoordinator.change(file.contents);
           if (nextLineAnnotations) {
             const remapped = remapFileCommentAnnotations(
@@ -644,7 +651,7 @@ function EditableFileSurface({
               contents,
               cacheKey: projectFileEditorCacheKey(
                 environmentId,
-                cwd,
+                target,
                 relativePath,
                 contents,
                 editor.getFile(),
@@ -691,6 +698,7 @@ function EditableFileSurface({
 
 function RenderedMarkdownSurface({
   environmentId,
+  target,
   cwd,
   relativePath,
   contents,
@@ -709,6 +717,7 @@ function RenderedMarkdownSurface({
 }) {
   const saveCoordinator = useFileSaveCoordinator({
     environmentId,
+    target,
     cwd,
     relativePath,
     onPendingChange,
@@ -723,11 +732,11 @@ function RenderedMarkdownSurface({
         className="mx-auto max-w-4xl px-6 py-5"
         onTaskListChange={({ markerOffset, checked }) => {
           const currentContents =
-            getOptimisticProjectFileQueryData(environmentId, cwd, relativePath)?.contents ??
+            getOptimisticProjectFileQueryData(environmentId, target, relativePath)?.contents ??
             contents;
           const nextContents = setMarkdownTaskChecked(currentContents, markerOffset, checked);
           if (nextContents === currentContents) return;
-          setProjectFileQueryData(environmentId, cwd, relativePath, nextContents);
+          setProjectFileQueryData(environmentId, target, relativePath, nextContents);
           saveCoordinator.change(nextContents);
         }}
       />
@@ -746,6 +755,7 @@ function initialExplorerOpen(): boolean {
 
 export default function FilePreviewPanel({
   environmentId,
+  projectId,
   cwd,
   projectName,
   relativePath,
@@ -758,6 +768,10 @@ export default function FilePreviewPanel({
   onOpenFile,
   onPendingChange,
 }: FilePreviewPanelProps) {
+  const workspaceTarget = useMemo<ProjectWorkspaceTarget>(
+    () => ({ projectId, threadId: threadRef.threadId }),
+    [projectId, threadRef.threadId],
+  );
   const { resolvedTheme } = useTheme();
   const wordWrap = useClientSettings((settings) => settings.wordWrap);
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -769,7 +783,7 @@ export default function FilePreviewPanel({
     reportFailure: false,
   });
   const isImage = relativePath !== null && isWorkspaceImagePreviewPath(relativePath);
-  const file = useProjectFileQuery(environmentId, cwd, relativePath, !isImage);
+  const file = useProjectFileQuery(environmentId, workspaceTarget, relativePath, !isImage);
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
   // Reading markdown rendered is a preference, not a property of one file. Keeping
   // it on the panel meant a thread switch dropped it and forced source back.
@@ -990,6 +1004,7 @@ export default function FilePreviewPanel({
             isMarkdown && renderMarkdown ? (
               <RenderedMarkdownSurface
                 environmentId={environmentId}
+                target={workspaceTarget}
                 cwd={cwd}
                 relativePath={relativePath}
                 threadRef={threadRef}
@@ -1009,7 +1024,11 @@ export default function FilePreviewPanel({
                   file={{
                     name: relativePath,
                     contents: file.data.contents,
-                    cacheKey: projectFileCacheKey(cwd, relativePath, file.data.contents),
+                    cacheKey: projectFileCacheKey(
+                      workspaceTarget,
+                      relativePath,
+                      file.data.contents,
+                    ),
                   }}
                   options={{
                     disableFileHeader: true,
@@ -1026,6 +1045,7 @@ export default function FilePreviewPanel({
               <EditableFileSurface
                 key={`${relativePath}:${resolvedTheme}`}
                 environmentId={environmentId}
+                target={workspaceTarget}
                 cwd={cwd}
                 relativePath={relativePath}
                 composerDraftTarget={composerDraftTarget}
@@ -1051,6 +1071,7 @@ export default function FilePreviewPanel({
             <FileBrowserPanel
               key={`${environmentId}:${cwd}`}
               environmentId={environmentId}
+              target={workspaceTarget}
               cwd={cwd}
               projectName={projectName}
               selectedPath={relativePath}

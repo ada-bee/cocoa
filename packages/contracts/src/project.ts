@@ -2,6 +2,8 @@ import * as Schema from "effect/Schema";
 import {
   NonNegativeInt,
   PositiveInt,
+  ProjectId,
+  ThreadId,
   TrimmedNonEmptyString,
   TrimmedString,
 } from "./baseSchemas.ts";
@@ -14,9 +16,20 @@ const PROJECT_READ_FILE_PATH_MAX_LENGTH = 512;
 export const ProjectEntryKind = Schema.Literals(["file", "directory"]);
 export type ProjectEntryKind = typeof ProjectEntryKind.Type;
 
+/**
+ * Identifies the provider workspace used by a project operation. When a
+ * thread is present, the gateway resolves its active worktree instead of the
+ * project's root workspace.
+ */
+export const ProjectWorkspaceTarget = Schema.Struct({
+  projectId: ProjectId,
+  threadId: Schema.optional(ThreadId),
+});
+export type ProjectWorkspaceTarget = typeof ProjectWorkspaceTarget.Type;
+
 export const ProjectSearchEntriesInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
-  // An empty query is a bounded browse: the index returns frecency-ordered
+  target: ProjectWorkspaceTarget,
+  // An empty query is a bounded browse: the provider returns a bounded set of
   // entries, which the file picker uses for its initial results.
   query: TrimmedString.check(Schema.isMaxLength(256)),
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_SEARCH_ENTRIES_MAX_LIMIT)),
@@ -37,7 +50,7 @@ export const ProjectSearchEntriesResult = Schema.Struct({
 export type ProjectSearchEntriesResult = typeof ProjectSearchEntriesResult.Type;
 
 export const ProjectSearchContentsInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  target: ProjectWorkspaceTarget,
   // Whitespace is significant in content queries (" foo", regex trailing
   // spaces), so the query is deliberately not trimmed on the wire.
   query: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(256)),
@@ -70,7 +83,7 @@ export const ProjectSearchContentsResult = Schema.Struct({
 export type ProjectSearchContentsResult = typeof ProjectSearchContentsResult.Type;
 
 export const ProjectListEntriesInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  target: ProjectWorkspaceTarget,
 });
 export type ProjectListEntriesInput = typeof ProjectListEntriesInput.Type;
 
@@ -80,59 +93,77 @@ export const ProjectListEntriesResult = Schema.Struct({
 });
 export type ProjectListEntriesResult = typeof ProjectListEntriesResult.Type;
 
-export const ProjectEntriesFailure = Schema.Literals([
+/** Stable, provider-neutral workspace failure codes exposed to clients. */
+export const ProjectWorkspaceFailure = Schema.Literals([
+  "project_not_found",
+  "thread_not_found",
+  "thread_project_mismatch",
+  "provider_instance_not_found",
+  "provider_unavailable",
+  "protocol_incompatible",
+  "unsupported_operation",
   "workspace_root_not_found",
-  "workspace_root_create_failed",
-  "workspace_root_stat_failed",
   "workspace_root_not_directory",
-  "search_index_create_failed",
-  "search_index_scan_timed_out",
-  "search_index_search_failed",
+  "path_outside_workspace",
+  "path_not_found",
+  "path_not_file",
+  "path_not_directory",
+  "symlink_rejected",
+  "binary_file",
+  "file_too_large",
+  "search_timed_out",
+  "operation_failed",
 ]);
-export type ProjectEntriesFailure = typeof ProjectEntriesFailure.Type;
+export type ProjectWorkspaceFailure = typeof ProjectWorkspaceFailure.Type;
 
-type ProjectEntriesFailureContext = {
-  readonly failure: ProjectEntriesFailure;
-  readonly normalizedCwd?: string;
-  readonly timeout?: string;
-  readonly detail?: string;
-  readonly cause?: unknown;
-};
+export const ProjectWorkspaceOperation = Schema.Literals([
+  "search-entries",
+  "search-contents",
+  "list-entries",
+  "read-file",
+  "write-file",
+]);
+export type ProjectWorkspaceOperation = typeof ProjectWorkspaceOperation.Type;
 
 function decodedProjectErrorMessage(props: object): string | undefined {
   if (!("message" in props)) return undefined;
   return typeof props.message === "string" ? props.message : undefined;
 }
 
+type ProjectWorkspaceFailureContext = {
+  readonly target: ProjectWorkspaceTarget;
+  readonly failure: ProjectWorkspaceFailure;
+  readonly operation: ProjectWorkspaceOperation;
+  readonly retryable: boolean;
+};
+
+const ProjectWorkspaceErrorFields = {
+  target: ProjectWorkspaceTarget,
+  failure: ProjectWorkspaceFailure,
+  operation: ProjectWorkspaceOperation,
+  retryable: Schema.Boolean,
+  message: TrimmedNonEmptyString,
+};
+
 export class ProjectSearchEntriesError extends Schema.TaggedErrorClass<ProjectSearchEntriesError>()(
   "ProjectSearchEntriesError",
   {
-    cwd: Schema.optional(TrimmedNonEmptyString),
-    queryLength: Schema.optional(NonNegativeInt),
-    limit: Schema.optional(PositiveInt),
-    failure: Schema.optional(ProjectEntriesFailure),
-    normalizedCwd: Schema.optional(TrimmedNonEmptyString),
-    timeout: Schema.optional(TrimmedNonEmptyString),
-    detail: Schema.optional(TrimmedNonEmptyString),
-    message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect()),
+    ...ProjectWorkspaceErrorFields,
+    queryLength: NonNegativeInt,
+    limit: PositiveInt,
   },
 ) {
-  // The structured fields are optional on the wire so newer peers can decode legacy message-only
-  // failures. New application code must provide them through this constructor.
   // @effect-diagnostics-next-line overriddenSchemaConstructor:off
   constructor(
-    props: ProjectEntriesFailureContext & {
-      readonly cwd: string;
+    props: ProjectWorkspaceFailureContext & {
+      readonly operation: "search-entries";
       readonly queryLength: number;
       readonly limit: number;
     },
   ) {
     super({
       ...props,
-      message:
-        decodedProjectErrorMessage(props) ??
-        `Failed to search workspace entries in '${props.cwd}'.`,
+      message: decodedProjectErrorMessage(props) ?? "Failed to search workspace entries.",
     } as any);
   }
 }
@@ -140,58 +171,41 @@ export class ProjectSearchEntriesError extends Schema.TaggedErrorClass<ProjectSe
 export class ProjectSearchContentsError extends Schema.TaggedErrorClass<ProjectSearchContentsError>()(
   "ProjectSearchContentsError",
   {
-    cwd: Schema.optional(TrimmedNonEmptyString),
-    queryLength: Schema.optional(NonNegativeInt),
-    limit: Schema.optional(PositiveInt),
-    failure: Schema.optional(ProjectEntriesFailure),
-    normalizedCwd: Schema.optional(TrimmedNonEmptyString),
-    timeout: Schema.optional(TrimmedNonEmptyString),
-    detail: Schema.optional(TrimmedNonEmptyString),
-    message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect()),
+    ...ProjectWorkspaceErrorFields,
+    queryLength: NonNegativeInt,
+    limit: PositiveInt,
   },
 ) {
   // @effect-diagnostics-next-line overriddenSchemaConstructor:off
   constructor(
-    props: ProjectEntriesFailureContext & {
-      readonly cwd: string;
+    props: ProjectWorkspaceFailureContext & {
+      readonly operation: "search-contents";
       readonly queryLength: number;
       readonly limit: number;
     },
   ) {
     super({
       ...props,
-      message:
-        decodedProjectErrorMessage(props) ??
-        `Failed to search workspace contents in '${props.cwd}'.`,
+      message: decodedProjectErrorMessage(props) ?? "Failed to search workspace contents.",
     } as any);
   }
 }
 
 export class ProjectListEntriesError extends Schema.TaggedErrorClass<ProjectListEntriesError>()(
   "ProjectListEntriesError",
-  {
-    cwd: Schema.optional(TrimmedNonEmptyString),
-    failure: Schema.optional(ProjectEntriesFailure),
-    normalizedCwd: Schema.optional(TrimmedNonEmptyString),
-    timeout: Schema.optional(TrimmedNonEmptyString),
-    detail: Schema.optional(TrimmedNonEmptyString),
-    message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect()),
-  },
+  ProjectWorkspaceErrorFields,
 ) {
   // @effect-diagnostics-next-line overriddenSchemaConstructor:off
-  constructor(props: ProjectEntriesFailureContext & { readonly cwd: string }) {
+  constructor(props: ProjectWorkspaceFailureContext & { readonly operation: "list-entries" }) {
     super({
       ...props,
-      message:
-        decodedProjectErrorMessage(props) ?? `Failed to list workspace entries in '${props.cwd}'.`,
+      message: decodedProjectErrorMessage(props) ?? "Failed to list workspace entries.",
     } as any);
   }
 }
 
 export const ProjectReadFileInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  target: ProjectWorkspaceTarget,
   relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_READ_FILE_PATH_MAX_LENGTH)),
 });
 export type ProjectReadFileInput = typeof ProjectReadFileInput.Type;
@@ -204,65 +218,8 @@ export const ProjectReadFileResult = Schema.Struct({
 });
 export type ProjectReadFileResult = typeof ProjectReadFileResult.Type;
 
-export const ProjectFileFailure = Schema.Literals([
-  "workspace_path_outside_root",
-  "resolved_path_outside_root",
-  "path_not_file",
-  "binary_file",
-  "operation_failed",
-]);
-export type ProjectFileFailure = typeof ProjectFileFailure.Type;
-
-export const ProjectFileOperation = Schema.Literals([
-  "realpath-workspace-root",
-  "realpath-target",
-  "open",
-  "stat",
-  "read",
-  "close",
-  "make-directory",
-  "write-file",
-]);
-export type ProjectFileOperation = typeof ProjectFileOperation.Type;
-
-type ProjectFileFailureContext = {
-  readonly cwd: string;
-  readonly relativePath: string;
-  readonly failure: ProjectFileFailure;
-  readonly resolvedPath?: string;
-  readonly resolvedWorkspaceRoot?: string;
-  readonly operation?: ProjectFileOperation;
-  readonly operationPath?: string;
-  readonly cause?: unknown;
-};
-
-export class ProjectReadFileError extends Schema.TaggedErrorClass<ProjectReadFileError>()(
-  "ProjectReadFileError",
-  {
-    cwd: Schema.optional(TrimmedNonEmptyString),
-    relativePath: Schema.optional(TrimmedNonEmptyString),
-    failure: Schema.optional(ProjectFileFailure),
-    resolvedPath: Schema.optional(TrimmedNonEmptyString),
-    resolvedWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
-    operation: Schema.optional(ProjectFileOperation),
-    operationPath: Schema.optional(TrimmedNonEmptyString),
-    message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
-  constructor(props: ProjectFileFailureContext) {
-    super({
-      ...props,
-      message:
-        decodedProjectErrorMessage(props) ??
-        `Failed to read workspace file '${props.relativePath}' in '${props.cwd}'.`,
-    } as any);
-  }
-}
-
 export const ProjectWriteFileInput = Schema.Struct({
-  cwd: TrimmedNonEmptyString,
+  target: ProjectWorkspaceTarget,
   relativePath: TrimmedNonEmptyString.check(Schema.isMaxLength(PROJECT_WRITE_FILE_PATH_MAX_LENGTH)),
   contents: Schema.String,
 });
@@ -273,27 +230,41 @@ export const ProjectWriteFileResult = Schema.Struct({
 });
 export type ProjectWriteFileResult = typeof ProjectWriteFileResult.Type;
 
-export class ProjectWriteFileError extends Schema.TaggedErrorClass<ProjectWriteFileError>()(
-  "ProjectWriteFileError",
-  {
-    cwd: Schema.optional(TrimmedNonEmptyString),
-    relativePath: Schema.optional(TrimmedNonEmptyString),
-    failure: Schema.optional(ProjectFileFailure),
-    resolvedPath: Schema.optional(TrimmedNonEmptyString),
-    resolvedWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
-    operation: Schema.optional(ProjectFileOperation),
-    operationPath: Schema.optional(TrimmedNonEmptyString),
-    message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect()),
-  },
+type ProjectFileFailureContext = ProjectWorkspaceFailureContext & {
+  readonly relativePath: string;
+};
+
+const ProjectFileErrorFields = {
+  ...ProjectWorkspaceErrorFields,
+  relativePath: TrimmedNonEmptyString,
+};
+
+export class ProjectReadFileError extends Schema.TaggedErrorClass<ProjectReadFileError>()(
+  "ProjectReadFileError",
+  ProjectFileErrorFields,
 ) {
   // @effect-diagnostics-next-line overriddenSchemaConstructor:off
-  constructor(props: ProjectFileFailureContext) {
+  constructor(props: ProjectFileFailureContext & { readonly operation: "read-file" }) {
     super({
       ...props,
       message:
         decodedProjectErrorMessage(props) ??
-        `Failed to write workspace file '${props.relativePath}' in '${props.cwd}'.`,
+        `Failed to read workspace file '${props.relativePath}'.`,
+    } as any);
+  }
+}
+
+export class ProjectWriteFileError extends Schema.TaggedErrorClass<ProjectWriteFileError>()(
+  "ProjectWriteFileError",
+  ProjectFileErrorFields,
+) {
+  // @effect-diagnostics-next-line overriddenSchemaConstructor:off
+  constructor(props: ProjectFileFailureContext & { readonly operation: "write-file" }) {
+    super({
+      ...props,
+      message:
+        decodedProjectErrorMessage(props) ??
+        `Failed to write workspace file '${props.relativePath}'.`,
     } as any);
   }
 }

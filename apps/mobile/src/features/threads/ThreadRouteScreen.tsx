@@ -421,6 +421,7 @@ function ThreadRouteContent(
         <ThreadFileNavigatorPane
           cwd={selectedThreadCwd}
           environmentId={selectedThread.environmentId}
+          target={{ projectId: selectedThread.projectId, threadId: selectedThread.id }}
           headerInset={inspectorHeaderInset}
           projectName={selectedThreadProject?.title ?? "Files"}
           selectedPath={null}

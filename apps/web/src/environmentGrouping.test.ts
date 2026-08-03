@@ -33,9 +33,11 @@ const defaultGroupingSettings = {
 };
 
 function makeProject(overrides: Partial<Project> = {}): Project {
+  const { providerInstanceId = ProviderInstanceId.make("codex"), ...rest } = overrides;
   return {
     id: ProjectId.make("project-1"),
     environmentId: primaryEnvironmentId,
+    providerInstanceId,
     title: "shared-repo",
     workspaceRoot: "/tmp/shared-repo",
     repositoryIdentity: null,
@@ -46,7 +48,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     scripts: [],
-    ...overrides,
+    ...rest,
   };
 }
 

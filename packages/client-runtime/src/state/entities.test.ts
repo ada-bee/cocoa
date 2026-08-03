@@ -111,6 +111,7 @@ const SNAPSHOT: OrchestrationShellSnapshot = {
   projects: [
     {
       id: PROJECT_ID,
+      providerInstanceId: ProviderInstanceId.make("codex"),
       title: "Project",
       workspaceRoot: "/repo",
       repositoryIdentity: null,
@@ -121,6 +122,7 @@ const SNAPSHOT: OrchestrationShellSnapshot = {
     },
     {
       id: OTHER_PROJECT_ID,
+      providerInstanceId: ProviderInstanceId.make("codex"),
       title: "Other project",
       workspaceRoot: "/other-repo",
       repositoryIdentity: null,

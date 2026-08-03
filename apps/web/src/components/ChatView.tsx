@@ -5700,6 +5700,11 @@ function ChatViewContent(props: ChatViewProps) {
         threadRef={activeThreadRef}
         markdownCwd={gitCwd ?? undefined}
         workspaceRoot={activeWorkspaceRoot}
+        workspaceTarget={
+          activeProject && activeThreadId
+            ? { projectId: activeProject.id, threadId: activeThreadId }
+            : null
+        }
         timestampFormat={timestampFormat}
         mode="embedded"
       />
@@ -5710,6 +5715,7 @@ function ChatViewContent(props: ChatViewProps) {
         <FilePreviewPanel
           key={`${activeProject.environmentId}:${activeWorkspaceRoot}`}
           environmentId={activeProject.environmentId}
+          projectId={activeProject.id}
           cwd={activeWorkspaceRoot}
           projectName={activeProject.title}
           threadRef={activeThreadRef}
@@ -5761,6 +5767,7 @@ function ChatViewContent(props: ChatViewProps) {
             {...(routeKind === "draft" && draftId ? { draftId } : {})}
             activeThreadTitle={activeThread.title}
             activeProjectName={activeProject?.title}
+            activeProjectId={activeProject?.id ?? null}
             activeProjectCwd={activeProject?.workspaceRoot ?? null}
             openInCwd={gitCwd}
             activeProjectScripts={activeProject?.scripts}
@@ -5822,6 +5829,9 @@ function ChatViewContent(props: ChatViewProps) {
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}
                 workspaceRoot={activeWorkspaceRoot}
+                workspaceTarget={
+                  activeProject ? { projectId: activeProject.id, threadId: activeThread.id } : null
+                }
                 skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
                 anchorMessageId={timelineAnchorMessageId}
                 onAnchorReady={onTimelineAnchorReady}
@@ -5919,6 +5929,7 @@ function ChatViewContent(props: ChatViewProps) {
                             activeThreadId={activeThreadId}
                             activeThreadEnvironmentId={activeThread?.environmentId}
                             activeThread={activeThread}
+                            activeProjectId={activeProject?.id ?? null}
                             isServerThread={isServerThread}
                             isLocalDraftThread={isLocalDraftThread}
                             forceExpandedOnMobile={forceExpandedMobileComposer && isDraftHeroState}

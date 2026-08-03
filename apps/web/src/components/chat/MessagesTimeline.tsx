@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   type MessageId,
+  type ProjectWorkspaceTarget,
   type ScopedThreadRef,
   type ServerProviderSkill,
   type TurnId,
@@ -128,6 +129,7 @@ interface TimelineRowSharedState {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   workspaceRoot: string | undefined;
+  workspaceTarget: ProjectWorkspaceTarget | null;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
@@ -175,6 +177,7 @@ interface MessagesTimelineProps {
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
   workspaceRoot: string | undefined;
+  workspaceTarget: ProjectWorkspaceTarget | null;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
@@ -210,6 +213,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   resolvedTheme,
   timestampFormat,
   workspaceRoot,
+  workspaceTarget,
   skills = EMPTY_TIMELINE_SKILLS,
   anchorMessageId,
   onAnchorReady,
@@ -423,6 +427,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       markdownCwd,
       resolvedTheme,
       workspaceRoot,
+      workspaceTarget,
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
@@ -437,6 +442,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       markdownCwd,
       resolvedTheme,
       workspaceRoot,
+      workspaceTarget,
       skills,
       activeThreadEnvironmentId,
       onRevertUserMessage,
@@ -1086,6 +1092,7 @@ function ProposedPlanTimelineRow({
         threadRef={ctx.threadRef ?? undefined}
         cwd={ctx.markdownCwd}
         workspaceRoot={ctx.workspaceRoot}
+        workspaceTarget={ctx.workspaceTarget}
       />
     </div>
   );

@@ -292,6 +292,8 @@ export function buildHomeThreadGroups(input: {
     );
     let groupKey = groupKeyByProjectKey.get(physicalKey);
     if (!groupKey) {
+      const providerInstanceId = pendingTask.message.modelSelection?.instanceId;
+      if (!providerInstanceId) continue;
       // The project shell is not loaded (environment offline / project gone).
       // A queued task must stay visible and deletable regardless, so build a
       // standalone group from the metadata snapshotted at enqueue time.
@@ -303,6 +305,7 @@ export function buildHomeThreadGroups(input: {
           {
             environmentId: pendingTask.message.environmentId,
             id: pendingTask.creation.projectId,
+            providerInstanceId,
             title: pendingTask.creation.projectTitle ?? "Unknown project",
             workspaceRoot:
               pendingTask.creation.projectCwd ?? String(pendingTask.creation.projectId),

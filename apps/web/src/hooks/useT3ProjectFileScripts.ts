@@ -1,6 +1,8 @@
 import {
   T3_PROJECT_FILE_NAME,
   type EnvironmentId,
+  ProjectId,
+  type ProjectWorkspaceTarget,
   type T3ProjectFileScript,
 } from "@t3tools/contracts";
 import { T3ProjectFileFromJson } from "@t3tools/shared/t3ProjectFile";
@@ -13,6 +15,7 @@ import { useProjectFileQuery } from "~/components/files/projectFilesQueryState";
 const decodeT3ProjectFile = Schema.decodeExit(T3ProjectFileFromJson);
 
 const NO_SCRIPTS: ReadonlyArray<T3ProjectFileScript> = [];
+const EMPTY_PROJECT_WORKSPACE_TARGET = { projectId: ProjectId.make("unselected") };
 
 /**
  * Scripts declared in the project's checked-in `t3.json`, offered in the
@@ -21,9 +24,14 @@ const NO_SCRIPTS: ReadonlyArray<T3ProjectFileScript> = [];
  */
 export function useT3ProjectFileScripts(
   environmentId: EnvironmentId,
-  cwd: string | null,
+  target: ProjectWorkspaceTarget | null,
 ): ReadonlyArray<T3ProjectFileScript> {
-  const query = useProjectFileQuery(environmentId, cwd ?? "", T3_PROJECT_FILE_NAME, cwd !== null);
+  const query = useProjectFileQuery(
+    environmentId,
+    target ?? EMPTY_PROJECT_WORKSPACE_TARGET,
+    T3_PROJECT_FILE_NAME,
+    target !== null,
+  );
   const contents = query.data && !query.data.truncated ? query.data.contents : null;
   return useMemo(() => {
     if (contents === null) return NO_SCRIPTS;

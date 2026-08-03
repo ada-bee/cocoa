@@ -26,7 +26,12 @@ import {
   ensureBrowseDirectoryPath,
   inferProjectTitleFromPath,
 } from "@t3tools/client-runtime/state/projects";
-import { CommandId, type EnvironmentId, ProjectId } from "@t3tools/contracts";
+import {
+  CommandId,
+  type EnvironmentId,
+  ProjectId,
+  type ProviderInstanceId,
+} from "@t3tools/contracts";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { SymbolView } from "../../components/AppSymbol";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -62,6 +67,7 @@ interface EnvironmentOption {
   readonly label: string;
   readonly platform: string;
   readonly baseDirectory: string | null;
+  readonly providerInstanceId: ProviderInstanceId | null;
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
@@ -309,11 +315,15 @@ function useEnvironmentOptions(): ReadonlyArray<EnvironmentOption> {
     const options = Object.values(savedConnectionsById).map((connection) => {
       const config = serverConfigByEnvironmentId.get(connection.environmentId);
       const runtime = runtimeByEnvironmentId.get(connection.environmentId);
+      const availableProviders =
+        config?.providers.filter((provider) => provider.enabled && provider.installed) ?? [];
       return {
         environmentId: connection.environmentId,
         label: connection.environmentLabel,
         platform: platformFromOs(config?.environment.platform.os ?? null),
         baseDirectory: config?.settings.addProjectBaseDirectory ?? null,
+        providerInstanceId:
+          availableProviders.length === 1 ? (availableProviders[0]?.instanceId ?? null) : null,
         connectionState: runtime?.connectionState ?? "available",
         connectionError: runtime?.connectionError ?? null,
         connectionErrorTraceId: runtime?.connectionErrorTraceId ?? null,
@@ -538,10 +548,15 @@ function useCreateProject(environment: EnvironmentOption | null) {
   return useCallback(
     async (workspaceRoot: string) => {
       if (!environment || !canCreateProjectInEnvironment(environment.connectionState)) return;
+      if (!environment.providerInstanceId) {
+        Alert.alert("Choose a provider", "Select a Codex endpoint before adding this project.");
+        return;
+      }
 
       const existing = findExistingAddProject({
         projects,
         environmentId: environment.environmentId,
+        providerInstanceId: environment.providerInstanceId,
         path: workspaceRoot,
       });
       if (existing) {
@@ -560,6 +575,7 @@ function useCreateProject(environment: EnvironmentOption | null) {
       const command = buildProjectCreateCommand({
         commandId: CommandId.make(uuidv4()),
         projectId,
+        providerInstanceId: environment.providerInstanceId,
         workspaceRoot,
         createdAt: new Date().toISOString(),
       });

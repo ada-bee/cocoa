@@ -1543,8 +1543,31 @@ function OpenCommandPaletteDialog(props: {
       const cwd = resolveProjectPathForDispatch(rawCwd, input.currentProjectCwd);
       if (cwd.length === 0) return;
 
+      const targetEnvironmentProviders =
+        environments.find((environment) => environment.environmentId === input.environmentId)
+          ?.serverConfig?.providers ??
+        (input.environmentId === primaryEnvironmentId ? providers : []);
+      const defaultModelSelection = resolveDefaultProviderModelSelection(
+        targetEnvironmentProviders,
+        null,
+      );
+      if (!defaultModelSelection) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to add project",
+            description: "Select a Codex endpoint before adding this project.",
+          }),
+        );
+        return;
+      }
+
       const existing = findProjectByPath(
-        projects.filter((project) => project.environmentId === input.environmentId),
+        projects.filter(
+          (project) =>
+            project.environmentId === input.environmentId &&
+            project.providerInstanceId === defaultModelSelection.instanceId,
+        ),
         cwd,
       );
       if (existing) {
@@ -1581,21 +1604,15 @@ function OpenCommandPaletteDialog(props: {
       }
 
       const projectId = newProjectId();
-      const targetEnvironmentProviders =
-        environments.find((environment) => environment.environmentId === input.environmentId)
-          ?.serverConfig?.providers ??
-        (input.environmentId === primaryEnvironmentId ? providers : []);
       const createResult = await createProject({
         environmentId: input.environmentId,
         input: {
           projectId,
+          providerInstanceId: defaultModelSelection.instanceId,
           title: inferProjectTitleFromPath(cwd),
           workspaceRoot: cwd,
           createWorkspaceRootIfMissing: true,
-          defaultModelSelection: resolveDefaultProviderModelSelection(
-            targetEnvironmentProviders,
-            null,
-          ),
+          defaultModelSelection,
         },
       });
       if (createResult._tag === "Failure") {

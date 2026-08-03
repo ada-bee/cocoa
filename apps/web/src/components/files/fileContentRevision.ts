@@ -7,8 +7,12 @@ export function fileContentRevision(contents: string): string {
   return `${contents.length}:${(hash >>> 0).toString(36)}`;
 }
 
-export function projectFileCacheKey(cwd: string, relativePath: string, contents: string): string {
-  return `${cwd}:${relativePath}:${fileContentRevision(contents)}`;
+export function projectFileCacheKey(
+  target: ProjectWorkspaceTarget,
+  relativePath: string,
+  contents: string,
+): string {
+  return `${target.projectId}:${target.threadId ?? "project-root"}:${relativePath}:${fileContentRevision(contents)}`;
 }
 
 interface EditorFileIdentity {
@@ -18,7 +22,7 @@ interface EditorFileIdentity {
 
 export function projectFileEditorCacheKey(
   environmentId: string,
-  cwd: string,
+  target: ProjectWorkspaceTarget,
   relativePath: string,
   contents: string,
   editorFile: EditorFileIdentity | undefined,
@@ -26,5 +30,6 @@ export function projectFileEditorCacheKey(
   if (editorFile?.contents === contents && editorFile.cacheKey) {
     return editorFile.cacheKey;
   }
-  return `editor:${environmentId}:${projectFileCacheKey(cwd, relativePath, contents)}`;
+  return `editor:${environmentId}:${projectFileCacheKey(target, relativePath, contents)}`;
 }
+import type { ProjectWorkspaceTarget } from "@t3tools/contracts";

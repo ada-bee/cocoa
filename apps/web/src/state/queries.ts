@@ -14,6 +14,7 @@ import type {
   OrchestrationThread,
   ProjectContentMatch,
   ProjectEntryKind,
+  ProjectWorkspaceTarget,
   ThreadId,
   VcsListRefsResult,
   VcsRef,
@@ -244,7 +245,8 @@ export function areProjectPathSearchTargetsEqual(
 ): boolean {
   return (
     left.environmentId === right.environmentId &&
-    left.cwd === right.cwd &&
+    left.target?.projectId === right.target?.projectId &&
+    left.target?.threadId === right.target?.threadId &&
     left.query === right.query &&
     left.kind === right.kind
   );
@@ -259,22 +261,34 @@ export function useProjectPathSearch(
   const normalizedTarget = useMemo(
     () => ({
       environmentId: target.environmentId,
-      cwd: target.cwd,
+      target:
+        target.target === null
+          ? null
+          : {
+              projectId: target.target.projectId,
+              ...(target.target.threadId ? { threadId: target.target.threadId } : {}),
+            },
       query: target.query == null ? null : target.query.trim(),
       kind: target.kind,
     }),
-    [target.cwd, target.environmentId, target.kind, target.query],
+    [
+      target.environmentId,
+      target.kind,
+      target.query,
+      target.target?.projectId,
+      target.target?.threadId,
+    ],
   );
   const debouncedTarget = useDebouncedValue(normalizedTarget, PROJECT_PATH_SEARCH_DEBOUNCE_MS);
   const result = useEnvironmentQuery(
     debouncedTarget.environmentId !== null &&
-      debouncedTarget.cwd !== null &&
+      debouncedTarget.target !== null &&
       debouncedTarget.query !== null &&
       (allowEmptyQuery || debouncedTarget.query.length > 0)
       ? projectEnvironment.searchEntries({
           environmentId: debouncedTarget.environmentId,
           input: {
-            cwd: debouncedTarget.cwd,
+            target: debouncedTarget.target,
             query: debouncedTarget.query,
             limit,
             ...(debouncedTarget.kind ? { kind: debouncedTarget.kind } : {}),
@@ -299,7 +313,7 @@ export function useComposerPathSearch(target: ComposerPathSearchTarget) {
 
 interface ProjectContentSearchTarget {
   readonly environmentId: EnvironmentId | null;
-  readonly cwd: string | null;
+  readonly target: ProjectWorkspaceTarget | null;
   readonly query: string;
   readonly caseSensitive: boolean;
   readonly wholeWord: boolean;
@@ -314,13 +328,13 @@ export function useProjectContentSearch(target: ProjectContentSearchTarget) {
   const debouncedQuery = useDebouncedValue(query, PROJECT_CONTENT_SEARCH_DEBOUNCE_MS);
   const result = useEnvironmentQuery(
     target.environmentId !== null &&
-      target.cwd !== null &&
+      target.target !== null &&
       hasQuery &&
       debouncedQuery.trim().length > 0
       ? projectContentSearch({
           environmentId: target.environmentId,
           input: {
-            cwd: target.cwd,
+            target: target.target,
             query: debouncedQuery,
             limit: PROJECT_CONTENT_SEARCH_LIMIT,
             caseSensitive: target.caseSensitive,
