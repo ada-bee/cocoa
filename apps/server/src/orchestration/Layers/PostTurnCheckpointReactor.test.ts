@@ -465,6 +465,22 @@ const seedProjectedIntent = Effect.gen(function* () {
   });
 });
 
+const seedBoundIntent = Effect.gen(function* () {
+  yield* seedProjectedIntent;
+  yield* (yield* PostTurnCheckpointIntentRepository).bind({
+    sourceEventId: completionEvent.eventId,
+    providerInstanceId,
+    projectId,
+    baselineCheckpointTurnCount: 0,
+    checkpointTurnCount: 1,
+    baselineLogicalCheckpointId: baselineIdentity.logicalCheckpointId,
+    baselineNotApplicableReason: null,
+    operationId: postIdentity.operationId,
+    logicalCheckpointId: postIdentity.logicalCheckpointId,
+    updatedAt: createdAt,
+  });
+});
+
 it.effect("captures, diffs, and finalizes a durable provider turn exactly once", () => {
   const state = makeState();
   return Effect.gen(function* () {
@@ -539,7 +555,7 @@ it.effect("recovers a prepared post-turn row by exact re-prepare", () => {
   const state = makeState();
   return Effect.gen(function* () {
     yield* seedReadyBaselineAndDispatch;
-    yield* seedProjectedIntent;
+    yield* seedBoundIntent;
     const operations = yield* ProviderCheckpointOperationRepository;
     yield* operations.prepare(postInput());
     const restarted = yield* makePostTurnCheckpointReactor;
