@@ -3,6 +3,8 @@
 #[cfg(not(unix))]
 compile_error!("cocoa-workspace-helper v1 supports POSIX hosts only");
 
+mod checkpoint;
+
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs;
@@ -257,6 +259,9 @@ struct OpenRoot {
 }
 
 pub fn run_argv(args: Vec<OsString>) -> Vec<u8> {
+    if checkpoint::is_checkpoint_request(&args) {
+        return checkpoint::run_argv(args);
+    }
     let outcome = dispatch_argv(args);
     match outcome {
         Ok((response, response_limit)) => frame_with_limit(response, response_limit),
@@ -269,6 +274,14 @@ pub fn internal_error_frame() -> Vec<u8> {
         ErrorCode::OperationFailed,
         "Workspace helper operation failed.",
     ))
+}
+
+pub fn internal_error_frame_for_argv(args: &[OsString]) -> Vec<u8> {
+    if checkpoint::is_checkpoint_request(args) {
+        checkpoint::internal_error_frame()
+    } else {
+        internal_error_frame()
+    }
 }
 
 fn dispatch_argv(args: Vec<OsString>) -> HelperResult<(Value, usize)> {

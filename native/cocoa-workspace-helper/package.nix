@@ -20,7 +20,7 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = ./Cargo.lock;
 
   meta = {
-    description = "Root-confined, bounded workspace helper for Cocoa provider hosts";
+    description = "Bounded workspace reads and transactional Git checkpoints for Cocoa provider hosts";
     license = lib.licenses.mit;
     mainProgram = "cocoa-workspace-helper";
     platforms = lib.platforms.unix;

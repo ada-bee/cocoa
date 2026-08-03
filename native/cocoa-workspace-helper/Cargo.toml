@@ -4,11 +4,13 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 publish = false
+description = "Bounded workspace reads and transactional Git checkpoints for Cocoa provider hosts"
 
 [dependencies]
 base64 = "0.22.1"
 cap-std = "3.4.5"
 cap-fs-ext = "3.4.5"
+fs2 = "0.4.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"
