@@ -63,6 +63,7 @@ import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import * as ProviderFilesystemBrowse from "./provider/ProviderFilesystemBrowse.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
+import * as ProjectTerminal from "./project/ProjectTerminal.ts";
 import * as ProjectWorkspace from "./project/ProjectWorkspace.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
@@ -123,18 +124,6 @@ const HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS = 0;
 const ResourceAttributionLayerLive = ResourceAttribution.layer;
 const ApplicationObservabilityLive = ObservabilityLive.pipe(
   Layer.provideMerge(ResourceAttributionLayerLive),
-);
-
-const PtyAdapterLive = Layer.unwrap(
-  Effect.gen(function* () {
-    if (typeof Bun !== "undefined") {
-      const BunPtyAdapter = yield* Effect.promise(() => import("./terminal/BunPtyAdapter.ts"));
-      return BunPtyAdapter.layer;
-    } else {
-      const NodePtyAdapter = yield* Effect.promise(() => import("./terminal/NodePtyAdapter.ts"));
-      return NodePtyAdapter.layer;
-    }
-  }),
 );
 
 const ServerSettingsLayerLive = ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer));
@@ -298,10 +287,14 @@ const CheckpointingLayerLive = Layer.empty.pipe(
 
 const PortScannerLayerLive = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
 
-const TerminalLayerLive = TerminalManager.layer.pipe(
-  Layer.provide(PtyAdapterLive),
-  Layer.provide(PortScannerLayerLive),
+const ProjectTerminalLayerLive = ProjectTerminal.layer.pipe(
+  Layer.provide(ProviderInstanceRegistryHydrationLive),
+  Layer.provide(OrchestrationLayerLive),
+  Layer.provide(ProviderEventLoggers.layer),
+  Layer.provide(OpenCodeRuntime.OpenCodeRuntimeLive),
 );
+
+const TerminalLayerLive = TerminalManager.layer.pipe(Layer.provide(ProjectTerminalLayerLive));
 
 const PreviewLayerLive = Layer.empty.pipe(
   Layer.provideMerge(PreviewManager.layer),

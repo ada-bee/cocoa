@@ -51,15 +51,15 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
-import * as ServerConfig from "../config.ts";
 import {
   increment,
   terminalRestartsTotal,
   terminalSessionsTotal,
 } from "../observability/Metrics.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import * as PortScanner from "../preview/PortScanner.ts";
+import * as ProjectTerminal from "../project/ProjectTerminal.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
+import { makeProviderTerminalManager } from "./ProviderManager.ts";
 
 export {
   TerminalCwdError,
@@ -1161,14 +1161,9 @@ interface TerminalManagerOptions {
 }
 
 export const make = Effect.fn("TerminalManager.make")(function* () {
-  const { terminalLogsDir } = yield* ServerConfig.ServerConfig;
-  const ptyAdapter = yield* PtyAdapter.PtyAdapter;
-  const portDiscovery = yield* PortScanner.PortDiscovery;
-  return yield* makeWithOptions({
-    logsDir: terminalLogsDir,
-    ptyAdapter,
-    registerTerminalProcesses: portDiscovery.registerTerminalProcesses,
-    unregisterTerminal: portDiscovery.unregisterTerminal,
+  const projectTerminal = yield* ProjectTerminal.ProjectTerminal;
+  return yield* makeProviderTerminalManager({
+    projectTerminal,
   });
 });
 
@@ -2667,4 +2662,4 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   });
 });
 
-export const layer = Layer.effect(TerminalManager, make()).pipe(Layer.provide(ProcessRunner.layer));
+export const layer = Layer.effect(TerminalManager, make());

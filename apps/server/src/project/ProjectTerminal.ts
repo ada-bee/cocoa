@@ -39,12 +39,14 @@ export class ProjectTerminalProjectNotFoundError extends Schema.TaggedErrorClass
 export class ProjectTerminalThreadNotFoundError extends Schema.TaggedErrorClass<ProjectTerminalThreadNotFoundError>()(
   "ProjectTerminalThreadNotFoundError",
   {
-    projectId: ProjectId,
+    projectId: Schema.optional(ProjectId),
     threadId: ThreadId,
   },
 ) {
   override get message(): string {
-    return `Thread '${this.threadId}' was not found while resolving terminal for project '${this.projectId}'.`;
+    return this.projectId === undefined
+      ? `Thread '${this.threadId}' was not found while resolving its terminal.`
+      : `Thread '${this.threadId}' was not found while resolving terminal for project '${this.projectId}'.`;
   }
 }
 
@@ -104,13 +106,14 @@ export type ProjectTerminalResolveOperation = typeof ProjectTerminalResolveOpera
 export class ProjectTerminalResolveOperationError extends Schema.TaggedErrorClass<ProjectTerminalResolveOperationError>()(
   "ProjectTerminalResolveOperationError",
   {
-    projectId: ProjectId,
+    projectId: Schema.optional(ProjectId),
+    threadId: Schema.optional(ThreadId),
     operation: ProjectTerminalResolveOperation,
     cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    return `Project terminal resolution failed for project '${this.projectId}' during ${this.operation}.`;
+    return `Project terminal resolution failed during ${this.operation}.`;
   }
 }
 
@@ -136,11 +139,26 @@ export interface ProjectTerminalStartInput {
   readonly outputByteLimit: ProviderTerminalOutputByteLimit;
 }
 
+export type ProjectTerminalStartForThreadInput = Omit<ProjectTerminalStartInput, "projectId">;
+
+export interface ProjectTerminalResolvedSession {
+  readonly projectId: ProjectId;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly cwd: string;
+  readonly worktreePath: string | null;
+  readonly session: ProviderTerminalSession;
+}
+
 export interface ProjectTerminalShape {
   readonly start: (
     input: ProjectTerminalStartInput,
     onEvent: ProviderTerminalEventHandler,
   ) => Effect.Effect<ProviderTerminalSession, ProjectTerminalError, Scope.Scope>;
+  /** Resolve the owning project from the durable thread before starting. */
+  readonly startForThread: (
+    input: ProjectTerminalStartForThreadInput,
+    onEvent: ProviderTerminalEventHandler,
+  ) => Effect.Effect<ProjectTerminalResolvedSession, ProjectTerminalError, Scope.Scope>;
 }
 
 export class ProjectTerminal extends Context.Service<ProjectTerminal, ProjectTerminalShape>()(
@@ -150,6 +168,62 @@ export class ProjectTerminal extends Context.Service<ProjectTerminal, ProjectTer
 export const make = Effect.gen(function* () {
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const providerInstanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+
+  const startResolved = Effect.fn("ProjectTerminal.startResolved")(function* (
+    project: {
+      readonly id: ProjectId;
+      readonly providerInstanceId: ProviderInstanceId;
+      readonly workspaceRoot: string;
+    },
+    thread: {
+      readonly id: ThreadId;
+      readonly projectId: ProjectId;
+      readonly worktreePath: string | null;
+    },
+    input: ProjectTerminalStartForThreadInput,
+    onEvent: ProviderTerminalEventHandler,
+  ): Effect.fn.Return<ProjectTerminalResolvedSession, ProjectTerminalError, Scope.Scope> {
+    const instance = yield* providerInstanceRegistry.getInstance(project.providerInstanceId);
+    if (instance === undefined) {
+      return yield* new ProjectTerminalProviderNotFoundError({
+        projectId: project.id,
+        providerInstanceId: project.providerInstanceId,
+      });
+    }
+    if (instance.enabled === false) {
+      return yield* new ProjectTerminalProviderUnavailableError({
+        projectId: project.id,
+        providerInstanceId: project.providerInstanceId,
+        reason: "disabled",
+      });
+    }
+    if (instance.terminal === undefined) {
+      return yield* new ProjectTerminalCapabilityUnavailableError({
+        projectId: project.id,
+        providerInstanceId: project.providerInstanceId,
+      });
+    }
+
+    const cwd = thread.worktreePath ?? project.workspaceRoot;
+    const session = yield* instance.terminal.start(
+      {
+        cwd,
+        shellArgv: input.shellArgv,
+        cols: input.cols,
+        rows: input.rows,
+        ...(input.env === undefined ? {} : { env: input.env }),
+        outputByteLimit: input.outputByteLimit,
+      },
+      onEvent,
+    );
+    return {
+      projectId: project.id,
+      providerInstanceId: project.providerInstanceId,
+      cwd,
+      worktreePath: thread.worktreePath,
+      session,
+    };
+  });
 
   const start: ProjectTerminalShape["start"] = Effect.fn("ProjectTerminal.start")(
     function* (input, onEvent) {
@@ -193,42 +267,47 @@ export const make = Effect.gen(function* () {
         });
       }
 
-      const instance = yield* providerInstanceRegistry.getInstance(project.providerInstanceId);
-      if (instance === undefined) {
-        return yield* new ProjectTerminalProviderNotFoundError({
-          projectId: project.id,
-          providerInstanceId: project.providerInstanceId,
-        });
-      }
-      if (instance.enabled === false) {
-        return yield* new ProjectTerminalProviderUnavailableError({
-          projectId: project.id,
-          providerInstanceId: project.providerInstanceId,
-          reason: "disabled",
-        });
-      }
-      if (instance.terminal === undefined) {
-        return yield* new ProjectTerminalCapabilityUnavailableError({
-          projectId: project.id,
-          providerInstanceId: project.providerInstanceId,
-        });
-      }
-
-      return yield* instance.terminal.start(
-        {
-          cwd: thread.worktreePath ?? project.workspaceRoot,
-          shellArgv: input.shellArgv,
-          cols: input.cols,
-          rows: input.rows,
-          ...(input.env === undefined ? {} : { env: input.env }),
-          outputByteLimit: input.outputByteLimit,
-        },
-        onEvent,
-      );
+      const resolved = yield* startResolved(project, thread, input, onEvent);
+      return resolved.session;
     },
   );
 
-  return ProjectTerminal.of({ start });
+  const startForThread: ProjectTerminalShape["startForThread"] = Effect.fn(
+    "ProjectTerminal.startForThread",
+  )(function* (input, onEvent) {
+    const thread = yield* projectionSnapshotQuery.getThreadShellById(input.threadId).pipe(
+      Effect.map(Option.getOrUndefined),
+      Effect.mapError(
+        (cause) =>
+          new ProjectTerminalResolveOperationError({
+            threadId: input.threadId,
+            operation: "resolveThread",
+            cause,
+          }),
+      ),
+    );
+    if (thread === undefined) {
+      return yield* new ProjectTerminalThreadNotFoundError({ threadId: input.threadId });
+    }
+    const project = yield* projectionSnapshotQuery.getProjectShellById(thread.projectId).pipe(
+      Effect.map(Option.getOrUndefined),
+      Effect.mapError(
+        (cause) =>
+          new ProjectTerminalResolveOperationError({
+            projectId: thread.projectId,
+            threadId: thread.id,
+            operation: "resolveProject",
+            cause,
+          }),
+      ),
+    );
+    if (project === undefined) {
+      return yield* new ProjectTerminalProjectNotFoundError({ projectId: thread.projectId });
+    }
+    return yield* startResolved(project, thread, input, onEvent);
+  });
+
+  return ProjectTerminal.of({ start, startForThread });
 });
 
 export const layer = Layer.effect(ProjectTerminal, make);

@@ -245,6 +245,51 @@ it.effect("prefers the persisted worktree and ignores structurally injected call
   );
 });
 
+it.effect("resolves project ownership from a durable thread without a caller project id", () => {
+  const starts: Array<ProviderTerminalStartInput> = [];
+  const terminalAdapter: ProviderTerminalAdapter = {
+    start: (input) =>
+      Effect.sync(() => starts.push(input)).pipe(Effect.as(terminalSession("thread-route"))),
+  };
+  const projects = new Map([
+    [
+      projectA,
+      projectShell({
+        id: projectA,
+        providerInstanceId: providerA,
+        workspaceRoot: "/srv/projects/a",
+      }),
+    ],
+  ]);
+  const threads = new Map([
+    [threadA, threadShell({ id: threadA, projectId: projectA, worktreePath: "/srv/worktrees/a" })],
+  ]);
+  const instances = new Map([
+    [providerA, providerInstance({ instanceId: providerA, terminal: terminalAdapter })],
+  ]);
+
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const terminal = yield* ProjectTerminal.ProjectTerminal;
+      const { projectId, providerInstanceId, cwd, worktreePath } = yield* terminal.startForThread(
+        {
+          threadId: threadA,
+          shellArgv: ["/bin/sh"],
+          cols: ProviderTerminalColumns.make(100),
+          rows: ProviderTerminalRows.make(30),
+          outputByteLimit: ProviderTerminalOutputByteLimit.make(1024),
+        },
+        () => Effect.void,
+      );
+      assert.strictEqual(projectId, projectA);
+      assert.strictEqual(providerInstanceId, providerA);
+      assert.strictEqual(cwd, "/srv/worktrees/a");
+      assert.strictEqual(worktreePath, "/srv/worktrees/a");
+      assert.strictEqual(starts[0]?.cwd, "/srv/worktrees/a");
+    }).pipe(Effect.provide(testLayer({ projects, threads, instances }))),
+  );
+});
+
 it.effect("rejects missing identities and project/thread ownership mismatches distinctly", () => {
   const projects = new Map([
     [projectA, projectShell({ id: projectA, providerInstanceId: providerA })],

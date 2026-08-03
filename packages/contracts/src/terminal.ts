@@ -341,6 +341,41 @@ export class TerminalResizeError extends Schema.TaggedErrorClass<TerminalResizeE
   }
 }
 
+export const TerminalProviderOperation = Schema.Literals([
+  "open",
+  "write",
+  "resize",
+  "restart",
+  "close",
+]);
+export type TerminalProviderOperation = typeof TerminalProviderOperation.Type;
+
+export const TerminalProviderFailureReason = Schema.Literals([
+  "notFound",
+  "disabled",
+  "unsupported",
+  "disconnected",
+  "invalidCwd",
+  "protocol",
+  "failed",
+]);
+export type TerminalProviderFailureReason = typeof TerminalProviderFailureReason.Type;
+
+/** Sanitized failure returned when a public terminal operation cannot reach its provider host. */
+export class TerminalProviderError extends Schema.TaggedErrorClass<TerminalProviderError>()(
+  "TerminalProviderError",
+  {
+    threadId: Schema.String,
+    terminalId: Schema.String,
+    operation: TerminalProviderOperation,
+    reason: TerminalProviderFailureReason,
+  },
+) {
+  override get message() {
+    return `Provider terminal ${this.operation} failed for thread: ${this.threadId}, terminal: ${this.terminalId} (${this.reason})`;
+  }
+}
+
 export const TerminalError = Schema.Union([
   TerminalCwdError,
   TerminalHistoryError,
@@ -348,5 +383,6 @@ export const TerminalError = Schema.Union([
   TerminalNotRunningError,
   TerminalWriteError,
   TerminalResizeError,
+  TerminalProviderError,
 ]);
 export type TerminalError = typeof TerminalError.Type;

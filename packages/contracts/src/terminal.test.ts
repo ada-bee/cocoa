@@ -6,6 +6,7 @@ import {
   TerminalAttachInput,
   TerminalClearInput,
   TerminalCloseInput,
+  TerminalError,
   TerminalEvent,
   TerminalOpenInput,
   TerminalResizeInput,
@@ -206,6 +207,21 @@ describe("TerminalCloseInput", () => {
         deleteHistory: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("TerminalError", () => {
+  it("accepts sanitized provider failures without a gateway pid or remote path", () => {
+    const parsed = decodeSync(TerminalError, {
+      _tag: "TerminalProviderError",
+      threadId: "thread-1",
+      terminalId: DEFAULT_TERMINAL_ID,
+      operation: "write",
+      reason: "disconnected",
+    });
+    expect(parsed._tag).toBe("TerminalProviderError");
+    expect("terminalPid" in parsed).toBe(false);
+    expect("cwd" in parsed).toBe(false);
   });
 });
 
