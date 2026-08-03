@@ -336,6 +336,9 @@ export const makeCodexDriver = (
               : dependencies.makeEndpointVcs({
                   providerInstanceId: instanceId,
                   gitExecutablePath: config.endpointGitExecutablePath,
+                  ...(config.checkpointHelper === undefined
+                    ? {}
+                    : { checkpointHelper: config.checkpointHelper }),
                   borrowConnection: supervisor.borrowConnection,
                 });
           const supervisorChanges = yield* supervisor.subscribeChanges;

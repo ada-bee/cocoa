@@ -3,6 +3,7 @@ import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { CodexCheckpointHelperConfig } from "./codexCheckpointHelper.ts";
 import { CodexEndpointTransport, CodexGitExecutablePath } from "./codexEndpoint.ts";
 import { CodexWorkspaceHelperConfig } from "./codexWorkspaceHelper.ts";
 import { DEFAULT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
@@ -242,6 +243,13 @@ export const CodexSettings = makeProviderSettingsSchema(
         title: "Endpoint Git executable",
         description:
           "Explicit absolute POSIX path to Git on the Codex provider host. Cocoa never discovers or defaults this executable.",
+        providerSettingsForm: { hidden: true },
+      }),
+    ),
+    checkpointHelper: Schema.optionalKey(CodexCheckpointHelperConfig).pipe(
+      Schema.annotateKey({
+        title: "Checkpoint helper",
+        description: "Internal Cocoa provider-host capability for versioned checkpoint operations.",
         providerSettingsForm: { hidden: true },
       }),
     ),
@@ -643,6 +651,7 @@ export const CodexSettingsPatch = Schema.Struct({
   endpointTransport: Schema.optionalKey(CodexEndpointTransport),
   endpointTerminal: Schema.optionalKey(CodexEndpointTerminalConfig),
   endpointGitExecutablePath: Schema.optionalKey(CodexGitExecutablePath),
+  checkpointHelper: Schema.optionalKey(CodexCheckpointHelperConfig),
   workspaceHelper: Schema.optionalKey(CodexWorkspaceHelperConfig),
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),

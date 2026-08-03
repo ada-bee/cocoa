@@ -41,6 +41,8 @@ import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 export const CODEX_CHECKPOINT_HELPER_PROTOCOL = "cocoa.checkpoint.v1" as const;
+export const CODEX_CHECKPOINT_HELPER_PROTOCOL_VERSION = 1 as const;
+export const CODEX_CHECKPOINT_HELPER_CONFIG_TYPE = "cocoa-checkpoint-helper-v1" as const;
 export const CODEX_CHECKPOINT_HELPER_MAX_REQUEST_BYTES = 64 * 1024;
 export const CODEX_CHECKPOINT_HELPER_MAX_PATCH_BYTES = 4 * 1024 * 1024;
 export const CODEX_CHECKPOINT_HELPER_MAX_RESPONSE_BYTES = 6 * 1024 * 1024;
@@ -97,6 +99,23 @@ export const CodexCheckpointHelperNormalizedAbsolutePath = Schema.String.check(
 );
 export type CodexCheckpointHelperNormalizedAbsolutePath =
   typeof CodexCheckpointHelperNormalizedAbsolutePath.Type;
+
+/** Administrator-configured checkpoint helper executable; directories are not accepted. */
+export const CodexCheckpointHelperExecutablePath =
+  CodexCheckpointHelperNormalizedAbsolutePath.check(
+    Schema.makeFilter((path) => path !== "/" || "The helper executable path must name a file."),
+  );
+export type CodexCheckpointHelperExecutablePath = typeof CodexCheckpointHelperExecutablePath.Type;
+
+/** Fixed, versioned helper configuration; arbitrary argv and shell commands are intentionally absent. */
+export const CodexCheckpointHelperConfig = strict(
+  Schema.Struct({
+    type: Schema.Literal(CODEX_CHECKPOINT_HELPER_CONFIG_TYPE),
+    executablePath: CodexCheckpointHelperExecutablePath,
+    expectedProtocol: Schema.Literal(CODEX_CHECKPOINT_HELPER_PROTOCOL_VERSION),
+  }),
+);
+export type CodexCheckpointHelperConfig = typeof CodexCheckpointHelperConfig.Type;
 
 /** Administrator-configured Git binary; directories are not accepted. */
 export const CodexCheckpointHelperGitExecutablePath =

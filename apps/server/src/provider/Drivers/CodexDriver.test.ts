@@ -73,6 +73,11 @@ const WORKSPACE_ENDPOINT_CONFIG = decodeCodexSettings({
     expectedProtocol: 1,
   },
   endpointGitExecutablePath: "/run/current-system/sw/bin/git",
+  checkpointHelper: {
+    type: "cocoa-checkpoint-helper-v1",
+    executablePath: "/run/current-system/sw/bin/cocoa-checkpoint-helper",
+    expectedProtocol: 1,
+  },
 });
 const TERMINAL_ENDPOINT_CONFIG = decodeCodexSettings({
   endpointTransport: {
@@ -281,6 +286,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           const textGenerationGenerations: Array<number> = [];
           let vcsFactoryPath: string | undefined;
           let vcsFactoryProviderInstanceId: ProviderInstanceId | undefined;
+          let vcsFactoryCheckpointHelper: CodexSettings["checkpointHelper"];
           let endpointTextGenerationFactoryCalls = 0;
 
           const router = {
@@ -343,6 +349,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
               vcsFactoryCalls += 1;
               vcsFactoryPath = options.gitExecutablePath;
               vcsFactoryProviderInstanceId = options.providerInstanceId;
+              vcsFactoryCheckpointHelper = options.checkpointHelper;
               return {
                 openRepository: () =>
                   Effect.gen(function* () {
@@ -427,6 +434,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           assert.equal(endpointTextGenerationFactoryCalls, 1);
           assert.equal(vcsFactoryPath, "/run/current-system/sw/bin/git");
           assert.equal(vcsFactoryProviderInstanceId, INSTANCE_ID);
+          assert.deepStrictEqual(
+            vcsFactoryCheckpointHelper,
+            WORKSPACE_ENDPOINT_CONFIG.checkpointHelper,
+          );
           assert.isDefined(instance.workspace);
           assert.isDefined(instance.vcs);
           assert.deepStrictEqual(workspaceGenerations, []);

@@ -24,6 +24,7 @@ const decodeConfigRecord = Schema.decodeUnknownEffect(ConfigRecord);
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
 
 const ALLOWED_CODEX_ENDPOINT_FIELDS = new Set([
+  "checkpointHelper",
   "customModels",
   "enabled",
   "endpointGitExecutablePath",
@@ -35,6 +36,7 @@ const ALLOWED_CODEX_ENDPOINT_FIELDS = new Set([
 const LOCAL_PROCESS_FIELDS = new Set(["binaryPath", "homePath", "launchArgs", "shadowHomePath"]);
 
 export const CocoaGatewayPolicyFailureReason = Schema.Literals([
+  "checkpoint-helper-requires-endpoint-git",
   "empty-provider-map",
   "invalid-provider-config",
   "local-process-field",
@@ -128,6 +130,12 @@ const validateInstance = Effect.fn("CocoaGatewayPolicy.validateInstance")(functi
   );
   if (config.endpointTransport === undefined) {
     return yield* fail("missing-endpoint-transport", { providerInstanceId });
+  }
+  if (config.checkpointHelper !== undefined && config.endpointGitExecutablePath === undefined) {
+    return yield* fail("checkpoint-helper-requires-endpoint-git", {
+      providerInstanceId,
+      detail: "checkpointHelper requires an explicit endpointGitExecutablePath.",
+    });
   }
 
   return {

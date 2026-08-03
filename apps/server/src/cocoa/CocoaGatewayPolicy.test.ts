@@ -148,4 +148,51 @@ describe("Cocoa gateway provider policy", () => {
       "invalid-model-selection",
     );
   });
+
+  it.effect("allows a checkpoint helper only with an explicit endpoint Git executable", () => {
+    const settings = validSettings();
+    const macbook = settings.providerInstances[ProviderInstanceId.make("macbook_air")]!;
+    const checkpointHelper = {
+      type: "cocoa-checkpoint-helper-v1" as const,
+      executablePath: "/run/current-system/sw/bin/cocoa-checkpoint-helper",
+      expectedProtocol: 1 as const,
+    };
+    const withCheckpointHelper = {
+      ...settings,
+      providerInstances: {
+        ...settings.providerInstances,
+        [ProviderInstanceId.make("macbook_air")]: {
+          ...macbook,
+          config: {
+            ...(macbook.config as object),
+            endpointGitExecutablePath: "/run/current-system/sw/bin/git",
+            checkpointHelper,
+          },
+        },
+      },
+    };
+
+    return Effect.gen(function* () {
+      const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(withCheckpointHelper);
+      expect(resolved[ProviderInstanceId.make("macbook_air")]?.config).toMatchObject({
+        endpointGitExecutablePath: "/run/current-system/sw/bin/git",
+        checkpointHelper,
+      });
+
+      const withoutGit = {
+        ...withCheckpointHelper,
+        providerInstances: {
+          ...withCheckpointHelper.providerInstances,
+          [ProviderInstanceId.make("macbook_air")]: {
+            ...macbook,
+            config: {
+              ...(macbook.config as object),
+              checkpointHelper,
+            },
+          },
+        },
+      };
+      yield* expectReason(withoutGit, "checkpoint-helper-requires-endpoint-git");
+    });
+  });
 });

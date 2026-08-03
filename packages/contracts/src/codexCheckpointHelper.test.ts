@@ -9,14 +9,19 @@ import {
   CODEX_CHECKPOINT_HELPER_MAX_RESPONSE_BYTES,
   CODEX_CHECKPOINT_HELPER_PROTOCOL,
   CODEX_CHECKPOINT_HELPER_RECEIPT_REF_PREFIX,
+  CodexCheckpointHelperConfig,
   CodexCheckpointHelperMutationReceipt,
   CodexCheckpointHelperRequest,
   CodexCheckpointHelperResponse,
 } from "./codexCheckpointHelper.ts";
+import { CodexSettings, ServerSettingsPatch } from "./settings.ts";
 
 const decodeRequest = Schema.decodeUnknownSync(CodexCheckpointHelperRequest);
 const decodeResponse = Schema.decodeUnknownSync(CodexCheckpointHelperResponse);
 const decodeReceipt = Schema.decodeUnknownSync(CodexCheckpointHelperMutationReceipt);
+const decodeConfig = Schema.decodeUnknownSync(CodexCheckpointHelperConfig);
+const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
+const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 const GIT = "/run/current-system/sw/bin/git";
 const OPERATION_ID = "11111111-1111-4111-8111-111111111111";
@@ -53,6 +58,87 @@ const COMMON_REQUEST = {
   protocol: CODEX_CHECKPOINT_HELPER_PROTOCOL,
   gitExecutablePath: GIT,
 } as const;
+
+describe("CodexCheckpointHelperConfig", () => {
+  it("decodes only the fixed v1 executable helper", () => {
+    expect(
+      decodeConfig({
+        type: "cocoa-checkpoint-helper-v1",
+        executablePath: "/run/current-system/sw/bin/cocoa-checkpoint-helper",
+        expectedProtocol: 1,
+      }),
+    ).toEqual({
+      type: "cocoa-checkpoint-helper-v1",
+      executablePath: "/run/current-system/sw/bin/cocoa-checkpoint-helper",
+      expectedProtocol: 1,
+    });
+  });
+
+  it.each([
+    "cocoa-checkpoint-helper",
+    "./cocoa-checkpoint-helper",
+    "",
+    "/",
+    "/opt//cocoa-checkpoint-helper",
+    "/opt/../cocoa-checkpoint-helper",
+    "/opt/cocoa-checkpoint-helper/",
+    "/opt/cocoa-checkpoint-helper\0evil",
+  ])("rejects unsafe helper executable path %j", (executablePath) => {
+    expect(() =>
+      decodeConfig({
+        type: "cocoa-checkpoint-helper-v1",
+        executablePath,
+        expectedProtocol: 1,
+      }),
+    ).toThrow();
+  });
+
+  it("requires the exact helper type and protocol without arbitrary command fields", () => {
+    expect(() =>
+      decodeConfig({
+        type: "cocoa-checkpoint-helper-v1",
+        executablePath: "/opt/cocoa-checkpoint-helper",
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeConfig({
+        type: "cocoa-checkpoint-helper-v1",
+        executablePath: "/opt/cocoa-checkpoint-helper",
+        expectedProtocol: 2,
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeConfig({
+        type: "custom-helper",
+        executablePath: "/opt/cocoa-checkpoint-helper",
+        expectedProtocol: 1,
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeConfig({
+        type: "cocoa-checkpoint-helper-v1",
+        executablePath: "/opt/cocoa-checkpoint-helper",
+        expectedProtocol: 1,
+        command: ["sh", "-c", "unsafe"],
+      }),
+    ).toThrow(/command/);
+  });
+
+  it("round-trips through Codex settings and settings patches without adding a default", () => {
+    const checkpointHelper = {
+      type: "cocoa-checkpoint-helper-v1" as const,
+      executablePath: "/run/current-system/sw/bin/cocoa-checkpoint-helper",
+      expectedProtocol: 1 as const,
+    };
+
+    expect(decodeCodexSettings({}).checkpointHelper).toBeUndefined();
+    expect(decodeCodexSettings({ checkpointHelper }).checkpointHelper).toEqual(checkpointHelper);
+    expect(
+      decodeServerSettingsPatch({ providers: { codex: { checkpointHelper } } }).providers?.codex
+        ?.checkpointHelper,
+    ).toEqual(checkpointHelper);
+  });
+});
 
 const CAPTURE_RECEIPT = {
   operation: "capture",
