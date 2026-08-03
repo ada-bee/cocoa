@@ -596,6 +596,7 @@ const ModelSelectionPatch = Schema.Struct({
 
 const CodexSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
+  endpointTransport: Schema.optionalKey(CodexEndpointTransport),
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),
   shadowHomePath: Schema.optionalKey(TrimmedString),

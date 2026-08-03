@@ -6,10 +6,11 @@ import {
   CODEX_SSH_PROXY_REMOTE_COMMAND,
   CodexEndpointTransport,
 } from "./codexEndpoint.ts";
-import { CodexSettings } from "./settings.ts";
+import { CodexSettings, ServerSettingsPatch } from "./settings.ts";
 
 const decodeTransport = Schema.decodeUnknownSync(CodexEndpointTransport);
 const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
+const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 describe("CodexEndpointTransport", () => {
   it("records a tested version without making it part of endpoint validation", () => {
@@ -195,5 +196,25 @@ describe("CodexSettings endpoint transition", () => {
       user: "ada",
     });
     expect(decoded.binaryPath).toBe("codex");
+  });
+
+  it("decodes endpoint transport through the legacy Codex settings patch", () => {
+    const decoded = decodeServerSettingsPatch({
+      providers: {
+        codex: {
+          endpointTransport: {
+            type: "ssh-proxy",
+            host: " rigatoni-alfredo ",
+            user: " ada ",
+          },
+        },
+      },
+    });
+
+    expect(decoded.providers?.codex?.endpointTransport).toEqual({
+      type: "ssh-proxy",
+      host: "rigatoni-alfredo",
+      user: "ada",
+    });
   });
 });
