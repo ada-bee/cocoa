@@ -19,6 +19,7 @@ import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { useServerConfigs } from "../../state/entities";
 import { cn } from "~/lib/utils";
 
 interface ChatHeaderProps {
@@ -80,6 +81,9 @@ export const ChatHeader = memo(function ChatHeader({
   onDeleteProjectScript,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const workspaceMutationsSupported =
+    useServerConfigs().get(activeThreadEnvironmentId)?.environment.capabilities
+      .workspaceMutations === true;
   const fileScripts = useT3ProjectFileScripts(
     activeThreadEnvironmentId,
     activeProjectScripts && activeProjectId
@@ -165,7 +169,7 @@ export const ChatHeader = memo(function ChatHeader({
             openInCwd={openInCwd}
           />
         )}
-        {activeProjectName && (
+        {workspaceMutationsSupported && activeProjectName && (
           <GitActionsControl
             gitCwd={gitCwd}
             activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}

@@ -220,6 +220,7 @@ import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
   useProject,
   useProjects,
+  useServerConfigs,
   useThread,
   useThreadProposedPlans,
   useThreadRefs,
@@ -2451,6 +2452,8 @@ function ChatViewContent(props: ChatViewProps) {
         worktreePath: activeThread?.worktreePath ?? null,
       })
     : null;
+  const workspaceMutationsSupported =
+    useServerConfigs().get(environmentId)?.environment.capabilities.workspaceMutations === true;
   const gitStatusQuery = useEnvironmentQuery(
     activeProject === null
       ? null
@@ -3948,10 +3951,12 @@ function ChatViewContent(props: ChatViewProps) {
       ? (pendingServerThreadStartFromOriginByThreadId[activeThread?.id ?? ""] ??
         primaryServerSettings.newWorktreesStartFromOrigin)
       : false;
-  const sendEnvMode = resolveSendEnvMode({
-    requestedEnvMode: envMode,
-    isGitRepo,
-  });
+  const sendEnvMode = workspaceMutationsSupported
+    ? resolveSendEnvMode({
+        requestedEnvMode: envMode,
+        isGitRepo,
+      })
+    : "local";
   const localCheckoutBranchMismatch = useMemo(
     () =>
       isServerThread
@@ -5561,6 +5566,9 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
+      if (!workspaceMutationsSupported) {
+        return;
+      }
       if (canOverrideServerThreadEnvMode) {
         setPendingServerThreadEnvMode(mode);
         scheduleComposerFocus();
@@ -5587,6 +5595,7 @@ function ChatViewContent(props: ChatViewProps) {
       setPendingServerThreadEnvMode,
       scheduleComposerFocus,
       setDraftThreadContext,
+      workspaceMutationsSupported,
     ],
   );
 

@@ -16,11 +16,11 @@ import {
   type AuthEnvironmentScope,
   AuthSessionId,
   CommandId,
-  type DiscoveredLocalServerList,
   EventId,
   type OrchestrationCommand,
-  type GitActionProgressEvent,
-  type GitManagerServiceError,
+  ExternalLauncherUnsupportedEditorError,
+  GitCommandError,
+  GitManagerError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
   type OrchestrationShellStreamEvent,
@@ -43,6 +43,9 @@ import {
   type ServerSelfUpdateProgressEvent,
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
+  ServerProviderUpdateError,
+  SourceControlRepositoryError,
+  VcsUnsupportedOperationError,
   RpcClientId,
   EnvironmentAuthorizationError,
   ThreadId,
@@ -58,9 +61,9 @@ import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/uns
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import { CheckpointUnsupportedError } from "./checkpointing/Errors.ts";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
-import * as ExternalLauncher from "./process/externalLauncher.ts";
 import {
   projectActivityEvent,
   projectThreadDetailSnapshot,
@@ -75,7 +78,6 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderFilesystemBrowse from "./provider/ProviderFilesystemBrowse.ts";
-import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -84,14 +86,10 @@ import * as TerminalManager from "./terminal/Manager.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
-import * as PortScanner from "./preview/PortScanner.ts";
 import * as ProjectWorkspace from "./project/ProjectWorkspace.ts";
 import * as ProjectWorkspaceRpc from "./project/ProjectWorkspaceRpc.ts";
 import * as RepositoryReadService from "./project/RepositoryReadService.ts";
 import * as RepositoryStatusBroadcaster from "./project/RepositoryStatusBroadcaster.ts";
-import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
-import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
-import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -101,25 +99,44 @@ import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
-import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
-import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
-import * as AzureDevOpsCli from "./sourceControl/AzureDevOpsCli.ts";
-import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
-import * as GitHubCli from "./sourceControl/GitHubCli.ts";
-import * as GitLabCli from "./sourceControl/GitLabCli.ts";
-import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
-import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
-import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
-import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
-import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+const isCheckpointUnsupportedError = Schema.is(CheckpointUnsupportedError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const EDITOR_DISCOVERY_TIMEOUT = Duration.seconds(5);
+const REMOTE_WORKSPACE_MUTATION_UNAVAILABLE =
+  "This operation is unavailable until it is routed through the project's provider instance.";
+const CHECKPOINT_MUTATION_UNAVAILABLE =
+  "Checkpoint revert is unavailable until the bound provider supplies checkpoint operations.";
+
+const unsupportedGitCommand = (operation: string, cwd: string) =>
+  new GitCommandError({
+    operation,
+    command: "provider-vcs",
+    cwd,
+    detail: REMOTE_WORKSPACE_MUTATION_UNAVAILABLE,
+  });
+
+const unsupportedGitManager = (operation: string, cwd: string) =>
+  new GitManagerError({
+    operation,
+    cwd,
+    detail: REMOTE_WORKSPACE_MUTATION_UNAVAILABLE,
+  });
+
+const unsupportedSourceControlRepository = (
+  operation: string,
+  provider: "github" | "gitlab" | "azure-devops" | "bitbucket" | "unknown",
+) =>
+  new SourceControlRepositoryError({
+    operation,
+    provider,
+    detail: REMOTE_WORKSPACE_MUTATION_UNAVAILABLE,
+  });
 
 export const resolveAvailableEditorsForConfig = <A, E, R>(
   discovery: Effect.Effect<ReadonlyArray<A>, E, R>,
@@ -249,18 +266,12 @@ const makeWsRpcLayer = (
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
-      const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
-      const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
       const repositoryReads = yield* RepositoryReadService.RepositoryReadService;
       const repositoryStatusBroadcaster =
         yield* RepositoryStatusBroadcaster.RepositoryStatusBroadcaster;
-      const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
-      const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
       const previewManager = yield* PreviewManager.PreviewManager;
-      const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
-      const providerMaintenanceRunner = yield* ProviderMaintenanceRunner.ProviderMaintenanceRunner;
       const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
@@ -287,19 +298,16 @@ const makeWsRpcLayer = (
         ),
       );
       const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
-      const sourceControlDiscovery = yield* SourceControlDiscovery.SourceControlDiscovery;
       const automaticGitFetchInterval = serverSettings.getSettings.pipe(
         Effect.map(
           (settings) => resolveServerBackgroundActivitySettings(settings).automaticGitFetchInterval,
         ),
         Effect.catch((cause) =>
-          Effect.logWarning("Failed to read automatic Git fetch interval setting", {
+          Effect.logWarning("Failed to read automatic repository refresh interval setting", {
             detail: cause.message,
           }).pipe(Effect.as(DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL)),
         ),
       );
-      const sourceControlRepositories =
-        yield* SourceControlRepositoryService.SourceControlRepositoryService;
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
       const sessions = yield* SessionStore.SessionStore;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
@@ -646,10 +654,14 @@ const makeWsRpcLayer = (
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
         Effect.gen(function* () {
           const bootstrap = command.bootstrap;
+          if (bootstrap?.prepareWorktree) {
+            return yield* new OrchestrationDispatchCommandError({
+              message: REMOTE_WORKSPACE_MUTATION_UNAVAILABLE,
+            });
+          }
           const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
           let createdThread = false;
           let targetProjectId = bootstrap?.createThread?.projectId;
-          let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
           let targetWorktreePath = bootstrap?.createThread?.worktreePath ?? null;
 
           const cleanupCreatedThread = () =>
@@ -754,7 +766,6 @@ const makeWsRpcLayer = (
                 .runForThread({
                   threadId: command.threadId,
                   ...(targetProjectId ? { projectId: targetProjectId } : {}),
-                  ...(targetProjectCwd ? { projectCwd: targetProjectCwd } : {}),
                   worktreePath,
                 })
                 .pipe(
@@ -799,38 +810,6 @@ const makeWsRpcLayer = (
               createdThread = true;
             }
 
-            if (bootstrap?.prepareWorktree) {
-              let worktreeBaseRef = bootstrap.prepareWorktree.baseBranch;
-              if (bootstrap.prepareWorktree.startFromOrigin) {
-                yield* gitWorkflow.fetchRemote({
-                  cwd: bootstrap.prepareWorktree.projectCwd,
-                  remoteName: "origin",
-                });
-                const resolvedRemoteBase = yield* gitWorkflow.resolveRemoteTrackingCommit({
-                  cwd: bootstrap.prepareWorktree.projectCwd,
-                  refName: bootstrap.prepareWorktree.baseBranch,
-                  fallbackRemoteName: "origin",
-                });
-                worktreeBaseRef = resolvedRemoteBase.commitSha;
-              }
-              const worktree = yield* gitWorkflow.createWorktree({
-                cwd: bootstrap.prepareWorktree.projectCwd,
-                refName: worktreeBaseRef,
-                newRefName: bootstrap.prepareWorktree.branch,
-                baseRefName: bootstrap.prepareWorktree.baseBranch,
-                path: null,
-              });
-              targetWorktreePath = worktree.worktree.path;
-              yield* orchestrationEngine.dispatch({
-                type: "thread.meta.update",
-                commandId: yield* serverCommandId("bootstrap-thread-meta-update"),
-                threadId: command.threadId,
-                branch: worktree.worktree.refName,
-                worktreePath: targetWorktreePath,
-              });
-              yield* refreshGitStatus(targetWorktreePath);
-            }
-
             yield* runSetupProgram();
 
             return yield* orchestrationEngine.dispatch(finalTurnStartCommand);
@@ -850,6 +829,13 @@ const makeWsRpcLayer = (
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
+        if (normalizedCommand.type === "thread.checkpoint.revert") {
+          return Effect.fail(
+            new OrchestrationDispatchCommandError({
+              message: CHECKPOINT_MUTATION_UNAVAILABLE,
+            }),
+          );
+        }
         const dispatchEffect =
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
             ? dispatchBootstrapTurnStart(normalizedCommand)
@@ -880,16 +866,19 @@ const makeWsRpcLayer = (
         const auth = yield* serverAuth.getDescriptor();
 
         return {
-          environment,
+          environment: {
+            ...environment,
+            capabilities: {
+              ...environment.capabilities,
+              workspaceMutations: false,
+            },
+          },
           auth,
-          cwd: config.cwd,
           keybindingsConfigPath: config.keybindingsConfigPath,
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
           providers,
-          availableEditors: yield* resolveAvailableEditorsForConfig(
-            externalLauncher.resolveAvailableEditors(),
-          ),
+          availableEditors: [],
           observability: {
             logsDirectoryPath: config.logsDir,
             localTracingEnabled: true,
@@ -905,11 +894,6 @@ const makeWsRpcLayer = (
           threadResumeCompletionMarker: true,
         };
       });
-
-      const refreshGitStatus = (cwd: string) =>
-        vcsStatusBroadcaster
-          .refreshStatus(cwd)
-          .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
@@ -985,8 +969,10 @@ const makeWsRpcLayer = (
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetTurnDiffError({
-                    message: "Failed to load turn diff",
-                    cause,
+                    message: isCheckpointUnsupportedError(cause)
+                      ? cause.message
+                      : "Failed to load turn diff",
+                    ...(isCheckpointUnsupportedError(cause) ? {} : { cause }),
                   }),
               ),
             ),
@@ -999,8 +985,10 @@ const makeWsRpcLayer = (
               Effect.mapError(
                 (cause) =>
                   new OrchestrationGetFullThreadDiffError({
-                    message: "Failed to load full thread diff",
-                    cause,
+                    message: isCheckpointUnsupportedError(cause)
+                      ? cause.message
+                      : "Failed to load full thread diff",
+                    ...(isCheckpointUnsupportedError(cause) ? {} : { cause }),
                   }),
               ),
             ),
@@ -1286,7 +1274,12 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverUpdateProvider]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverUpdateProvider,
-            providerMaintenanceRunner.updateProvider(input),
+            Effect.fail(
+              new ServerProviderUpdateError({
+                provider: input.provider,
+                reason: "Provider updates are managed on the external provider host, not by Cocoa.",
+              }),
+            ),
             {
               "rpc.aggregate": "server",
             },
@@ -1363,7 +1356,10 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,
-            sourceControlDiscovery.discover,
+            Effect.succeed({
+              versionControlSystems: [],
+              sourceControlProviders: [],
+            }),
             {
               "rpc.aggregate": "server",
             },
@@ -1471,7 +1467,7 @@ const makeWsRpcLayer = (
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,
-            sourceControlRepositories.lookupRepository(input),
+            Effect.fail(unsupportedSourceControlRepository("lookupRepository", input.provider)),
             {
               "rpc.aggregate": "source-control",
             },
@@ -1479,7 +1475,9 @@ const makeWsRpcLayer = (
         [WS_METHODS.sourceControlCloneRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlCloneRepository,
-            sourceControlRepositories.cloneRepository(input),
+            Effect.fail(
+              unsupportedSourceControlRepository("cloneRepository", input.provider ?? "unknown"),
+            ),
             {
               "rpc.aggregate": "source-control",
             },
@@ -1487,9 +1485,7 @@ const makeWsRpcLayer = (
         [WS_METHODS.sourceControlPublishRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlPublishRepository,
-            sourceControlRepositories
-              .publishRepository(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            Effect.fail(unsupportedSourceControlRepository("publishRepository", input.provider)),
             {
               "rpc.aggregate": "source-control",
             },
@@ -1567,9 +1563,13 @@ const makeWsRpcLayer = (
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.shellOpenInEditor]: (input) =>
-          observeRpcEffect(WS_METHODS.shellOpenInEditor, externalLauncher.launchEditor(input), {
-            "rpc.aggregate": "workspace",
-          }),
+          observeRpcEffect(
+            WS_METHODS.shellOpenInEditor,
+            Effect.fail(new ExternalLauncherUnsupportedEditorError({ editor: input.editor })),
+            {
+              "rpc.aggregate": "workspace",
+            },
+          ),
         [WS_METHODS.filesystemBrowse]: (input) =>
           observeRpcEffect(WS_METHODS.filesystemBrowse, providerFilesystemBrowse.browse(input), {
             "rpc.aggregate": "workspace",
@@ -1641,42 +1641,19 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsPull,
-            gitWorkflow.pullCurrentBranch(input.cwd).pipe(
-              Effect.matchCauseEffect({
-                onFailure: (cause) => Effect.failCause(cause),
-                onSuccess: (result) =>
-                  refreshGitStatus(input.cwd).pipe(Effect.ignore({ log: true }), Effect.as(result)),
-              }),
-            ),
+            Effect.fail(unsupportedGitCommand("vcs.pull", input.cwd)),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitRunStackedAction]: (input) =>
           observeRpcStream(
             WS_METHODS.gitRunStackedAction,
-            Stream.callback<GitActionProgressEvent, GitManagerServiceError>((queue) =>
-              gitWorkflow
-                .runStackedAction(input, {
-                  actionId: input.actionId,
-                  progressReporter: {
-                    publish: (event) => Queue.offer(queue, event).pipe(Effect.asVoid),
-                  },
-                })
-                .pipe(
-                  Effect.matchCauseEffect({
-                    onFailure: (cause) => Queue.failCause(queue, cause),
-                    onSuccess: () =>
-                      refreshGitStatus(input.cwd).pipe(
-                        Effect.andThen(Queue.end(queue).pipe(Effect.asVoid)),
-                      ),
-                  }),
-                ),
-            ),
+            Stream.fail(unsupportedGitManager("git.runStackedAction", input.cwd)),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.gitResolvePullRequest]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitResolvePullRequest,
-            gitWorkflow.resolvePullRequest(input),
+            Effect.fail(unsupportedGitManager("git.resolvePullRequest", input.cwd)),
             {
               "rpc.aggregate": "git",
             },
@@ -1684,9 +1661,7 @@ const makeWsRpcLayer = (
         [WS_METHODS.gitPreparePullRequestThread]: (input) =>
           observeRpcEffect(
             WS_METHODS.gitPreparePullRequestThread,
-            gitWorkflow
-              .preparePullRequestThread(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            Effect.fail(unsupportedGitManager("git.preparePullRequestThread", input.cwd)),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.vcsListRefs]: (input) =>
@@ -1696,33 +1671,37 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,
-            gitWorkflow.createWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            Effect.fail(unsupportedGitCommand("vcs.createWorktree", input.cwd)),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRemoveWorktree,
-            gitWorkflow.removeWorktree(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            Effect.fail(unsupportedGitCommand("vcs.removeWorktree", input.cwd)),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateRef,
-            gitWorkflow.createRef(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            Effect.fail(unsupportedGitCommand("vcs.createRef", input.cwd)),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsSwitchRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsSwitchRef,
-            gitWorkflow.switchRef(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            Effect.fail(unsupportedGitCommand("vcs.switchRef", input.cwd)),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsInit]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsInit,
-            vcsProvisioning
-              .initRepository(input)
-              .pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
+            Effect.fail(
+              new VcsUnsupportedOperationError({
+                operation: "vcs.init",
+                kind: input.kind ?? "git",
+                detail: REMOTE_WORKSPACE_MUTATION_UNAVAILABLE,
+              }),
+            ),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.reviewGetDiffPreview]: (input) =>
@@ -1839,22 +1818,16 @@ const makeWsRpcLayer = (
         [WS_METHODS.subscribeDiscoveredLocalServers]: (_input) =>
           observeRpcStream(
             WS_METHODS.subscribeDiscoveredLocalServers,
-            Stream.callback<DiscoveredLocalServerList>((queue) =>
-              Effect.gen(function* () {
-                yield* portDiscovery.retain;
-                const initial = yield* portDiscovery.scan();
-                const initialScannedAt = DateTime.formatIso(yield* DateTime.now);
-                yield* Queue.offer(queue, {
-                  servers: initial,
-                  scannedAt: initialScannedAt,
-                });
-                yield* portDiscovery.subscribe((servers) =>
-                  Effect.gen(function* () {
-                    const scannedAt = DateTime.formatIso(yield* DateTime.now);
-                    yield* Queue.offer(queue, { servers, scannedAt });
-                  }),
-                );
-              }),
+            Stream.concat(
+              Stream.fromEffect(
+                nowIso.pipe(
+                  Effect.map((scannedAt) => ({
+                    servers: [],
+                    scannedAt,
+                  })),
+                ),
+              ),
+              Stream.never,
             ),
             { "rpc.aggregate": "preview" },
           ),
@@ -2005,29 +1978,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           Effect.provide(
             makeWsRpcLayer(session, previewAutomationBroker).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
-              Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
-              Layer.provide(
-                SourceControlDiscovery.layer.pipe(
-                  Layer.provide(
-                    SourceControlProviderRegistry.layer.pipe(
-                      Layer.provide(
-                        Layer.mergeAll(
-                          AzureDevOpsCli.layer,
-                          BitbucketApi.layer,
-                          GitHubCli.layer,
-                          GitLabCli.layer,
-                        ),
-                      ),
-                      Layer.provideMerge(GitVcsDriver.layer),
-                      Layer.provide(
-                        VcsDriverRegistry.layer.pipe(Layer.provide(VcsProjectConfig.layer)),
-                      ),
-                    ),
-                  ),
-                  Layer.provide(VcsProcess.layer),
-                ),
-              ),
             ),
           ),
         );

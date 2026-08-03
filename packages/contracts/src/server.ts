@@ -416,7 +416,8 @@ export type ServerSignalProcessResult = typeof ServerSignalProcessResult.Type;
 export const ServerConfig = Schema.Struct({
   environment: ExecutionEnvironmentDescriptor,
   auth: ServerAuthDescriptor,
-  cwd: TrimmedNonEmptyString,
+  /** @deprecated Gateway cwd is not a provider workspace. */
+  cwd: Schema.optionalKey(TrimmedNonEmptyString),
   keybindingsConfigPath: TrimmedNonEmptyString,
   keybindings: ResolvedKeybindingsConfig,
   issues: ServerConfigIssues,

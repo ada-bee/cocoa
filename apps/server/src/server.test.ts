@@ -78,6 +78,7 @@ import * as HttpResponseCompression from "./httpCompression/HttpResponseCompress
 import { makeRoutesLayer } from "./server.ts";
 import { resolveAvailableEditorsForConfig } from "./ws.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import { CheckpointUnsupportedError } from "./checkpointing/Errors.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -360,6 +361,7 @@ const buildAppUnderTest = (options?: {
     projectSetupScriptRunner?: Partial<
       ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]
     >;
+    portDiscovery?: Partial<PortScanner.PortDiscovery["Service"]>;
     terminalManager?: Partial<TerminalManager.TerminalManager["Service"]>;
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
@@ -744,6 +746,7 @@ const buildAppUnderTest = (options?: {
             retain: Effect.void,
             registerTerminalProcesses: () => Effect.void,
             unregisterTerminal: () => Effect.void,
+            ...options?.layers?.portDiscovery,
           }),
         ),
       ),
@@ -3968,6 +3971,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       assert.equal(response.environment.environmentId, testEnvironmentDescriptor.environmentId);
       assert.equal(response.auth.policy, "desktop-managed-local");
+      assert.notProperty(response, "cwd");
+      assert.equal(response.environment.capabilities.workspaceMutations, false);
       assert.equal(response.shellResumeCompletionMarker, true);
       assert.equal(response.threadResumeCompletionMarker, true);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
@@ -5348,309 +5353,186 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("routes websocket rpc shell.openInEditor", () =>
+  it.effect("fails closed for gateway-local workspace and source-control operations", () =>
     Effect.gen(function* () {
-      let openedInput: { cwd: string; editor: EditorId } | null = null;
+      const unreachable = (operation: string) => Effect.die(`unexpected local call: ${operation}`);
       yield* buildAppUnderTest({
         layers: {
           externalLauncher: {
-            launchEditor: (input) =>
-              Effect.sync(() => {
-                openedInput = input;
-              }),
+            resolveAvailableEditors: () => unreachable("resolveAvailableEditors"),
+            launchEditor: () => unreachable("launchEditor"),
           },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.shellOpenInEditor]({
-            cwd: "/tmp/project",
-            editor: "cursor",
-          }),
-        ),
-      );
-
-      assert.deepEqual(openedInput, { cwd: "/tmp/project", editor: "cursor" });
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("routes websocket rpc shell.openInEditor errors", () =>
-    Effect.gen(function* () {
-      const externalLauncherError = new ExternalLauncherCommandNotFoundError({
-        editor: "cursor",
-        command: "cursor",
-      });
-      yield* buildAppUnderTest({
-        layers: {
-          externalLauncher: {
-            launchEditor: () => Effect.fail(externalLauncherError),
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const result = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.shellOpenInEditor]({
-            cwd: "/tmp/project",
-            editor: "cursor",
-          }),
-        ).pipe(Effect.result),
-      );
-
-      assertFailure(result, externalLauncherError);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("routes websocket rpc git methods", () =>
-    Effect.gen(function* () {
-      yield* buildAppUnderTest({
-        config: {
-          cwd: "/tmp/repo",
-        },
-        layers: {
           vcsDriver: {
-            isInsideWorkTree: () => Effect.succeed(true),
-          },
-          gitManager: {
-            invalidateLocalStatus: () => Effect.void,
-            invalidateRemoteStatus: () => Effect.void,
-            invalidateStatus: () => Effect.void,
-            localStatus: () =>
-              Effect.succeed({
-                isRepo: true,
-                hasPrimaryRemote: true,
-                isDefaultRef: true,
-                refName: "main",
-                hasWorkingTreeChanges: false,
-                workingTree: { files: [], insertions: 0, deletions: 0 },
-              }),
-            remoteStatus: () =>
-              Effect.succeed({
-                hasUpstream: true,
-                aheadCount: 0,
-                behindCount: 0,
-                pr: null,
-              }),
-            status: () =>
-              Effect.succeed({
-                isRepo: true,
-                hasPrimaryRemote: true,
-                isDefaultRef: true,
-                refName: "main",
-                hasWorkingTreeChanges: false,
-                workingTree: { files: [], insertions: 0, deletions: 0 },
-                hasUpstream: true,
-                aheadCount: 0,
-                behindCount: 0,
-                pr: null,
-              }),
-            runStackedAction: (input, options) =>
-              Effect.gen(function* () {
-                const result = {
-                  action: "commit" as const,
-                  branch: { status: "skipped_not_requested" as const },
-                  commit: {
-                    status: "created" as const,
-                    commitSha: "abc123",
-                    subject: "feat: demo",
-                  },
-                  push: { status: "skipped_not_requested" as const },
-                  pr: { status: "skipped_not_requested" as const },
-                  toast: {
-                    title: "Committed abc123",
-                    description: "feat: demo",
-                    cta: {
-                      kind: "run_action" as const,
-                      label: "Push",
-                      action: {
-                        kind: "push" as const,
-                      },
-                    },
-                  },
-                };
-
-                yield* (
-                  options?.progressReporter?.publish({
-                    actionId: options.actionId ?? input.actionId,
-                    cwd: input.cwd,
-                    action: input.action,
-                    kind: "phase_started",
-                    phase: "commit",
-                    label: "Committing...",
-                  }) ?? Effect.void
-                );
-
-                yield* (
-                  options?.progressReporter?.publish({
-                    actionId: options.actionId ?? input.actionId,
-                    cwd: input.cwd,
-                    action: input.action,
-                    kind: "action_finished",
-                    result,
-                  }) ?? Effect.void
-                );
-
-                return result;
-              }),
-            resolvePullRequest: () =>
-              Effect.succeed({
-                pullRequest: {
-                  number: 1,
-                  title: "Demo PR",
-                  url: "https://example.com/pr/1",
-                  baseBranch: "main",
-                  headBranch: "feature/demo",
-                  state: "open",
-                },
-              }),
-            preparePullRequestThread: () =>
-              Effect.succeed({
-                pullRequest: {
-                  number: 1,
-                  title: "Demo PR",
-                  url: "https://example.com/pr/1",
-                  baseBranch: "main",
-                  headBranch: "feature/demo",
-                  state: "open",
-                },
-                branch: "feature/demo",
-                worktreePath: null,
-              }),
+            initRepository: () => unreachable("initRepository"),
           },
           gitVcsDriver: {
-            pullCurrentBranch: () =>
-              Effect.succeed({
-                status: "pulled",
-                refName: "main",
-                upstreamRef: "origin/main",
-              }),
-            listRefs: () =>
-              Effect.succeed({
-                refs: [
-                  {
-                    name: "main",
-                    current: true,
-                    isDefault: true,
-                    worktreePath: null,
-                  },
-                ],
-                isRepo: true,
-                hasPrimaryRemote: true,
-                nextCursor: null,
-                totalCount: 1,
-              }),
-            createWorktree: () =>
-              Effect.succeed({
-                worktree: { path: "/tmp/wt", refName: "feature/demo" },
-              }),
-            removeWorktree: () => Effect.void,
-            createRef: (input) => Effect.succeed({ refName: input.refName }),
-            switchRef: (input) => Effect.succeed({ refName: input.refName }),
+            pullCurrentBranch: () => unreachable("pullCurrentBranch"),
+            createWorktree: () => unreachable("createWorktree"),
+            removeWorktree: () => unreachable("removeWorktree"),
+            createRef: () => unreachable("createRef"),
+            switchRef: () => unreachable("switchRef"),
           },
-          vcsStatusBroadcaster: {
-            refreshStatus: () =>
-              Effect.succeed({
-                isRepo: true,
-                hasPrimaryRemote: true,
-                isDefaultRef: true,
-                refName: "main",
-                hasWorkingTreeChanges: false,
-                workingTree: { files: [], insertions: 0, deletions: 0 },
-                hasUpstream: true,
-                aheadCount: 0,
-                behindCount: 0,
-                pr: null,
-              }),
+          gitManager: {
+            runStackedAction: () => unreachable("runStackedAction"),
+            resolvePullRequest: () => unreachable("resolvePullRequest"),
+            preparePullRequestThread: () => unreachable("preparePullRequestThread"),
+          },
+          sourceControlRepositoryService: {
+            lookupRepository: () => unreachable("lookupRepository"),
+            cloneRepository: () => unreachable("cloneRepository"),
+            publishRepository: () => unreachable("publishRepository"),
+          },
+          portDiscovery: {
+            scan: () => unreachable("portDiscovery.scan"),
+            subscribe: () => unreachable("portDiscovery.subscribe"),
+            retain: unreachable("portDiscovery.retain"),
           },
           repositoryStatusBroadcaster: {
-            refreshStatus: () =>
-              Effect.succeed({
-                _tag: "Repository" as const,
-                head: { _tag: "Branch" as const, name: "main", commit: "abc123" },
-                defaultRef: "main",
-                upstreamRef: "origin/main",
-                aheadCount: 0,
-                behindCount: 0,
-                hasPrimaryRemote: true,
-                hasWorkingTreeChanges: false,
-                changedPaths: [],
-                truncated: false,
-              }),
+            refreshStatus: () => Effect.succeed({ _tag: "NotRepository" as const }),
           },
           repositoryReadService: {
-            listRefs: () =>
-              Effect.succeed({
-                _tag: "Repository" as const,
-                refs: [
-                  {
-                    kind: "local" as const,
-                    name: "main",
-                    target: "abc123",
-                    current: true,
-                    isDefault: true,
-                  },
-                ],
-                truncated: false,
-              }),
-            getReviewDiff: () =>
-              Effect.succeed({
-                _tag: "Repository" as const,
-                sources: [
-                  {
-                    kind: "workingTree" as const,
-                    baseRef: "HEAD",
-                    headRef: null,
-                    patch: "dirty-diff",
-                    byteLength: 10,
-                    truncated: false,
-                  },
-                ],
-                truncated: false,
-              }),
-          },
-          reviewService: {
-            getDiffPreview: (input) =>
-              Effect.succeed({
-                cwd: input.cwd,
-                generatedAt: DateTime.nowUnsafe(),
-                sources: [
-                  {
-                    id: "working-tree",
-                    kind: "working-tree",
-                    title: "Dirty worktree",
-                    baseRef: "HEAD",
-                    headRef: null,
-                    diff: "dirty-diff",
-                    diffHash: "hash-dirty",
-                    truncated: false,
-                  },
-                  {
-                    id: "branch-range",
-                    kind: "branch-range",
-                    title: "Against main",
-                    baseRef: "main",
-                    headRef: "feature/demo",
-                    diff: "base-diff",
-                    diffHash: "hash-base",
-                    truncated: false,
-                  },
-                ],
-              }),
+            listRefs: () => Effect.succeed({ _tag: "NotRepository" as const }),
+            getReviewDiff: () => Effect.succeed({ _tag: "NotRepository" as const }),
           },
         },
       });
 
       const wsUrl = yield* getWsServerUrl("/ws");
+      const run = <A, E, R>(use: Parameters<typeof withWsRpcClient<A, E, R>>[1]) =>
+        Effect.scoped(withWsRpcClient(wsUrl, use).pipe(Effect.result));
 
-      const pull = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) => client[WS_METHODS.vcsPull]({ cwd: "/tmp/repo" })),
+      const pull = yield* run((client) => client[WS_METHODS.vcsPull]({ cwd: "/remote/repo" }));
+      assert.equal(pull._tag, "Failure");
+      if (pull._tag === "Failure") assert.equal(pull.failure._tag, "GitCommandError");
+
+      const stacked = yield* run((client) =>
+        client[WS_METHODS.gitRunStackedAction]({
+          actionId: "action-1",
+          cwd: "/remote/repo",
+          action: "commit",
+        }).pipe(Stream.runCollect),
       );
-      assert.equal(pull.status, "pulled");
+      assert.equal(stacked._tag, "Failure");
+      if (stacked._tag === "Failure") assert.equal(stacked.failure._tag, "GitManagerError");
 
-      const refreshedStatus = yield* Effect.scoped(
+      const resolvedPr = yield* run((client) =>
+        client[WS_METHODS.gitResolvePullRequest]({ cwd: "/remote/repo", reference: "1" }),
+      );
+      assert.equal(resolvedPr._tag, "Failure");
+      if (resolvedPr._tag === "Failure") assert.equal(resolvedPr.failure._tag, "GitManagerError");
+
+      const preparedPr = yield* run((client) =>
+        client[WS_METHODS.gitPreparePullRequestThread]({
+          cwd: "/remote/repo",
+          reference: "1",
+          mode: "local",
+        }),
+      );
+      assert.equal(preparedPr._tag, "Failure");
+      if (preparedPr._tag === "Failure") assert.equal(preparedPr.failure._tag, "GitManagerError");
+
+      const createWorktree = yield* run((client) =>
+        client[WS_METHODS.vcsCreateWorktree]({
+          cwd: "/remote/repo",
+          refName: "main",
+          path: null,
+        }),
+      );
+      assert.equal(createWorktree._tag, "Failure");
+      if (createWorktree._tag === "Failure")
+        assert.equal(createWorktree.failure._tag, "GitCommandError");
+
+      const removeWorktree = yield* run((client) =>
+        client[WS_METHODS.vcsRemoveWorktree]({
+          cwd: "/remote/repo",
+          path: "/remote/worktree",
+        }),
+      );
+      assert.equal(removeWorktree._tag, "Failure");
+      if (removeWorktree._tag === "Failure")
+        assert.equal(removeWorktree.failure._tag, "GitCommandError");
+
+      const createRef = yield* run((client) =>
+        client[WS_METHODS.vcsCreateRef]({ cwd: "/remote/repo", refName: "feature/demo" }),
+      );
+      assert.equal(createRef._tag, "Failure");
+      if (createRef._tag === "Failure") assert.equal(createRef.failure._tag, "GitCommandError");
+
+      const switchRef = yield* run((client) =>
+        client[WS_METHODS.vcsSwitchRef]({ cwd: "/remote/repo", refName: "main" }),
+      );
+      assert.equal(switchRef._tag, "Failure");
+      if (switchRef._tag === "Failure") assert.equal(switchRef.failure._tag, "GitCommandError");
+
+      const init = yield* run((client) => client[WS_METHODS.vcsInit]({ cwd: "/remote/repo" }));
+      assert.equal(init._tag, "Failure");
+      if (init._tag === "Failure") assert.equal(init.failure._tag, "VcsUnsupportedOperationError");
+
+      const lookup = yield* run((client) =>
+        client[WS_METHODS.sourceControlLookupRepository]({
+          provider: "github",
+          repository: "owner/repo",
+          cwd: "/remote/repo",
+        }),
+      );
+      assert.equal(lookup._tag, "Failure");
+      if (lookup._tag === "Failure")
+        assert.equal(lookup.failure._tag, "SourceControlRepositoryError");
+
+      const clone = yield* run((client) =>
+        client[WS_METHODS.sourceControlCloneRepository]({
+          provider: "github",
+          repository: "owner/repo",
+          destinationPath: "/remote/repo",
+        }),
+      );
+      assert.equal(clone._tag, "Failure");
+      if (clone._tag === "Failure")
+        assert.equal(clone.failure._tag, "SourceControlRepositoryError");
+
+      const publish = yield* run((client) =>
+        client[WS_METHODS.sourceControlPublishRepository]({
+          cwd: "/remote/repo",
+          provider: "github",
+          repository: "owner/repo",
+          visibility: "private",
+        }),
+      );
+      assert.equal(publish._tag, "Failure");
+      if (publish._tag === "Failure")
+        assert.equal(publish.failure._tag, "SourceControlRepositoryError");
+
+      const editor = yield* run((client) =>
+        client[WS_METHODS.shellOpenInEditor]({ cwd: "/remote/repo", editor: "cursor" }),
+      );
+      assert.equal(editor._tag, "Failure");
+      if (editor._tag === "Failure")
+        assert.equal(editor.failure._tag, "ExternalLauncherUnsupportedEditorError");
+
+      const updateProvider = yield* run((client) =>
+        client[WS_METHODS.serverUpdateProvider]({ provider: ProviderDriverKind.make("codex") }),
+      );
+      assert.equal(updateProvider._tag, "Failure");
+      if (updateProvider._tag === "Failure")
+        assert.equal(updateProvider.failure._tag, "ServerProviderUpdateError");
+
+      const discovery = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) => client[WS_METHODS.serverDiscoverSourceControl]({})),
+      );
+      assert.deepEqual(discovery, { versionControlSystems: [], sourceControlProviders: [] });
+
+      const discoveredServers = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.subscribeDiscoveredLocalServers]({}).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.map((items) => Array.from(items)),
+          ),
+        ),
+      );
+      assert.deepEqual(discoveredServers[0]?.servers, []);
+
+      const status = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.vcsRefreshStatus]({
             target: { projectId: defaultProjectId },
@@ -5658,46 +5540,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           }),
         ),
       );
-      assert.equal(refreshedStatus._tag, "Repository");
-
-      const stackedEvents = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.gitRunStackedAction]({
-            actionId: "action-1",
-            cwd: "/tmp/repo",
-            action: "commit",
-          }).pipe(
-            Stream.runCollect,
-            Effect.map((events) => Array.from(events)),
-          ),
-        ),
-      );
-      const lastStackedEvent = stackedEvents.at(-1);
-      assert.equal(lastStackedEvent?.kind, "action_finished");
-      if (lastStackedEvent?.kind === "action_finished") {
-        assert.equal(lastStackedEvent.result.action, "commit");
-      }
-
-      const resolvedPr = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.gitResolvePullRequest]({
-            cwd: "/tmp/repo",
-            reference: "1",
-          }),
-        ),
-      );
-      assert.equal(resolvedPr.pullRequest.number, 1);
-
-      const prepared = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.gitPreparePullRequestThread]({
-            cwd: "/tmp/repo",
-            reference: "1",
-            mode: "local",
-          }),
-        ),
-      );
-      assert.equal(prepared.branch, "feature/demo");
+      assert.equal(status._tag, "NotRepository");
 
       const refs = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
@@ -5708,265 +5551,33 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           }),
         ),
       );
-      assert.equal(refs._tag, "Repository");
-      if (refs._tag === "Repository") assert.equal(refs.refs[0]?.name, "main");
-
-      const worktree = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.vcsCreateWorktree]({
-            cwd: "/tmp/repo",
-            refName: "main",
-            path: null,
-          }),
-        ),
-      );
-      assert.equal(worktree.worktree.refName, "feature/demo");
-
-      yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.vcsRemoveWorktree]({
-            cwd: "/tmp/repo",
-            path: "/tmp/wt",
-          }),
-        ),
-      );
-
-      yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.vcsCreateRef]({
-            cwd: "/tmp/repo",
-            refName: "feature/new",
-          }),
-        ),
-      );
-
-      yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.vcsSwitchRef]({
-            cwd: "/tmp/repo",
-            refName: "main",
-          }),
-        ),
-      );
-
-      yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.vcsInit]({
-            cwd: "/tmp/repo",
-          }),
-        ),
-      );
-
-      const diffPreview = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.reviewGetDiffPreview]({
-            target: { projectId: defaultProjectId },
-            ignoreWhitespace: false,
-            maxBytes: 4 * 1024 * 1024,
-          }),
-        ),
-      );
-      assert.equal(diffPreview._tag, "Repository");
-      if (diffPreview._tag === "Repository") {
-        assert.equal(diffPreview.sources[0]?.patch, "dirty-diff");
-      }
+      assert.equal(refs._tag, "NotRepository");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("routes websocket rpc git.pull errors", () =>
+  it.effect("fails closed for unsupported provider checkpoint operations", () =>
     Effect.gen(function* () {
-      const gitError = new GitCommandError({
-        operation: "pull",
-        command: "git pull --ff-only",
-        cwd: "/tmp/repo",
-        detail: "upstream missing",
-      });
-      let invalidationCalls = 0;
-      let statusCalls = 0;
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
       yield* buildAppUnderTest({
         layers: {
-          gitVcsDriver: {
-            pullCurrentBranch: () => Effect.fail(gitError),
-          },
-          gitManager: {
-            invalidateLocalStatus: () =>
+          orchestrationEngine: {
+            dispatch: (command) =>
               Effect.sync(() => {
-                invalidationCalls += 1;
-              }),
-            invalidateRemoteStatus: () =>
-              Effect.sync(() => {
-                invalidationCalls += 1;
-              }),
-            invalidateStatus: () =>
-              Effect.sync(() => {
-                invalidationCalls += 1;
-              }),
-            localStatus: () =>
-              Effect.succeed({
-                isRepo: true,
-                hasPrimaryRemote: true,
-                isDefaultRef: true,
-                refName: "main",
-                hasWorkingTreeChanges: true,
-                workingTree: { files: [], insertions: 0, deletions: 0 },
-              }),
-            remoteStatus: () =>
-              Effect.sync(() => {
-                statusCalls += 1;
-                return {
-                  hasUpstream: true,
-                  aheadCount: 0,
-                  behindCount: 0,
-                  pr: null,
-                };
-              }),
-            status: () =>
-              Effect.sync(() => {
-                statusCalls += 1;
-                return {
-                  isRepo: true,
-                  hasPrimaryRemote: true,
-                  isDefaultRef: true,
-                  refName: "main",
-                  hasWorkingTreeChanges: true,
-                  workingTree: { files: [], insertions: 0, deletions: 0 },
-                  hasUpstream: true,
-                  aheadCount: 0,
-                  behindCount: 0,
-                  pr: null,
-                };
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
               }),
           },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const result = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) => client[WS_METHODS.vcsPull]({ cwd: "/tmp/repo" })).pipe(
-          Effect.result,
-        ),
-      );
-
-      assertFailure(result, gitError);
-      assert.equal(invalidationCalls, 0);
-      assert.equal(statusCalls, 0);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("routes websocket rpc git.runStackedAction errors after refreshing git status", () =>
-    Effect.gen(function* () {
-      const gitError = new GitCommandError({
-        operation: "commit",
-        command: "git commit",
-        cwd: "/tmp/repo",
-        detail: "nothing to commit",
-      });
-      let invalidationCalls = 0;
-      let statusCalls = 0;
-      yield* buildAppUnderTest({
-        layers: {
-          gitManager: {
-            invalidateLocalStatus: () =>
-              Effect.sync(() => {
-                invalidationCalls += 1;
-              }),
-            invalidateRemoteStatus: () =>
-              Effect.sync(() => {
-                invalidationCalls += 1;
-              }),
-            invalidateStatus: () =>
-              Effect.sync(() => {
-                invalidationCalls += 1;
-              }),
-            localStatus: () =>
-              Effect.succeed({
-                isRepo: true,
-                hasPrimaryRemote: true,
-                isDefaultRef: false,
-                refName: "feature/demo",
-                hasWorkingTreeChanges: true,
-                workingTree: { files: [], insertions: 0, deletions: 0 },
-              }),
-            remoteStatus: () =>
-              Effect.sync(() => {
-                statusCalls += 1;
-                return {
-                  hasUpstream: true,
-                  aheadCount: 0,
-                  behindCount: 0,
-                  pr: null,
-                };
-              }),
-            status: () =>
-              Effect.sync(() => {
-                statusCalls += 1;
-                return {
-                  isRepo: true,
-                  hasPrimaryRemote: true,
-                  isDefaultRef: false,
-                  refName: "feature/demo",
-                  hasWorkingTreeChanges: true,
-                  workingTree: { files: [], insertions: 0, deletions: 0 },
-                  hasUpstream: true,
-                  aheadCount: 0,
-                  behindCount: 0,
-                  pr: null,
-                };
-              }),
-            runStackedAction: () => Effect.fail(gitError),
-          },
-        },
-      });
-
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const result = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.gitRunStackedAction]({
-            actionId: "action-1",
-            cwd: "/tmp/repo",
-            action: "commit",
-          }).pipe(Stream.runCollect, Effect.result),
-        ),
-      );
-
-      assertFailure(result, gitError);
-      assert.equal(invalidationCalls, 0);
-      assert.equal(statusCalls, 0);
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("completes websocket rpc git.pull before background git status refresh finishes", () =>
-    Effect.gen(function* () {
-      yield* buildAppUnderTest({
-        layers: {
-          gitVcsDriver: {
-            pullCurrentBranch: () =>
-              Effect.succeed({
-                status: "pulled" as const,
-                refName: "main",
-                upstreamRef: "origin/main",
-              }),
-          },
-          gitManager: {
-            invalidateLocalStatus: () => Effect.void,
-            invalidateRemoteStatus: () => Effect.void,
-            invalidateStatus: () => Effect.void,
-            localStatus: () =>
-              Effect.succeed({
-                isRepo: true,
-                hasPrimaryRemote: true,
-                isDefaultRef: true,
-                refName: "main",
-                hasWorkingTreeChanges: false,
-                workingTree: { files: [], insertions: 0, deletions: 0 },
-              }),
-            remoteStatus: () =>
-              Effect.sleep(Duration.seconds(2)).pipe(
-                Effect.as({
-                  hasUpstream: true,
-                  aheadCount: 0,
-                  behindCount: 0,
-                  pr: null,
+          checkpointDiffQuery: {
+            getTurnDiff: () =>
+              Effect.fail(
+                new CheckpointUnsupportedError({
+                  operation: "CheckpointDiffQuery.getTurnDiff",
+                }),
+              ),
+            getFullThreadDiff: () =>
+              Effect.fail(
+                new CheckpointUnsupportedError({
+                  operation: "CheckpointDiffQuery.getFullThreadDiff",
                 }),
               ),
           },
@@ -5974,170 +5585,65 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       });
 
       const wsUrl = yield* getWsServerUrl("/ws");
-      const startedAt = yield* Clock.currentTimeMillis;
-      const result = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) => client[WS_METHODS.vcsPull]({ cwd: "/tmp/repo" })),
+      const revertResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.checkpoint.revert",
+            commandId: CommandId.make("cmd-checkpoint-revert-unsupported"),
+            threadId: defaultThreadId,
+            turnCount: 1,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ).pipe(Effect.result),
       );
-      const elapsedMs = (yield* Clock.currentTimeMillis) - startedAt;
+      assert.equal(revertResult._tag, "Failure");
+      if (revertResult._tag === "Failure") {
+        assert.equal(revertResult.failure._tag, "OrchestrationDispatchCommandError");
+        assert.equal(
+          revertResult.failure.message,
+          "Checkpoint revert is unavailable until the bound provider supplies checkpoint operations.",
+        );
+        assert.notProperty(revertResult.failure, "cause");
+      }
+      assert.deepEqual(dispatchedCommands, []);
 
-      assert.equal(result.status, "pulled");
-      assertTrue(elapsedMs < 1_000);
+      const turnDiffResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.getTurnDiff]({
+            threadId: defaultThreadId,
+            fromTurnCount: 0,
+            toTurnCount: 1,
+          }),
+        ).pipe(Effect.result),
+      );
+      assert.equal(turnDiffResult._tag, "Failure");
+      if (turnDiffResult._tag === "Failure") {
+        assert.equal(turnDiffResult.failure._tag, "OrchestrationGetTurnDiffError");
+        assert.equal(
+          turnDiffResult.failure.message,
+          "Checkpoint diffs are unavailable until the bound provider supplies checkpoint operations.",
+        );
+        assert.notProperty(turnDiffResult.failure, "cause");
+      }
+
+      const fullDiffResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.getFullThreadDiff]({
+            threadId: defaultThreadId,
+            toTurnCount: 1,
+          }),
+        ).pipe(Effect.result),
+      );
+      assert.equal(fullDiffResult._tag, "Failure");
+      if (fullDiffResult._tag === "Failure") {
+        assert.equal(fullDiffResult.failure._tag, "OrchestrationGetFullThreadDiffError");
+        assert.equal(
+          fullDiffResult.failure.message,
+          "Checkpoint diffs are unavailable until the bound provider supplies checkpoint operations.",
+        );
+        assert.notProperty(fullDiffResult.failure, "cause");
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect(
-    "completes websocket rpc git.runStackedAction before background git status refresh finishes",
-    () =>
-      Effect.gen(function* () {
-        yield* buildAppUnderTest({
-          layers: {
-            vcsDriver: {
-              isInsideWorkTree: () => Effect.succeed(true),
-            },
-            gitManager: {
-              invalidateLocalStatus: () => Effect.void,
-              invalidateRemoteStatus: () => Effect.void,
-              invalidateStatus: () => Effect.void,
-              localStatus: () =>
-                Effect.succeed({
-                  isRepo: true,
-                  hasPrimaryRemote: true,
-                  isDefaultRef: false,
-                  refName: "feature/demo",
-                  hasWorkingTreeChanges: false,
-                  workingTree: { files: [], insertions: 0, deletions: 0 },
-                }),
-              remoteStatus: () =>
-                Effect.sleep(Duration.seconds(2)).pipe(
-                  Effect.as({
-                    hasUpstream: true,
-                    aheadCount: 0,
-                    behindCount: 0,
-                    pr: null,
-                  }),
-                ),
-              runStackedAction: () =>
-                Effect.succeed({
-                  action: "commit" as const,
-                  branch: { status: "skipped_not_requested" as const },
-                  commit: {
-                    status: "created" as const,
-                    commitSha: "abc123",
-                    subject: "feat: demo",
-                  },
-                  push: { status: "skipped_not_requested" as const },
-                  pr: { status: "skipped_not_requested" as const },
-                  toast: {
-                    title: "Committed abc123",
-                    description: "feat: demo",
-                    cta: {
-                      kind: "run_action" as const,
-                      label: "Push",
-                      action: {
-                        kind: "push" as const,
-                      },
-                    },
-                  },
-                }),
-            },
-          },
-        });
-
-        const wsUrl = yield* getWsServerUrl("/ws");
-        const startedAt = yield* Clock.currentTimeMillis;
-        yield* Effect.scoped(
-          withWsRpcClient(wsUrl, (client) =>
-            client[WS_METHODS.gitRunStackedAction]({
-              actionId: "action-1",
-              cwd: "/tmp/repo",
-              action: "commit",
-            }).pipe(Stream.runCollect),
-          ),
-        );
-        const elapsedMs = (yield* Clock.currentTimeMillis) - startedAt;
-
-        assertTrue(elapsedMs < 1_000);
-      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect(
-    "starts a background local git status refresh after a successful git.runStackedAction",
-    () =>
-      Effect.gen(function* () {
-        const localRefreshStarted = yield* Deferred.make<void>();
-
-        yield* buildAppUnderTest({
-          layers: {
-            vcsDriver: {
-              isInsideWorkTree: () => Effect.succeed(true),
-            },
-            gitManager: {
-              invalidateLocalStatus: () => Effect.void,
-              invalidateRemoteStatus: () => Effect.void,
-              invalidateStatus: () => Effect.void,
-              localStatus: () =>
-                Deferred.succeed(localRefreshStarted, undefined).pipe(
-                  Effect.ignore,
-                  Effect.andThen(
-                    Effect.succeed({
-                      isRepo: true,
-                      hasPrimaryRemote: true,
-                      isDefaultRef: false,
-                      refName: "feature/demo",
-                      hasWorkingTreeChanges: false,
-                      workingTree: { files: [], insertions: 0, deletions: 0 },
-                    }),
-                  ),
-                ),
-              remoteStatus: () =>
-                Effect.sleep(Duration.seconds(2)).pipe(
-                  Effect.as({
-                    hasUpstream: true,
-                    aheadCount: 0,
-                    behindCount: 0,
-                    pr: null,
-                  }),
-                ),
-              runStackedAction: () =>
-                Effect.succeed({
-                  action: "commit" as const,
-                  branch: { status: "skipped_not_requested" as const },
-                  commit: {
-                    status: "created" as const,
-                    commitSha: "abc123",
-                    subject: "feat: demo",
-                  },
-                  push: { status: "skipped_not_requested" as const },
-                  pr: { status: "skipped_not_requested" as const },
-                  toast: {
-                    title: "Committed abc123",
-                    description: "feat: demo",
-                    cta: {
-                      kind: "run_action" as const,
-                      label: "Push",
-                      action: {
-                        kind: "push" as const,
-                      },
-                    },
-                  },
-                }),
-            },
-          },
-        });
-
-        const wsUrl = yield* getWsServerUrl("/ws");
-        yield* Effect.scoped(
-          withWsRpcClient(wsUrl, (client) =>
-            client[WS_METHODS.gitRunStackedAction]({
-              actionId: "action-1",
-              cwd: "/tmp/repo",
-              action: "commit",
-            }).pipe(Stream.runCollect),
-          ),
-        );
-
-        yield* Deferred.await(localRefreshStarted);
-      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
   it.effect("routes websocket rpc orchestration methods", () =>
@@ -7497,227 +7003,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect(
-    "bootstraps first-send worktree turns on the server before dispatching turn start",
-    () =>
-      Effect.gen(function* () {
-        const dispatchedCommands: Array<OrchestrationCommand> = [];
-        const bootstrapGitOperations: string[] = [];
-        const refreshStatus = vi.fn((_: string) =>
-          Effect.succeed({
-            isRepo: true,
-            hasPrimaryRemote: true,
-            isDefaultRef: false,
-            refName: "t3code/bootstrap-refName",
-            hasWorkingTreeChanges: false,
-            workingTree: {
-              files: [],
-              insertions: 0,
-              deletions: 0,
-            },
-            hasUpstream: true,
-            aheadCount: 0,
-            behindCount: 0,
-            pr: null,
-          }),
-        );
-        const fetchRemote = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["fetchRemote"]>[0]) =>
-            Effect.sync(() => {
-              bootstrapGitOperations.push("fetch");
-            }),
-        );
-        const fetchedOriginCommit = "0123456789abcdef0123456789abcdef01234567";
-        const resolveRemoteTrackingCommit = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteTrackingCommit"]>[0]) =>
-            Effect.sync(() => {
-              bootstrapGitOperations.push("resolve-remote-commit");
-              return {
-                commitSha: fetchedOriginCommit,
-                remoteRefName: "origin/main",
-              };
-            }),
-        );
-        const createWorktree = vi.fn(
-          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-            Effect.sync(() => {
-              bootstrapGitOperations.push("create-worktree");
-              return {
-                worktree: {
-                  refName: "t3code/bootstrap-refName",
-                  path: "/tmp/bootstrap-worktree",
-                },
-              };
-            }),
-        );
-        const runForThread = vi.fn(
-          (
-            _: Parameters<
-              ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"]
-            >[0],
-          ) =>
-            Effect.succeed({
-              status: "started" as const,
-              scriptId: "setup",
-              scriptName: "Setup",
-              terminalId: "setup-setup",
-              cwd: "/tmp/bootstrap-worktree",
-            }),
-        );
-
-        yield* buildAppUnderTest({
-          layers: {
-            gitVcsDriver: {
-              fetchRemote,
-              resolveRemoteTrackingCommit,
-              createWorktree,
-            },
-            vcsStatusBroadcaster: {
-              refreshStatus,
-            },
-            orchestrationEngine: {
-              dispatch: (command) =>
-                Effect.sync(() => {
-                  dispatchedCommands.push(command);
-                  return { sequence: dispatchedCommands.length };
-                }),
-              readEvents: () => Stream.empty,
-            },
-            projectSetupScriptRunner: {
-              runForThread,
-            },
-          },
-        });
-
-        const createdAt = "2026-01-01T00:00:00.000Z";
-        const wsUrl = yield* getWsServerUrl("/ws");
-        const response = yield* Effect.scoped(
-          withWsRpcClient(wsUrl, (client) =>
-            client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-              type: "thread.turn.start",
-              commandId: CommandId.make("cmd-bootstrap-turn-start"),
-              threadId: ThreadId.make("thread-bootstrap"),
-              message: {
-                messageId: MessageId.make("msg-bootstrap"),
-                role: "user",
-                text: "hello",
-                attachments: [],
-              },
-              modelSelection: defaultModelSelection,
-              runtimeMode: "full-access",
-              interactionMode: "default",
-              bootstrap: {
-                createThread: {
-                  projectId: defaultProjectId,
-                  title: "Bootstrap Thread",
-                  modelSelection: defaultModelSelection,
-                  runtimeMode: "full-access",
-                  interactionMode: "default",
-                  branch: "main",
-                  worktreePath: null,
-                  createdAt,
-                },
-                prepareWorktree: {
-                  projectCwd: "/tmp/project",
-                  baseBranch: "main",
-                  branch: "t3code/bootstrap-refName",
-                  startFromOrigin: true,
-                },
-                runSetupScript: true,
-              },
-              createdAt,
-            }),
-          ),
-        );
-
-        assert.equal(response.sequence, 5);
-        assert.deepEqual(
-          dispatchedCommands.map((command) => command.type),
-          [
-            "thread.create",
-            "thread.meta.update",
-            "thread.activity.append",
-            "thread.activity.append",
-            "thread.turn.start",
-          ],
-        );
-        assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
-          cwd: "/tmp/project",
-          refName: fetchedOriginCommit,
-          newRefName: "t3code/bootstrap-refName",
-          baseRefName: "main",
-          path: null,
-        });
-        assert.deepEqual(fetchRemote.mock.calls[0]?.[0], {
-          cwd: "/tmp/project",
-          remoteName: "origin",
-        });
-        assert.deepEqual(resolveRemoteTrackingCommit.mock.calls[0]?.[0], {
-          cwd: "/tmp/project",
-          refName: "main",
-          fallbackRemoteName: "origin",
-        });
-        assert.deepEqual(bootstrapGitOperations, [
-          "fetch",
-          "resolve-remote-commit",
-          "create-worktree",
-        ]);
-        assert.deepEqual(runForThread.mock.calls[0]?.[0], {
-          threadId: ThreadId.make("thread-bootstrap"),
-          projectId: defaultProjectId,
-          projectCwd: "/tmp/project",
-          worktreePath: "/tmp/bootstrap-worktree",
-        });
-        assert.deepEqual(refreshStatus.mock.calls[0]?.[0], "/tmp/bootstrap-worktree");
-
-        const setupActivities = dispatchedCommands.filter(
-          (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
-            command.type === "thread.activity.append",
-        );
-        assert.deepEqual(
-          setupActivities.map((command) => command.activity.kind),
-          ["setup-script.requested", "setup-script.started"],
-        );
-        const finalCommand = dispatchedCommands[4];
-        assertTrue(finalCommand?.type === "thread.turn.start");
-        if (finalCommand?.type === "thread.turn.start") {
-          assert.equal(finalCommand.bootstrap, undefined);
-        }
-      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("records setup-script failures without aborting bootstrap turn start", () =>
+  it.effect("rejects bootstrap worktree preparation before creating a thread or calling Git", () =>
     Effect.gen(function* () {
       const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const createWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-          Effect.succeed({
-            worktree: {
-              refName: "t3code/bootstrap-refName",
-              path: "/tmp/bootstrap-worktree",
-            },
-          }),
-      );
-      const runForThread = vi.fn(
-        (
-          input: Parameters<
-            ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"]
-          >[0],
-        ) =>
-          Effect.fail(
-            new ProjectSetupScriptRunner.ProjectSetupScriptOperationError({
-              threadId: input.threadId,
-              worktreePath: input.worktreePath,
-              operation: "openTerminal",
-              cause: { message: "pty unavailable" },
-            }),
-          ),
-      );
-
+      const unreachable = (operation: string) => Effect.die(`unexpected local call: ${operation}`);
       yield* buildAppUnderTest({
         layers: {
           gitVcsDriver: {
-            createWorktree,
+            fetchRemote: () => unreachable("fetchRemote"),
+            resolveRemoteTrackingCommit: () => unreachable("resolveRemoteTrackingCommit"),
+            createWorktree: () => unreachable("createWorktree"),
           },
           orchestrationEngine: {
             dispatch: (command) =>
@@ -7728,212 +7023,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             readEvents: () => Stream.empty,
           },
           projectSetupScriptRunner: {
-            runForThread,
-          },
-        },
-      });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const response = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.turn.start",
-            commandId: CommandId.make("cmd-bootstrap-turn-start-setup-failure"),
-            threadId: ThreadId.make("thread-bootstrap-setup-failure"),
-            message: {
-              messageId: MessageId.make("msg-bootstrap-setup-failure"),
-              role: "user",
-              text: "hello",
-              attachments: [],
-            },
-            modelSelection: defaultModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            bootstrap: {
-              createThread: {
-                projectId: defaultProjectId,
-                title: "Bootstrap Thread",
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: "main",
-                worktreePath: null,
-                createdAt,
-              },
-              prepareWorktree: {
-                projectCwd: "/tmp/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-refName",
-              },
-              runSetupScript: true,
-            },
-            createdAt,
-          }),
-        ),
-      );
-
-      assert.equal(response.sequence, 4);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["thread.create", "thread.meta.update", "thread.activity.append", "thread.turn.start"],
-      );
-      const setupFailureActivity = dispatchedCommands.find(
-        (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
-          command.type === "thread.activity.append",
-      );
-      assert.equal(setupFailureActivity?.activity.kind, "setup-script.failed");
-      assert.deepEqual(setupFailureActivity?.activity.payload, {
-        detail: "pty unavailable",
-        worktreePath: "/tmp/bootstrap-worktree",
-      });
-      assertTrue(dispatchedCommands.every((command) => command.type !== "thread.delete"));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("does not misattribute setup activity dispatch failures as setup launch failures", () =>
-    Effect.gen(function* () {
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const createWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-          Effect.succeed({
-            worktree: {
-              refName: "t3code/bootstrap-refName",
-              path: "/tmp/bootstrap-worktree",
-            },
-          }),
-      );
-      const runForThread = vi.fn(
-        (
-          _: Parameters<
-            ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"]
-          >[0],
-        ) =>
-          Effect.succeed({
-            status: "started" as const,
-            scriptId: "setup",
-            scriptName: "Setup",
-            terminalId: "setup-setup",
-            cwd: "/tmp/bootstrap-worktree",
-          }),
-      );
-      let setupActivityAppendAttempt = 0;
-
-      yield* buildAppUnderTest({
-        layers: {
-          gitVcsDriver: {
-            createWorktree,
-          },
-          orchestrationEngine: {
-            dispatch: (command) => {
-              if (
-                command.type === "thread.activity.append" &&
-                command.activity.kind.startsWith("setup-script.")
-              ) {
-                setupActivityAppendAttempt += 1;
-                if (setupActivityAppendAttempt === 2) {
-                  return Effect.fail(
-                    new OrchestrationListenerCallbackError({
-                      listener: "domain-event",
-                      detail: "failed to append setup-script.started activity",
-                    }),
-                  );
-                }
-              }
-
-              return Effect.sync(() => {
-                dispatchedCommands.push(command);
-                return { sequence: dispatchedCommands.length };
-              });
-            },
-            readEvents: () => Stream.empty,
-          },
-          projectSetupScriptRunner: {
-            runForThread,
-          },
-        },
-      });
-
-      const createdAt = "2026-01-01T00:00:00.000Z";
-      const wsUrl = yield* getWsServerUrl("/ws");
-      const response = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) =>
-          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
-            type: "thread.turn.start",
-            commandId: CommandId.make("cmd-bootstrap-turn-start-setup-activity-failure"),
-            threadId: ThreadId.make("thread-bootstrap-setup-activity-failure"),
-            message: {
-              messageId: MessageId.make("msg-bootstrap-setup-activity-failure"),
-              role: "user",
-              text: "hello",
-              attachments: [],
-            },
-            modelSelection: defaultModelSelection,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            bootstrap: {
-              createThread: {
-                projectId: defaultProjectId,
-                title: "Bootstrap Thread",
-                modelSelection: defaultModelSelection,
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: "main",
-                worktreePath: null,
-                createdAt,
-              },
-              prepareWorktree: {
-                projectCwd: "/tmp/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-refName",
-              },
-              runSetupScript: true,
-            },
-            createdAt,
-          }),
-        ),
-      );
-
-      assert.equal(response.sequence, 4);
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["thread.create", "thread.meta.update", "thread.activity.append", "thread.turn.start"],
-      );
-      const setupActivities = dispatchedCommands.filter(
-        (command): command is Extract<OrchestrationCommand, { type: "thread.activity.append" }> =>
-          command.type === "thread.activity.append",
-      );
-      assert.deepEqual(
-        setupActivities.map((command) => command.activity.kind),
-        ["setup-script.requested"],
-      );
-      assertTrue(
-        setupActivities.every((command) => command.activity.kind !== "setup-script.failed"),
-      );
-      assertTrue(dispatchedCommands.every((command) => command.type !== "thread.delete"));
-    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-
-  it.effect("cleans up created bootstrap threads when worktree creation defects", () =>
-    Effect.gen(function* () {
-      const dispatchedCommands: Array<OrchestrationCommand> = [];
-      const createWorktree = vi.fn(
-        (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0]) =>
-          Effect.die(new Error("worktree exploded")),
-      );
-
-      yield* buildAppUnderTest({
-        layers: {
-          gitVcsDriver: {
-            createWorktree,
-          },
-          orchestrationEngine: {
-            dispatch: (command) =>
-              Effect.sync(() => {
-                dispatchedCommands.push(command);
-                return { sequence: dispatchedCommands.length };
-              }),
-            readEvents: () => Stream.empty,
+            runForThread: () => unreachable("runForThread"),
           },
         },
       });
@@ -7944,10 +7034,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         withWsRpcClient(wsUrl, (client) =>
           client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
             type: "thread.turn.start",
-            commandId: CommandId.make("cmd-bootstrap-turn-start-defect"),
-            threadId: ThreadId.make("thread-bootstrap-defect"),
+            commandId: CommandId.make("cmd-bootstrap-turn-start-rejected"),
+            threadId: ThreadId.make("thread-bootstrap-rejected"),
             message: {
-              messageId: MessageId.make("msg-bootstrap-defect"),
+              messageId: MessageId.make("msg-bootstrap-rejected"),
               role: "user",
               text: "hello",
               attachments: [],
@@ -7967,24 +7057,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 createdAt,
               },
               prepareWorktree: {
-                projectCwd: "/tmp/project",
+                projectCwd: "/remote/project",
                 baseBranch: "main",
-                branch: "t3code/bootstrap-refName",
+                branch: "cocoa/bootstrap",
+                startFromOrigin: true,
               },
-              runSetupScript: false,
+              runSetupScript: true,
             },
             createdAt,
           }),
         ).pipe(Effect.result),
       );
 
-      assertTrue(result._tag === "Failure");
-      assertTrue(result.failure._tag === "OrchestrationDispatchCommandError");
-      assert.include(result.failure.message, "worktree exploded");
-      assert.deepEqual(
-        dispatchedCommands.map((command) => command.type),
-        ["thread.create", "thread.delete"],
-      );
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "OrchestrationDispatchCommandError");
+        assert.include(result.failure.message, "provider instance");
+      }
+      assert.deepEqual(dispatchedCommands, []);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

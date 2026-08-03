@@ -22,6 +22,7 @@ import {
   projectScriptMenuLabel,
   type TerminalMenuSession,
 } from "../terminal/terminalMenu";
+import { useEnvironmentServerConfig } from "../../state/entities";
 
 function truncateMiddle(value: string, maxLength: number): string {
   if (value.length <= maxLength) {
@@ -110,6 +111,9 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
   const navigation = useNavigation();
   const environmentId = props.environmentId;
   const threadId = props.threadId;
+  const workspaceMutationsSupported =
+    useEnvironmentServerConfig(EnvironmentId.make(String(environmentId)))?.environment.capabilities
+      .workspaceMutations === true;
   const { gitStatus, gitOperationLabel, onPull, onRunAction } = props;
 
   const currentBranchLabel = gitStatus?.refName ?? props.currentBranch ?? "Detached HEAD";
@@ -243,6 +247,7 @@ function useThreadGitControlModel(props: ThreadGitMenuProps) {
     quickActionHint,
     quickActionIcon,
     runQuickAction,
+    workspaceMutationsSupported,
   };
 }
 
@@ -336,14 +341,18 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
               onPress: (): void => {},
               type: "action",
             },
-            {
-              description: model.quickActionHint ?? undefined,
-              disabled: model.quickAction.disabled,
-              icon: { name: model.quickActionIcon, type: "sfSymbol" },
-              label: model.quickAction.label,
-              onPress: (): void => void model.runQuickAction(),
-              type: "action",
-            },
+            ...(model.workspaceMutationsSupported
+              ? [
+                  {
+                    description: model.quickActionHint ?? undefined,
+                    disabled: model.quickAction.disabled,
+                    icon: { name: model.quickActionIcon, type: "sfSymbol" },
+                    label: model.quickAction.label,
+                    onPress: (): void => void model.runQuickAction(),
+                    type: "action",
+                  },
+                ]
+              : []),
             {
               description: "Turn diffs and worktree changes",
               disabled: !model.isRepo,
@@ -352,13 +361,17 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
               onPress: model.openReview,
               type: "action",
             },
-            {
-              description: "Commit, files, branches",
-              icon: { name: "ellipsis", type: "sfSymbol" },
-              label: "More",
-              onPress: model.openGitInspector,
-              type: "action",
-            },
+            ...(model.workspaceMutationsSupported
+              ? [
+                  {
+                    description: "Commit, files, branches",
+                    icon: { name: "ellipsis", type: "sfSymbol" },
+                    label: "More",
+                    onPress: model.openGitInspector,
+                    type: "action",
+                  },
+                ]
+              : []),
           ],
           title: "Git",
         },
@@ -378,6 +391,7 @@ function useThreadGitHeaderActionItems(props: ThreadGitControlsProps): ThreadGit
       model.quickActionHint,
       model.quickActionIcon,
       model.runQuickAction,
+      model.workspaceMutationsSupported,
       props.canOpenFiles,
       props.canOpenTerminal,
       props.gitStatus,
@@ -514,14 +528,16 @@ export function ThreadGitMenu(props: ThreadGitMenuProps) {
           {compactMenuBranchLabel(model.currentBranchLabel)}
         </NativeHeaderToolbar.Label>
       </NativeHeaderToolbar.MenuAction>
-      <NativeHeaderToolbar.MenuAction
-        icon={model.quickActionIcon}
-        disabled={model.quickAction.disabled}
-        onPress={() => void model.runQuickAction()}
-        subtitle={model.quickActionHint ?? undefined}
-      >
-        <NativeHeaderToolbar.Label>{model.quickAction.label}</NativeHeaderToolbar.Label>
-      </NativeHeaderToolbar.MenuAction>
+      {model.workspaceMutationsSupported ? (
+        <NativeHeaderToolbar.MenuAction
+          icon={model.quickActionIcon}
+          disabled={model.quickAction.disabled}
+          onPress={() => void model.runQuickAction()}
+          subtitle={model.quickActionHint ?? undefined}
+        >
+          <NativeHeaderToolbar.Label>{model.quickAction.label}</NativeHeaderToolbar.Label>
+        </NativeHeaderToolbar.MenuAction>
+      ) : null}
       <NativeHeaderToolbar.MenuAction
         icon="text.bubble"
         disabled={!model.isRepo}
@@ -530,13 +546,15 @@ export function ThreadGitMenu(props: ThreadGitMenuProps) {
       >
         <NativeHeaderToolbar.Label>Review changes</NativeHeaderToolbar.Label>
       </NativeHeaderToolbar.MenuAction>
-      <NativeHeaderToolbar.MenuAction
-        icon="ellipsis"
-        onPress={model.openGitInspector}
-        subtitle="Commit, files, branches"
-      >
-        <NativeHeaderToolbar.Label>More</NativeHeaderToolbar.Label>
-      </NativeHeaderToolbar.MenuAction>
+      {model.workspaceMutationsSupported ? (
+        <NativeHeaderToolbar.MenuAction
+          icon="ellipsis"
+          onPress={model.openGitInspector}
+          subtitle="Commit, files, branches"
+        >
+          <NativeHeaderToolbar.Label>More</NativeHeaderToolbar.Label>
+        </NativeHeaderToolbar.MenuAction>
+      ) : null}
     </NativeHeaderToolbar.Menu>
   );
 }

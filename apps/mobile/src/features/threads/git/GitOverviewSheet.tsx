@@ -24,6 +24,7 @@ import { AppText as Text } from "../../../components/AppText";
 import { nativeHeaderScrollEdgeEffects } from "../../../native/StackHeader";
 import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
 import { useRepositoryStatus } from "../../../state/queries";
+import { useEnvironmentServerConfig } from "../../../state/entities";
 import { useThreadSelection } from "../../../state/use-thread-selection";
 import { useSelectedThreadGitActions } from "../../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../../state/use-selected-thread-git-state";
@@ -48,6 +49,8 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
   const isInspector = presentation === "inspector";
   const environmentId = EnvironmentId.make(props.route.params.environmentId);
   const threadId = ThreadId.make(props.route.params.threadId);
+  const workspaceMutationsSupported =
+    useEnvironmentServerConfig(environmentId)?.environment.capabilities.workspaceMutations === true;
   const { selectedThread } = useThreadSelection();
   const { selectedThreadWorktreePath } = useSelectedThreadWorktree();
   const gitState = useSelectedThreadGitState();
@@ -230,19 +233,21 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
             : "overflow-hidden rounded-[22px] border border-border bg-card px-4 py-1"
         }
       >
-        {sheetMenuItems.map(({ item, disabledReason }, index) => (
-          <View key={`${item.id}-${item.label}`}>
-            {index > 0 ? <View className="ml-12 h-px bg-border" /> : null}
-            <SheetListRow
-              icon={menuItemIconName(item.icon)}
-              title={item.label}
-              subtitle={disabledReason ?? rowStatusDetail(item)}
-              disabled={item.disabled}
-              onPress={() => void onPressMenuItem(item)}
-            />
-          </View>
-        ))}
-        {behindCount > 0 ? (
+        {workspaceMutationsSupported
+          ? sheetMenuItems.map(({ item, disabledReason }, index) => (
+              <View key={`${item.id}-${item.label}`}>
+                {index > 0 ? <View className="ml-12 h-px bg-border" /> : null}
+                <SheetListRow
+                  icon={menuItemIconName(item.icon)}
+                  title={item.label}
+                  subtitle={disabledReason ?? rowStatusDetail(item)}
+                  disabled={item.disabled}
+                  onPress={() => void onPressMenuItem(item)}
+                />
+              </View>
+            ))
+          : null}
+        {workspaceMutationsSupported && behindCount > 0 ? (
           <>
             <View className="ml-12 h-px bg-border" />
             <SheetListRow
@@ -269,19 +274,23 @@ export function GitOverviewSheet(props: GitOverviewSheetProps) {
             );
           }}
         />
-        <View className="ml-12 h-px bg-border" />
-        <SheetListRow
-          icon="point.topleft.down.curvedto.point.bottomright.up"
-          title="Branches & worktrees"
-          subtitle="Switch branch, create branch, or move to a worktree"
-          disabled={busy || !isRepo}
-          onPress={() =>
-            navigation.navigate("GitBranches", {
-              environmentId: String(environmentId),
-              threadId: String(threadId),
-            })
-          }
-        />
+        {workspaceMutationsSupported ? (
+          <>
+            <View className="ml-12 h-px bg-border" />
+            <SheetListRow
+              icon="point.topleft.down.curvedto.point.bottomright.up"
+              title="Branches & worktrees"
+              subtitle="Switch branch, create branch, or move to a worktree"
+              disabled={busy || !isRepo}
+              onPress={() =>
+                navigation.navigate("GitBranches", {
+                  environmentId: String(environmentId),
+                  threadId: String(threadId),
+                })
+              }
+            />
+          </>
+        ) : null}
       </View>
 
       {currentWorktreePath ? <MetaCard label="Worktree" value={currentWorktreePath} /> : null}

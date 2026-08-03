@@ -94,6 +94,8 @@ export function NewTaskDraftScreen(props: {
   const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
     selectedProject?.environmentId ?? null,
   );
+  const workspaceMutationsSupported =
+    selectedEnvironmentServerConfig?.environment.capabilities.workspaceMutations === true;
   const environmentConnected =
     selectedProject !== null &&
     connectedEnvironments.find(
@@ -787,11 +789,17 @@ export function NewTaskDraftScreen(props: {
         selectedEnvironmentServerConfig,
         draft.modelSelection ?? null,
       ) ?? flow.selectedModel;
-    const workspaceMode = draft.workspaceSelection?.mode ?? flow.workspaceMode;
-    const selectedBranchName = draft.workspaceSelection?.branch ?? flow.selectedBranchName;
+    const workspaceMode = workspaceMutationsSupported
+      ? (draft.workspaceSelection?.mode ?? flow.workspaceMode)
+      : "local";
+    const selectedBranchName = workspaceMutationsSupported
+      ? (draft.workspaceSelection?.branch ?? flow.selectedBranchName)
+      : currentBranchName;
     const selectedWorktreePath =
       draft.workspaceSelection?.worktreePath ?? flow.selectedWorktreePath;
-    const startFromOrigin = draft.workspaceSelection?.startFromOrigin ?? flow.startFromOrigin;
+    const startFromOrigin = workspaceMutationsSupported
+      ? (draft.workspaceSelection?.startFromOrigin ?? flow.startFromOrigin)
+      : false;
     const runtimeMode = draft.runtimeMode ?? flow.runtimeMode;
     const interactionMode = draft.interactionMode ?? flow.interactionMode;
     const initialMessageText = draft.text.trim();
@@ -1015,17 +1023,19 @@ export function NewTaskDraftScreen(props: {
           label={selectedEnvironmentLabel}
         />
       </ControlPillMenu>
-      <ControlPillMenu
-        actions={workspaceMenuActions}
-        onPressAction={({ nativeEvent }) => handleWorkspaceMenuAction(nativeEvent.event)}
-      >
-        <ComposerToolbarTrigger
-          accessibilityLabel="Workspace"
-          disabled={isIncomingShareTransferPending}
-          icon="point.topleft.down.curvedto.point.bottomright.up"
-          label={workspaceLabel}
-        />
-      </ControlPillMenu>
+      {workspaceMutationsSupported ? (
+        <ControlPillMenu
+          actions={workspaceMenuActions}
+          onPressAction={({ nativeEvent }) => handleWorkspaceMenuAction(nativeEvent.event)}
+        >
+          <ComposerToolbarTrigger
+            accessibilityLabel="Workspace"
+            disabled={isIncomingShareTransferPending}
+            icon="point.topleft.down.curvedto.point.bottomright.up"
+            label={workspaceLabel}
+          />
+        </ControlPillMenu>
+      ) : null}
     </>
   );
 
