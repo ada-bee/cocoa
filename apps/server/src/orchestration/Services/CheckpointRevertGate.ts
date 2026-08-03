@@ -1,4 +1,4 @@
-import { ThreadId } from "@t3tools/contracts";
+import { EventId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -9,7 +9,8 @@ export class CheckpointRevertGateBlockedError extends Schema.TaggedErrorClass<Ch
   "CheckpointRevertGateBlockedError",
   {
     threadId: ThreadId,
-    sagaId: CheckpointRevertSagaId,
+    sourceEventId: Schema.optionalKey(EventId),
+    sagaId: Schema.optionalKey(CheckpointRevertSagaId),
   },
 ) {
   override get message(): string {

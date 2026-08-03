@@ -243,7 +243,7 @@ const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<R
     Layer.provide(providerCheckpointOperationLayer),
   );
   const checkpointRevertGateLayer = CheckpointRevertGateLive.pipe(
-    Layer.provide(checkpointRevertSagaLayer),
+    Layer.provide(checkpointRevertIntentLayer),
   );
   const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(
     Layer.provide(turnDispatchJournalLayer),

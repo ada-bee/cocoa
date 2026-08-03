@@ -169,6 +169,44 @@ it.layer(repositories)("CheckpointRevertIntentRepository", (it) => {
     }),
   );
 
+  it.effect("admits one unfinished intent per thread and releases it only at terminal", () =>
+    Effect.gen(function* () {
+      const intents = yield* CheckpointRevertIntentRepository;
+      const sagas = yield* CheckpointRevertSagaRepository;
+      const threadId = ThreadId.make("thread-revert-intent-active-unique");
+      const first = intentInput("active-first", 110, threadId);
+      const second = intentInput("active-second", 111, threadId);
+
+      yield* intents.projectInTransaction(first);
+      assert.equal(
+        Option.getOrThrow(yield* intents.getActiveByThread({ threadId })).state,
+        "awaiting_saga",
+      );
+      const conflict = yield* Effect.flip(intents.projectInTransaction(second));
+      assert.isTrue(Schema.is(CheckpointRevertIntentConflictError)(conflict));
+
+      const saga = (yield* sagas.getOrCreate(sagaInput(first))).saga;
+      yield* intents.linkSaga({ sourceEventId: first.sourceEventId, sagaId: saga.sagaId });
+      const linked = Option.getOrThrow(yield* intents.getActiveByThread({ threadId }));
+      assert.equal(linked.state, "linked");
+      assert.equal(linked.sagaId, saga.sagaId);
+
+      yield* intents.markTerminal({
+        sourceEventId: first.sourceEventId,
+        sagaId: saga.sagaId,
+        outcome: "failed",
+        terminalAt: later,
+      });
+      assert.isTrue(Option.isNone(yield* intents.getActiveByThread({ threadId })));
+      const replacement = yield* intents.projectInTransaction(second);
+      assert.equal(replacement.state, "awaiting_saga");
+      assert.equal(
+        Option.getOrThrow(yield* intents.getActiveByThread({ threadId })).sourceEventId,
+        second.sourceEventId,
+      );
+    }),
+  );
+
   it.effect("uses bounded stable keyset recovery for awaiting and linked rows", () =>
     Effect.gen(function* () {
       const repository = yield* CheckpointRevertIntentRepository;

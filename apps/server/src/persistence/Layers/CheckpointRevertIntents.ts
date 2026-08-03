@@ -14,6 +14,7 @@ import {
   CheckpointRevertIntentState,
   CheckpointRevertIntentTransitionError,
   CheckpointRevertTerminalOutcome,
+  GetActiveCheckpointRevertIntentByThreadInput,
   GetCheckpointRevertIntentInput,
   LinkCheckpointRevertIntentInput,
   ListCheckpointRevertIntentRecoveryInput,
@@ -77,7 +78,7 @@ const mapError = (cause: unknown) =>
 
 const sameProjectedIdentity = (
   row: CheckpointRevertIntent,
-  input: typeof ProjectCheckpointRevertIntentInput.Type,
+  input: ProjectCheckpointRevertIntentInput,
 ) =>
   row.sourceEventId === input.sourceEventId &&
   row.sourceSequence === input.sourceSequence &&
@@ -111,6 +112,18 @@ const make = Effect.gen(function* () {
     Result: DbRow,
     execute: ({ sourceEventId }) =>
       sql.unsafe(`${selectIntent} WHERE source_event_id = ?`, [sourceEventId]),
+  });
+
+  const findActiveByThread = SqlSchema.findOneOption({
+    Request: GetActiveCheckpointRevertIntentByThreadInput,
+    Result: DbRow,
+    execute: ({ threadId }) =>
+      sql.unsafe(
+        `${selectIntent}
+         WHERE thread_id = ?
+           AND state IN ('awaiting_saga', 'linked')`,
+        [threadId],
+      ),
   });
 
   const getChanges = SqlSchema.findOne({
@@ -225,6 +238,17 @@ const make = Effect.gen(function* () {
       return row;
     }).pipe(Effect.mapError(mapError));
 
+  const getActiveByThread: CheckpointRevertIntentRepositoryShape["getActiveByThread"] = (input) =>
+    findActiveByThread(input).pipe(
+      Effect.flatMap((row) =>
+        Option.match(row, {
+          onNone: () => Effect.succeed(Option.none()),
+          onSome: (value) => materialize(value).pipe(Effect.map(Option.some)),
+        }),
+      ),
+      Effect.mapError(mapError),
+    );
+
   const linkSaga: CheckpointRevertIntentRepositoryShape["linkSaga"] = (input) =>
     input.sagaId !== checkpointRevertSagaId(input.sourceEventId)
       ? new CheckpointRevertIntentConflictError({ sourceEventId: input.sourceEventId })
@@ -291,6 +315,7 @@ const make = Effect.gen(function* () {
   return {
     projectInTransaction,
     getBySourceEventId,
+    getActiveByThread,
     linkSaga,
     markTerminal,
     listRecovery,

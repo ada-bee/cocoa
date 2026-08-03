@@ -2745,6 +2745,77 @@ const engineLayer = it.layer(
 );
 
 engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
+  it.effect("atomically rejects a second unfinished revert before its event commits", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-08-04T13:00:00.000Z";
+      const projectId = ProjectId.make("project-revert-intent-atomic");
+      const threadId = ThreadId.make("thread-revert-intent-atomic");
+
+      yield* engine.dispatch({
+        type: "project.create",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        commandId: CommandId.make("command-revert-intent-project"),
+        projectId,
+        title: "Revert Intent Atomicity",
+        workspaceRoot: "/remote/revert-intent-atomic",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("command-revert-intent-thread"),
+        threadId,
+        projectId,
+        title: "Revert Intent Atomicity",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: "default",
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("command-revert-intent-first"),
+        threadId,
+        turnCount: 1,
+        createdAt,
+      });
+      const rejected = yield* Effect.result(
+        engine.dispatch({
+          type: "thread.checkpoint.revert",
+          commandId: CommandId.make("command-revert-intent-second"),
+          threadId,
+          turnCount: 0,
+          createdAt,
+        }),
+      );
+      assert.equal(rejected._tag, "Failure");
+
+      const events = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM orchestration_events
+        WHERE event_type = 'thread.checkpoint-revert-requested'
+          AND stream_id = ${threadId}
+      `;
+      const intents = yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count
+        FROM checkpoint_revert_intents
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepStrictEqual(events, [{ count: 1 }]);
+      assert.deepStrictEqual(intents, [{ count: 1 }]);
+    }),
+  );
+
   it.effect("projects dispatched engine events immediately", () =>
     Effect.gen(function* () {
       const engine = yield* OrchestrationEngineService;

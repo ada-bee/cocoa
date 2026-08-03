@@ -11,7 +11,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { makeRestoreCheckpointOperationId } from "../../checkpointing/CheckpointIds.ts";
+import {
+  CheckpointRevertIntentRepository,
+  type ProjectCheckpointRevertIntentInput,
+} from "../../persistence/Services/CheckpointRevertIntents.ts";
 import { CheckpointRevertSagaRepository } from "../../persistence/Services/CheckpointRevertSagas.ts";
+import { CheckpointRevertIntentRepositoryLive } from "../../persistence/Layers/CheckpointRevertIntents.ts";
 import { CheckpointRevertSagaRepositoryLive } from "../../persistence/Layers/CheckpointRevertSagas.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import {
@@ -21,129 +26,132 @@ import {
 import { CheckpointRevertGateLive } from "./CheckpointRevertGate.ts";
 
 const createdAt = "2026-08-04T10:00:00.000Z";
-const updatedAt = "2026-08-04T10:01:00.000Z";
+const terminalAt = "2026-08-04T10:01:00.000Z";
 const providerInstanceId = ProviderInstanceId.make("provider-gate-test");
 const projectId = ProjectId.make("project-gate-test");
 
-const createSaga = (source: string, threadId: ThreadId) => {
-  const sourceRevertEventId = EventId.make(source);
-  return {
-    sourceRevertEventId,
+const intentInput = (source: string, sequence: number, threadId: ThreadId) =>
+  ({
+    sourceEventId: EventId.make(source),
+    sourceSequence: sequence,
     sourceCommandId: CommandId.make(`command:${source}`),
-    providerInstanceId,
-    projectId,
     threadId,
-    providerDriverKind: ProviderDriverKind.make("codex"),
-    continuationIdentitySha256: "a".repeat(64),
     requestedTurnCount: 1,
-    preimageTurnCount: 2,
-    preimage: { count: 2, sha256: "b".repeat(64) },
-    target: { count: 1, sha256: "c".repeat(64) },
-    retainedLogicalCheckpointId: "00000000-0000-4000-8000-000000000001",
-    retainedExpectedCheckpointOid: "d".repeat(40),
-    repositoryFingerprint: "e".repeat(64),
-    repositoryObjectFormat: "sha1" as const,
-    restoreOperationId: makeRestoreCheckpointOperationId({ revertEventId: sourceRevertEventId }),
-    staleTargets: [],
+    requestedAt: createdAt,
     createdAt,
-  };
-};
+  }) satisfies ProjectCheckpointRevertIntentInput;
 
-const persistence = CheckpointRevertSagaRepositoryLive.pipe(
-  Layer.provideMerge(SqlitePersistenceMemory),
-);
+const sagaInput = (intent: ProjectCheckpointRevertIntentInput) => ({
+  sourceRevertEventId: intent.sourceEventId,
+  sourceCommandId: intent.sourceCommandId,
+  providerInstanceId,
+  projectId,
+  threadId: intent.threadId,
+  providerDriverKind: ProviderDriverKind.make("codex"),
+  continuationIdentitySha256: "a".repeat(64),
+  requestedTurnCount: 1,
+  preimageTurnCount: 2,
+  preimage: { count: 2, sha256: "b".repeat(64) },
+  target: { count: 1, sha256: "c".repeat(64) },
+  retainedLogicalCheckpointId: "00000000-0000-4000-8000-000000000001",
+  retainedExpectedCheckpointOid: "d".repeat(40),
+  repositoryFingerprint: "e".repeat(64),
+  repositoryObjectFormat: "sha1" as const,
+  restoreOperationId: makeRestoreCheckpointOperationId({ revertEventId: intent.sourceEventId }),
+  staleTargets: [],
+  createdAt,
+});
+
+const persistence = Layer.mergeAll(
+  CheckpointRevertIntentRepositoryLive,
+  CheckpointRevertSagaRepositoryLive,
+).pipe(Layer.provideMerge(SqlitePersistenceMemory));
 
 it.layer(persistence)("CheckpointRevertGate", (it) => {
-  it.effect("reads active and terminal state from SQLite across fresh gate layers", () =>
+  it.effect("reads awaiting, linked, and terminal intent state across fresh gate layers", () =>
     Effect.gen(function* () {
+      const intents = yield* CheckpointRevertIntentRepository;
       const sagas = yield* CheckpointRevertSagaRepository;
-      const activeThread = ThreadId.make("thread-gate-active");
-      const active = yield* sagas.getOrCreate(createSaga("event:gate:active", activeThread));
 
       const readFreshGate = <A, E>(
         effect: Effect.Effect<A, E, CheckpointRevertGate>,
-      ): Effect.Effect<A, E, CheckpointRevertSagaRepository> =>
+      ): Effect.Effect<A, E, CheckpointRevertIntentRepository> =>
         effect.pipe(Effect.provide(CheckpointRevertGateLive));
 
+      const awaitingThread = ThreadId.make("thread-gate-awaiting");
+      const awaiting = intentInput("event:gate:awaiting", 1, awaitingThread);
+      yield* intents.projectInTransaction(awaiting);
       assert.isTrue(
         yield* readFreshGate(
           Effect.gen(function* () {
             const gate = yield* CheckpointRevertGate;
-            return yield* gate.isThreadBlocked(activeThread);
+            return yield* gate.isThreadBlocked(awaitingThread);
           }),
         ),
       );
-      const blocked = yield* Effect.result(
+      const awaitingBlocked = yield* Effect.result(
         readFreshGate(
           Effect.gen(function* () {
             const gate = yield* CheckpointRevertGate;
-            yield* gate.assertThreadAvailable(activeThread);
+            yield* gate.assertThreadAvailable(awaitingThread);
           }),
         ),
       );
-      assert.isTrue(blocked._tag === "Failure");
-      if (blocked._tag === "Failure") {
-        assert.instanceOf(blocked.failure, CheckpointRevertGateBlockedError);
-        assert.equal(blocked.failure.sagaId, active.saga.sagaId);
+      assert.equal(awaitingBlocked._tag, "Failure");
+      if (awaitingBlocked._tag === "Failure") {
+        assert.instanceOf(awaitingBlocked.failure, CheckpointRevertGateBlockedError);
+        assert.equal(awaitingBlocked.failure.sourceEventId, awaiting.sourceEventId);
+        assert.isUndefined(awaitingBlocked.failure.sagaId);
       }
 
-      const failedThread = ThreadId.make("thread-gate-failed");
-      const failed = yield* sagas.getOrCreate(createSaga("event:gate:failed", failedThread));
-      yield* sagas.failBeforeRollback({
-        sagaId: failed.saga.sagaId,
-        updatedAt,
-        error: { code: "preflight_failed" },
+      const linkedThread = ThreadId.make("thread-gate-linked");
+      const linkedIntent = intentInput("event:gate:linked", 2, linkedThread);
+      yield* intents.projectInTransaction(linkedIntent);
+      const linkedSaga = (yield* sagas.getOrCreate(sagaInput(linkedIntent))).saga;
+      yield* intents.linkSaga({
+        sourceEventId: linkedIntent.sourceEventId,
+        sagaId: linkedSaga.sagaId,
       });
-
-      const indeterminateThread = ThreadId.make("thread-gate-indeterminate");
-      const indeterminate = yield* sagas.getOrCreate(
-        createSaga("event:gate:indeterminate", indeterminateThread),
+      const linkedBlocked = yield* Effect.result(
+        readFreshGate(
+          Effect.gen(function* () {
+            const gate = yield* CheckpointRevertGate;
+            yield* gate.assertThreadAvailable(linkedThread);
+          }),
+        ),
       );
-      yield* sagas.markRollbackInFlight({
-        sagaId: indeterminate.saga.sagaId,
-        updatedAt,
-      });
-      yield* sagas.markIndeterminate({
-        sagaId: indeterminate.saga.sagaId,
-        updatedAt,
-        error: { code: "rollback_indeterminate" },
-      });
+      assert.equal(linkedBlocked._tag, "Failure");
+      if (linkedBlocked._tag === "Failure") {
+        assert.instanceOf(linkedBlocked.failure, CheckpointRevertGateBlockedError);
+        assert.equal(linkedBlocked.failure.sourceEventId, linkedIntent.sourceEventId);
+        assert.equal(linkedBlocked.failure.sagaId, linkedSaga.sagaId);
+      }
 
-      const completedThread = ThreadId.make("thread-gate-completed");
-      const completed = yield* sagas.getOrCreate(
-        createSaga("event:gate:completed", completedThread),
-      );
-      yield* sagas.markRollbackInFlight({ sagaId: completed.saga.sagaId, updatedAt });
-      yield* sagas.markRollbackCompleted({ sagaId: completed.saga.sagaId, updatedAt });
-      yield* sagas.markRestoring({ sagaId: completed.saga.sagaId, updatedAt });
-      yield* sagas.markRestored({ sagaId: completed.saga.sagaId, updatedAt });
-      yield* sagas.beginDomainFinalization({
-        sagaId: completed.saga.sagaId,
-        finalizationStartedAt: updatedAt,
-        updatedAt,
+      yield* intents.markTerminal({
+        sourceEventId: linkedIntent.sourceEventId,
+        sagaId: linkedSaga.sagaId,
+        outcome: "indeterminate",
+        terminalAt,
       });
-      yield* sagas.markDomainFinalized({
-        sagaId: completed.saga.sagaId,
-        sequence: 42,
-        updatedAt,
-      });
-      yield* sagas.complete({
-        sagaId: completed.saga.sagaId,
-        completedAt: updatedAt,
-        updatedAt,
+      const preSagaFailedThread = ThreadId.make("thread-gate-pre-saga-failed");
+      const preSagaFailed = intentInput("event:gate:pre-saga-failed", 3, preSagaFailedThread);
+      yield* intents.projectInTransaction(preSagaFailed);
+      yield* intents.markTerminal({
+        sourceEventId: preSagaFailed.sourceEventId,
+        sagaId: null,
+        outcome: "failed",
+        terminalAt,
       });
 
       const terminalStates = yield* readFreshGate(
         Effect.gen(function* () {
           const gate = yield* CheckpointRevertGate;
           return yield* Effect.all(
-            [failedThread, indeterminateThread, completedThread].map((threadId) =>
-              gate.isThreadBlocked(threadId),
-            ),
+            [linkedThread, preSagaFailedThread].map((threadId) => gate.isThreadBlocked(threadId)),
           );
         }),
       );
-      assert.deepStrictEqual(terminalStates, [false, false, false]);
+      assert.deepStrictEqual(terminalStates, [false, false]);
     }),
   );
 });

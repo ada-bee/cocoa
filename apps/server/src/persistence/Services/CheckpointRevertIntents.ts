@@ -77,6 +77,12 @@ export type ProjectCheckpointRevertIntentInput = typeof ProjectCheckpointRevertI
 export const GetCheckpointRevertIntentInput = strict(Schema.Struct({ sourceEventId: EventId }));
 export type GetCheckpointRevertIntentInput = typeof GetCheckpointRevertIntentInput.Type;
 
+export const GetActiveCheckpointRevertIntentByThreadInput = strict(
+  Schema.Struct({ threadId: ThreadId }),
+);
+export type GetActiveCheckpointRevertIntentByThreadInput =
+  typeof GetActiveCheckpointRevertIntentByThreadInput.Type;
+
 export const LinkCheckpointRevertIntentInput = strict(
   Schema.Struct({ sourceEventId: EventId, sagaId: CheckpointRevertSagaId }),
 );
@@ -149,6 +155,9 @@ export interface CheckpointRevertIntentRepositoryShape {
   ) => Effect.Effect<CheckpointRevertIntent, CheckpointRevertIntentRepositoryError>;
   readonly getBySourceEventId: (
     input: GetCheckpointRevertIntentInput,
+  ) => Effect.Effect<Option.Option<CheckpointRevertIntent>, CheckpointRevertIntentRepositoryError>;
+  readonly getActiveByThread: (
+    input: GetActiveCheckpointRevertIntentByThreadInput,
   ) => Effect.Effect<Option.Option<CheckpointRevertIntent>, CheckpointRevertIntentRepositoryError>;
   /** CAS-links the deterministic saga id; exact repeats are idempotent. */
   readonly linkSaga: (
