@@ -16,7 +16,6 @@ import {
   KeybindingRule,
   MessageId,
   ExternalLauncherCommandNotFoundError,
-  type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
   type OrchestrationCommand,
@@ -87,6 +86,12 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import {
+  ProviderWorkspaceDisconnectedError,
+  ProviderWorkspaceOperationError,
+  ProviderWorkspacePathError,
+  ProviderWorkspaceUnsupportedError,
+} from "./provider/ProviderWorkspaceAdapter.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "./provider/providerMaintenance.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -97,12 +102,12 @@ import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
+import * as ProjectWorkspace from "./project/ProjectWorkspace.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
-import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriver from "./vcs/VcsDriver.ts";
@@ -216,39 +221,6 @@ const makeDefaultOrchestrationThreadShell = (
     ...overrides,
   };
 };
-
-const makeDefaultOrchestrationProjectShell = (
-  overrides: Partial<OrchestrationProjectShell> = {},
-): OrchestrationProjectShell => {
-  const now = "2026-01-01T00:00:00.000Z";
-  return {
-    id: defaultProjectId,
-    providerInstanceId: ProviderInstanceId.make("codex"),
-    title: "Default Project",
-    workspaceRoot: "/tmp/default-project",
-    defaultModelSelection,
-    scripts: [],
-    createdAt: now,
-    updatedAt: now,
-    ...overrides,
-  };
-};
-
-const workspaceProjection = (
-  workspaceRoot: string,
-  thread: OrchestrationThreadShell | undefined = undefined,
-): Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]> => ({
-  getProjectShellById: (projectId) =>
-    Effect.succeed(
-      projectId === defaultProjectId
-        ? Option.some(makeDefaultOrchestrationProjectShell({ workspaceRoot }))
-        : Option.none(),
-    ),
-  getThreadShellById: (threadId) =>
-    Effect.succeed(
-      thread !== undefined && thread.id === threadId ? Option.some(thread) : Option.none(),
-    ),
-});
 
 const browserOtlpTracingLayer = Layer.mergeAll(
   FetchHttpClient.layer,
@@ -383,6 +355,8 @@ const buildAppUnderTest = (options?: {
     terminalManager?: Partial<TerminalManager.TerminalManager["Service"]>;
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
+    projectWorkspace?: Partial<ProjectWorkspace.ProjectWorkspace["Service"]>;
+    workspaceEntries?: Partial<WorkspaceEntries.WorkspaceEntries["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
     serverLifecycleEvents?: Partial<ServerLifecycleEvents.ServerLifecycleEvents["Service"]>;
@@ -539,17 +513,16 @@ const buildAppUnderTest = (options?: {
     const gitManagerLayer = Layer.mock(GitManager.GitManager)({
       ...options?.layers?.gitManager,
     });
-    const workspaceEntriesLayer = WorkspaceEntries.layer.pipe(
-      Layer.provide(WorkspacePaths.layer),
-      Layer.provideMerge(vcsDriverRegistryLayer),
-    );
+    const workspaceEntriesLayer = options?.layers?.workspaceEntries
+      ? Layer.mock(WorkspaceEntries.WorkspaceEntries)(options.layers.workspaceEntries)
+      : WorkspaceEntries.layer.pipe(
+          Layer.provide(WorkspacePaths.layer),
+          Layer.provideMerge(vcsDriverRegistryLayer),
+        );
     const workspaceAndProjectServicesLayer = Layer.mergeAll(
       WorkspacePaths.layer,
       workspaceEntriesLayer,
-      WorkspaceFileSystem.layer.pipe(
-        Layer.provide(WorkspacePaths.layer),
-        Layer.provide(workspaceEntriesLayer),
-      ),
+      Layer.mock(ProjectWorkspace.ProjectWorkspace)(options?.layers?.projectWorkspace ?? {}),
       ProjectFaviconResolver.layer.pipe(
         Layer.provide(WorkspacePaths.layer),
         Layer.provide(T3ProjectFileLoader.layer),
@@ -4660,7 +4633,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("routes websocket rpc projects.searchEntries", () =>
+  it.effect("reports project search RPCs as unsupported without local fallback", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -4671,7 +4644,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       );
 
       yield* buildAppUnderTest({
-        layers: { projectionSnapshotQuery: workspaceProjection(workspaceDir) },
+        layers: {
+          projectWorkspace: {
+            listEntries: () => Effect.die("project search must not list provider entries"),
+            readFile: () => Effect.die("project search must not read provider files"),
+          },
+          workspaceEntries: {
+            search: () => Effect.die("project search must not use local path search"),
+            searchContents: () => Effect.die("project search must not use local content search"),
+          },
+        },
       });
 
       const wsUrl = yield* getWsServerUrl("/ws");
@@ -4682,7 +4664,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               target: { projectId: defaultProjectId },
               query: "needle",
               limit: 10,
-            }),
+            }).pipe(Effect.result),
             contents: client[WS_METHODS.projectsSearchContents]({
               target: { projectId: defaultProjectId },
               query: "needle = 1",
@@ -4690,15 +4672,24 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               caseSensitive: true,
               wholeWord: false,
               useRegex: false,
-            }),
+            }).pipe(Effect.result),
           }),
         ),
       );
 
-      assert.isAtLeast(response.entries.entries.length, 1);
-      assert.isTrue(response.entries.entries.some((entry) => entry.path === "needle-file.ts"));
-      assert.equal(response.entries.truncated, false);
-      assert.isTrue(response.contents.matches.some((match) => match.path === "needle-file.ts"));
+      for (const result of [response.entries, response.contents]) {
+        if (
+          result._tag !== "Failure" ||
+          (result.failure._tag !== "ProjectSearchEntriesError" &&
+            result.failure._tag !== "ProjectSearchContentsError")
+        ) {
+          assert.fail("Expected unsupported project search.");
+        }
+        assert.equal(result.failure.failure, "unsupported_operation");
+        assert.equal(result.failure.retryable, false);
+        assert.notProperty(result.failure, "cause");
+        assert.notProperty(result.failure, "query");
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
@@ -4713,8 +4704,39 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "export const answer = 42;\n",
       );
 
+      const calls: Array<{ readonly operation: string; readonly input: object }> = [];
       yield* buildAppUnderTest({
-        layers: { projectionSnapshotQuery: workspaceProjection(workspaceDir) },
+        layers: {
+          projectWorkspace: {
+            listEntries: (input) =>
+              Effect.sync(() => {
+                calls.push({ operation: "listEntries", input });
+                return {
+                  entries: [
+                    { path: "src", kind: "directory" as const },
+                    { path: "src/index.ts", kind: "file" as const },
+                    { path: "vendor-link", kind: "symlink" as const },
+                    { path: "socket", kind: "other" as const },
+                  ],
+                  truncated: true,
+                };
+              }),
+            readFile: (input) =>
+              Effect.sync(() => {
+                calls.push({ operation: "readFile", input });
+                return {
+                  bytes: new TextEncoder().encode("export const answer = 42;\n"),
+                  byteLength: 2 * 1024 * 1024,
+                  truncated: true,
+                };
+              }),
+          },
+          workspaceEntries: {
+            list: () => Effect.die("project listing must not use the gateway filesystem"),
+            search: () => Effect.die("project listing must not use local path search"),
+            searchContents: () => Effect.die("project listing must not use local content search"),
+          },
+        },
       });
 
       const wsUrl = yield* getWsServerUrl("/ws");
@@ -4732,13 +4754,39 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         ),
       );
 
-      assert.isTrue(response.listing.entries.some((entry) => entry.path === "src/index.ts"));
+      assert.deepEqual(response.listing, {
+        entries: [
+          { path: "src", kind: "directory" },
+          { path: "src/index.ts", kind: "file" },
+        ],
+        truncated: true,
+      });
       assert.deepEqual(response.file, {
         relativePath: "src/index.ts",
         contents: "export const answer = 42;\n",
-        byteLength: 26,
-        truncated: false,
+        byteLength: 2 * 1024 * 1024,
+        truncated: true,
       });
+      assert.deepEqual(calls, [
+        {
+          operation: "listEntries",
+          input: {
+            target: { projectId: defaultProjectId },
+            relativePath: "",
+            maxEntries: 25_000,
+            maxDepth: 64,
+            maxDirectories: 10_000,
+          },
+        },
+        {
+          operation: "readFile",
+          input: {
+            target: { projectId: defaultProjectId },
+            relativePath: "src/index.ts",
+            maxBytes: 1024 * 1024,
+          },
+        },
+      ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
@@ -4759,41 +4807,58 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const missingProjectId = ProjectId.make("project-missing");
       const queryFailureProjectId = ProjectId.make("project-query-failure");
       const missingThreadId = ThreadId.make("thread-missing");
-      const worktreeThread = makeDefaultOrchestrationThreadShell({
-        id: worktreeThreadId,
-        worktreePath: worktreeRoot,
-      });
-      const mismatchThread = makeDefaultOrchestrationThreadShell({
-        id: mismatchThreadId,
-        projectId: otherProjectId,
-      });
-
       yield* buildAppUnderTest({
         layers: {
-          projectionSnapshotQuery: {
-            getProjectShellById: (projectId) =>
-              projectId === queryFailureProjectId
-                ? Effect.fail(
-                    new PersistenceSqlError({
-                      operation: "resolve secret-token at /private/workspace",
-                      cause: new Error("authorization: Bearer secret-token"),
-                    }),
-                  )
-                : Effect.succeed(
-                    projectId === defaultProjectId
-                      ? Option.some(
-                          makeDefaultOrchestrationProjectShell({ workspaceRoot: projectRoot }),
-                        )
-                      : Option.none(),
-                  ),
-            getThreadShellById: (threadId) =>
-              Effect.succeed(
-                threadId === worktreeThreadId
-                  ? Option.some(worktreeThread)
-                  : threadId === mismatchThreadId
-                    ? Option.some(mismatchThread)
-                    : Option.none(),
-              ),
+          projectWorkspace: {
+            readFile: (input) =>
+              Effect.succeed({
+                bytes: new TextEncoder().encode(
+                  input.target.threadId === worktreeThreadId ? "worktree-root" : "project-root",
+                ),
+                byteLength: 12,
+                truncated: false,
+              }),
+            listEntries: (input) => {
+              if (input.target.projectId === missingProjectId) {
+                return Effect.fail(
+                  new ProjectWorkspace.ProjectWorkspaceProjectNotFoundError({
+                    projectId: missingProjectId,
+                  }),
+                );
+              }
+              if (input.target.threadId === missingThreadId) {
+                return Effect.fail(
+                  new ProjectWorkspace.ProjectWorkspaceThreadNotFoundError({
+                    projectId: defaultProjectId,
+                    threadId: missingThreadId,
+                  }),
+                );
+              }
+              if (input.target.threadId === mismatchThreadId) {
+                return Effect.fail(
+                  new ProjectWorkspace.ProjectWorkspaceThreadProjectMismatchError({
+                    projectId: defaultProjectId,
+                    threadId: mismatchThreadId,
+                    actualProjectId: otherProjectId,
+                  }),
+                );
+              }
+              return Effect.fail(
+                new ProjectWorkspace.ProjectWorkspaceResolveOperationError({
+                  projectId: queryFailureProjectId,
+                  operation: "resolveProject",
+                  cause: new PersistenceSqlError({
+                    operation: "resolve secret-token at /private/workspace",
+                    cause: new Error("authorization: Bearer secret-token"),
+                  }),
+                }),
+              );
+            },
+          },
+          workspaceEntries: {
+            list: () => Effect.die("project RPC must not use local listing"),
+            search: () => Effect.die("project RPC must not use local search"),
+            searchContents: () => Effect.die("project RPC must not use local content search"),
           },
         },
       });
@@ -4865,7 +4930,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
-  it.effect("routes websocket rpc projects.searchEntries excludes gitignored files", () =>
+  it.effect("rejects binary provider file previews", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -4886,7 +4951,20 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       yield* buildAppUnderTest({
         layers: {
-          projectionSnapshotQuery: workspaceProjection(workspaceDir),
+          projectWorkspace: {
+            readFile: () =>
+              Effect.succeed({
+                bytes: Uint8Array.from([65, 0, 66]),
+                byteLength: 3,
+                truncated: false,
+              }),
+          },
+          workspaceEntries: {
+            list: () => Effect.die("provider file reads must not use local listing"),
+            search: () => Effect.die("provider file reads must not use local search"),
+            searchContents: () =>
+              Effect.die("provider file reads must not use local content search"),
+          },
           vcsDriver: {
             isInsideWorkTree: () => Effect.succeed(true),
             listWorkspaceFiles: () =>
@@ -4910,16 +4988,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const wsUrl = yield* getWsServerUrl("/ws");
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.projectsSearchEntries]({
+          client[WS_METHODS.projectsReadFile]({
             target: { projectId: defaultProjectId },
-            query: "ignored-search-target",
-            limit: 10,
-          }),
+            relativePath: "binary.dat",
+          }).pipe(Effect.result),
         ),
       );
 
-      assert.equal(response.entries.length, 0);
-      assert.equal(response.truncated, false);
+      if (response._tag !== "Failure" || response.failure._tag !== "ProjectReadFileError") {
+        assert.fail("Expected ProjectReadFileError for a binary provider file.");
+      }
+      assert.equal(response.failure.failure, "binary_file");
+      assert.equal(response.failure.retryable, false);
+      assert.notProperty(response.failure, "cause");
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
@@ -4937,27 +5018,29 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* fs.writeFileString(outsideFile, "outside\n");
       yield* fs.symlink(outsideFile, path.join(workspaceDir, "linked-outside.txt"));
 
-      const invalidWorkspace = path.join(workspaceDir, "missing-workspace");
       const missingBrowseParent = path.join(workspaceDir, "missing-browse");
       const sensitiveQuery = "authorization: Bearer secret-token";
       const readProjectId = ProjectId.make("project-read-safe-error");
       yield* buildAppUnderTest({
         layers: {
-          projectionSnapshotQuery: {
-            getProjectShellById: (projectId) =>
-              Effect.succeed(
-                projectId === defaultProjectId
-                  ? Option.some(
-                      makeDefaultOrchestrationProjectShell({ workspaceRoot: invalidWorkspace }),
-                    )
-                  : projectId === readProjectId
-                    ? Option.some(
-                        makeDefaultOrchestrationProjectShell({
-                          id: readProjectId,
-                          workspaceRoot: workspaceDir,
-                        }),
-                      )
-                    : Option.none(),
+          projectWorkspace: {
+            listEntries: () =>
+              Effect.fail(
+                new ProviderWorkspaceDisconnectedError({
+                  providerInstanceId: ProviderInstanceId.make("provider-secret"),
+                  operation: "listEntries",
+                  cause: new Error("authorization: Bearer secret-token at /private/root"),
+                }),
+              ),
+            readFile: () =>
+              Effect.fail(
+                new ProviderWorkspacePathError({
+                  providerInstanceId: ProviderInstanceId.make("provider-secret"),
+                  operation: "readFile",
+                  path: "/private/root/linked-outside.txt",
+                  issue: "invalid_path",
+                  cause: new Error("authorization: Bearer secret-token"),
+                }),
               ),
           },
         },
@@ -5001,7 +5084,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.notInclude(searchError.message, "Bearer");
       assert.notInclude(searchError.message, "secret-token");
       assert.equal(searchError.limit, 10);
-      assert.equal(searchError.failure, "workspace_root_not_found");
+      assert.equal(searchError.failure, "unsupported_operation");
       assert.equal(searchError.retryable, false);
       assert.notProperty(searchError, "cause");
       assert.notProperty(searchError, "cwd");
@@ -5017,12 +5100,14 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(listError.message, "Failed to list workspace entries.");
       assert.deepEqual(listError.target, { projectId: defaultProjectId });
       assert.equal(listError.operation, "list-entries");
-      assert.equal(listError.failure, "workspace_root_not_found");
-      assert.equal(listError.retryable, false);
+      assert.equal(listError.failure, "provider_unavailable");
+      assert.equal(listError.retryable, true);
       assert.notProperty(listError, "cause");
       assert.notProperty(listError, "cwd");
       assert.notProperty(listError, "workspaceRoot");
       assert.notProperty(listError, "normalizedCwd");
+      assert.notInclude(listError.message, "provider-secret");
+      assert.notInclude(listError.message, "/private/root");
 
       if (results.read._tag !== "Failure" || results.read.failure._tag !== "ProjectReadFileError") {
         assert.fail("Expected a ProjectReadFileError");
@@ -5057,7 +5142,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("reports workspace root stat failures without relabeling them as missing", () =>
+  it.effect("sanitizes provider workspace operation failures", () =>
     Effect.gen(function* () {
       if ((yield* HostProcessPlatform) === "win32") return;
 
@@ -5072,7 +5157,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       const result = yield* Effect.gen(function* () {
         yield* buildAppUnderTest({
-          layers: { projectionSnapshotQuery: workspaceProjection(workspaceRoot) },
+          layers: {
+            projectWorkspace: {
+              listEntries: () =>
+                Effect.fail(
+                  new ProviderWorkspaceOperationError({
+                    providerInstanceId: ProviderInstanceId.make("provider-secret"),
+                    operation: "listEntries",
+                    detail: `failed at ${workspaceRoot} with secret-token`,
+                    cause: new Error("authorization: Bearer secret-token"),
+                  }),
+                ),
+            },
+          },
         });
         const wsUrl = yield* getWsServerUrl("/ws");
         return yield* Effect.scoped(
@@ -5089,20 +5186,30 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }
       const error = result.failure;
       assert.equal(error.failure, "operation_failed");
-      assert.equal(error.retryable, false);
+      assert.equal(error.retryable, true);
       assert.notProperty(error, "workspaceRoot");
       assert.notProperty(error, "normalizedCwd");
+      assert.notProperty(error, "cause");
+      assert.notProperty(error, "detail");
+      assert.notInclude(error.message, workspaceRoot);
+      assert.notInclude(error.message, "secret-token");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("routes websocket rpc projects.writeFile", () =>
+  it.effect("reports project writes as unsupported without local fallback", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workspaceDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-write-" });
-
       yield* buildAppUnderTest({
-        layers: { projectionSnapshotQuery: workspaceProjection(workspaceDir) },
+        layers: {
+          projectWorkspace: {
+            readFile: () => Effect.die("project writes must not read provider files"),
+            listEntries: () => Effect.die("project writes must not list provider entries"),
+          },
+          workspaceEntries: {
+            list: () => Effect.die("project writes must not use local listing"),
+            search: () => Effect.die("project writes must not use local search"),
+            searchContents: () => Effect.die("project writes must not use local content search"),
+          },
+        },
       });
 
       const wsUrl = yield* getWsServerUrl("/ws");
@@ -5112,13 +5219,17 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             target: { projectId: defaultProjectId },
             relativePath: "nested/created.txt",
             contents: "written-by-rpc",
-          }),
+          }).pipe(Effect.result),
         ),
       );
 
-      assert.equal(response.relativePath, "nested/created.txt");
-      const persisted = yield* fs.readFileString(path.join(workspaceDir, "nested", "created.txt"));
-      assert.equal(persisted, "written-by-rpc");
+      if (response._tag !== "Failure" || response.failure._tag !== "ProjectWriteFileError") {
+        assert.fail("Expected unsupported ProjectWriteFileError.");
+      }
+      assert.equal(response.failure.failure, "unsupported_operation");
+      assert.equal(response.failure.retryable, false);
+      assert.notProperty(response.failure, "cause");
+      assert.notProperty(response.failure, "contents");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -5155,41 +5266,43 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("routes websocket rpc projects.writeFile errors", () =>
+  it.effect("maps provider workspace unsupported failures", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const workspaceDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-write-" });
-
       yield* buildAppUnderTest({
-        layers: { projectionSnapshotQuery: workspaceProjection(workspaceDir) },
+        layers: {
+          projectWorkspace: {
+            listEntries: () =>
+              Effect.fail(
+                new ProviderWorkspaceUnsupportedError({
+                  providerInstanceId: ProviderInstanceId.make("provider-secret"),
+                  operation: "listEntries",
+                  cause: new Error("authorization: Bearer secret-token at /private/root"),
+                }),
+              ),
+          },
+        },
       });
 
       const wsUrl = yield* getWsServerUrl("/ws");
       const result = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.projectsWriteFile]({
+          client[WS_METHODS.projectsListEntries]({
             target: { projectId: defaultProjectId },
-            relativePath: "../escape.txt",
-            contents: "nope",
           }),
         ).pipe(Effect.result),
       );
 
-      if (result._tag !== "Failure" || result.failure._tag !== "ProjectWriteFileError") {
-        assert.fail("Expected a ProjectWriteFileError");
+      if (result._tag !== "Failure" || result.failure._tag !== "ProjectListEntriesError") {
+        assert.fail("Expected a ProjectListEntriesError");
       }
-      const writeError = result.failure;
-      assert.equal(writeError.message, "Failed to write workspace file '../escape.txt'.");
-      assert.deepEqual(writeError.target, { projectId: defaultProjectId });
-      assert.equal(writeError.operation, "write-file");
-      assert.equal(writeError.relativePath, "../escape.txt");
-      assert.equal(writeError.failure, "path_outside_workspace");
-      assert.equal(writeError.retryable, false);
-      assert.notProperty(writeError, "cause");
-      assert.notProperty(writeError, "cwd");
-      assert.notProperty(writeError, "workspaceRoot");
-      assert.notProperty(writeError, "resolvedPath");
-      assert.notProperty(writeError, "contents");
+      const listError = result.failure;
+      assert.equal(listError.failure, "unsupported_operation");
+      assert.equal(listError.retryable, false);
+      assert.notProperty(listError, "cause");
+      assert.notProperty(listError, "providerInstanceId");
+      assert.notInclude(listError.message, "provider-secret");
+      assert.notInclude(listError.message, "/private/root");
+      assert.notInclude(listError.message, "secret-token");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

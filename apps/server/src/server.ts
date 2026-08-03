@@ -62,10 +62,10 @@ import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
+import * as ProjectWorkspace from "./project/ProjectWorkspace.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
-import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
@@ -309,16 +309,16 @@ const PreviewLayerLive = Layer.empty.pipe(
 
 const WorkspaceEntriesLayerLive = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
 
-const WorkspaceFileSystemLayerLive = WorkspaceFileSystem.layer.pipe(
-  Layer.provide(WorkspacePaths.layer),
-  Layer.provide(WorkspaceEntriesLayerLive),
+const WorkspaceLayerLive = Layer.mergeAll(WorkspacePaths.layer, WorkspaceEntriesLayerLive);
+
+const ProjectWorkspaceLayerLive = ProjectWorkspace.layer.pipe(
+  Layer.provide(ProviderInstanceRegistryHydrationLive),
+  Layer.provide(OrchestrationLayerLive),
+  Layer.provide(ProviderEventLoggers.layer),
+  Layer.provide(OpenCodeRuntime.OpenCodeRuntimeLive),
 );
 
-const WorkspaceLayerLive = Layer.mergeAll(
-  WorkspacePaths.layer,
-  WorkspaceEntriesLayerLive,
-  WorkspaceFileSystemLayerLive,
-);
+const WorkspaceAccessLayerLive = Layer.mergeAll(WorkspaceLayerLive, ProjectWorkspaceLayerLive);
 
 const ProjectFaviconResolverLayerLive = ProjectFaviconResolver.layer.pipe(
   Layer.provide(WorkspacePaths.layer),
@@ -373,7 +373,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // no longer transitively provides it. Exposing it at the runtime level
   // keeps a single Live for all opencode consumers.
   Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
-  Layer.provideMerge(WorkspaceLayerLive),
+  Layer.provideMerge(WorkspaceAccessLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLayerLive),
   Layer.provideMerge(RepositoryIdentityResolver.layer),
   Layer.provideMerge(ServerEnvironment.layer),
