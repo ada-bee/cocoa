@@ -1,0 +1,456 @@
+import { assert, it } from "@effect/vitest";
+import { ProviderInstanceId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import type * as CodexClient from "effect-codex-app-server/client";
+import * as CodexErrors from "effect-codex-app-server/errors";
+
+import {
+  ProviderVcsRefLimit,
+  ProviderVcsRefQuery,
+  ProviderVcsRemoteLimit,
+  ProviderVcsReviewDiffByteLimit,
+  ProviderVcsRevision,
+  ProviderVcsStatusPathLimit,
+} from "../ProviderVcsAdapter.ts";
+import * as CodexEndpointConnection from "../codexEndpoint/CodexEndpointConnection.ts";
+import {
+  CodexEndpointBorrowUnavailableError,
+  type CodexEndpointConnectionBorrow,
+} from "../codexEndpoint/CodexEndpointSupervisor.ts";
+import {
+  CODEX_VCS_COMMAND_ENV,
+  CODEX_VCS_COMMAND_TIMEOUT_MS,
+  CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+  CodexGitExecutablePath,
+  makeCodexVcsAdapter,
+  redactCodexVcsRemoteUrl,
+} from "./CodexVcsAdapter.ts";
+
+const INSTANCE_ID = ProviderInstanceId.make("codex_vcs_test");
+const GIT = CodexGitExecutablePath.make("/nix/store/git/bin/git");
+const ROOT = "/srv/project";
+const COMMON = "/srv/project/.git";
+
+type CommandExecResponse = {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+};
+type Handler = (
+  payload: Record<string, unknown>,
+) => Effect.Effect<CommandExecResponse, CodexErrors.CodexAppServerError>;
+
+const repositoryIdentity = (root = ROOT, common = COMMON): CommandExecResponse => ({
+  exitCode: 0,
+  stdout: `${root}\n${common}\ntrue\n`,
+  stderr: "",
+});
+
+function makeConnection(handler: Handler) {
+  const request = ((method: string, payload: unknown) => {
+    assert.strictEqual(method, "command/exec");
+    return handler(payload as Record<string, unknown>);
+  }) as CodexClient.CodexAppServerClient["Service"]["request"];
+  return CodexEndpointConnection.CodexEndpointConnection.of({
+    identity: { providerInstanceId: INSTANCE_ID },
+    client: { request } as CodexClient.CodexAppServerClient["Service"],
+    compatibility: {
+      userAgent: "codex/1",
+      serverVersion: "1",
+      codexHome: "/home/codex",
+      platformFamily: "unix",
+      platformOs: "linux",
+    },
+    awaitTermination: Effect.never,
+  });
+}
+
+function makeBorrow(
+  connection: ReturnType<typeof makeConnection>,
+  generationId = 1,
+  check?: () => Effect.Effect<void, CodexEndpointBorrowUnavailableError>,
+): CodexEndpointConnectionBorrow {
+  return {
+    generationId,
+    connection,
+    ensureCurrent: Effect.suspend(() => check?.() ?? Effect.void),
+  };
+}
+
+function makeAdapter(
+  handler: Handler,
+  check?: () => Effect.Effect<void, CodexEndpointBorrowUnavailableError>,
+) {
+  const requests: Array<Record<string, unknown>> = [];
+  const connection = makeConnection((payload) => {
+    requests.push(payload);
+    return handler(payload);
+  });
+  let borrows = 0;
+  let barriers = 0;
+  const adapter = makeCodexVcsAdapter({
+    providerInstanceId: INSTANCE_ID,
+    gitExecutablePath: GIT,
+    borrowConnection: Effect.sync(() => {
+      borrows += 1;
+      return makeBorrow(connection, 1, () => {
+        barriers += 1;
+        return check?.() ?? Effect.void;
+      });
+    }),
+  });
+  return { adapter, requests, counts: () => ({ borrows, barriers }) };
+}
+
+const open = Effect.fn("test.open")(function* (adapter: ReturnType<typeof makeCodexVcsAdapter>) {
+  const result = yield* adapter.openRepository(ROOT);
+  assert.strictEqual(result._tag, "Repository");
+  if (result._tag !== "Repository") return assert.fail("expected repository");
+  return result.repository;
+});
+
+it.effect("pins one generation and sends exact read-only command requests", () =>
+  Effect.gen(function* () {
+    const { adapter, requests, counts } = makeAdapter((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      if (argv.includes("rev-parse")) return Effect.succeed(repositoryIdentity());
+      return Effect.succeed({
+        exitCode: 0,
+        stderr: "secret stderr is ignored",
+        stdout:
+          "# branch.oid 0123456789012345678901234567890123456789\0# branch.head main\0? odd --path\0",
+      });
+    });
+    const repository = yield* open(adapter);
+    const status = yield* repository.getStatus({
+      maxChangedPaths: ProviderVcsStatusPathLimit.make(10),
+    });
+    assert.strictEqual(status.changedPaths[0]?.path, "odd --path");
+    assert.deepStrictEqual(counts(), { borrows: 1, barriers: 4 });
+    assert.strictEqual(requests.length, 2);
+    assert.deepStrictEqual(requests[0], {
+      command: [
+        GIT,
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "pager.status=false",
+        "-c",
+        "pager.branch=false",
+        "-c",
+        "pager.diff=false",
+        "-c",
+        "diff.external=",
+        "-c",
+        "diff.trustExitCode=false",
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+        "--git-common-dir",
+        "--is-inside-work-tree",
+      ],
+      cwd: ROOT,
+      env: CODEX_VCS_COMMAND_ENV,
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      timeoutMs: CODEX_VCS_COMMAND_TIMEOUT_MS,
+      outputBytesCap: CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+    });
+    assert.deepStrictEqual((requests[1]!.command as ReadonlyArray<string>).slice(-5), [
+      "status",
+      "--porcelain=v2",
+      "--branch",
+      "-z",
+      "--untracked-files=all",
+    ]);
+  }),
+);
+
+it.effect("keeps handles for the same path on their captured connections", () =>
+  Effect.gen(function* () {
+    const calls = [0, 0];
+    const connections = [0, 1].map((index) =>
+      makeConnection((payload) => {
+        calls[index]! += 1;
+        const argv = payload.command as ReadonlyArray<string>;
+        return Effect.succeed(
+          argv.includes("rev-parse")
+            ? repositoryIdentity()
+            : {
+                exitCode: 0,
+                stderr: "",
+                stdout: `remote${index}\thttps://host/r.git (fetch)\n`,
+              },
+        );
+      }),
+    );
+    let next = 0;
+    const adapter = makeCodexVcsAdapter({
+      providerInstanceId: INSTANCE_ID,
+      gitExecutablePath: GIT,
+      borrowConnection: Effect.sync(() => makeBorrow(connections[next++]!, next)),
+    });
+    const first = yield* open(adapter);
+    const second = yield* open(adapter);
+    const one = yield* first.listRemotes({
+      maxRemotes: ProviderVcsRemoteLimit.make(2),
+    });
+    const two = yield* second.listRemotes({
+      maxRemotes: ProviderVcsRemoteLimit.make(2),
+    });
+    assert.strictEqual(one.remotes[0]?.name, "remote0");
+    assert.strictEqual(two.remotes[0]?.name, "remote1");
+    assert.deepStrictEqual(calls, [2, 2]);
+  }),
+);
+
+it.effect("fails a stale generation at the after barrier without retrying", () =>
+  Effect.gen(function* () {
+    let checks = 0;
+    let commands = 0;
+    const unavailable = new CodexEndpointBorrowUnavailableError({
+      providerInstanceId: INSTANCE_ID,
+    });
+    const { adapter, counts } = makeAdapter(
+      (payload) => {
+        commands += 1;
+        const argv = payload.command as ReadonlyArray<string>;
+        return Effect.succeed(
+          argv.includes("rev-parse")
+            ? repositoryIdentity()
+            : { exitCode: 0, stdout: "", stderr: "" },
+        );
+      },
+      () => {
+        checks += 1;
+        return checks === 4 ? Effect.fail(unavailable) : Effect.void;
+      },
+    );
+    const repository = yield* open(adapter);
+    const error = yield* Effect.flip(
+      repository.listRemotes({ maxRemotes: ProviderVcsRemoteLimit.make(1) }),
+    );
+    assert.strictEqual(error._tag, "ProviderVcsDisconnectedError");
+    assert.strictEqual(commands, 2);
+    assert.strictEqual(counts().borrows, 1);
+  }),
+);
+
+it.effect("returns NotRepository distinctly and binds linked-worktree common identity", () =>
+  Effect.gen(function* () {
+    const missing = makeAdapter(() =>
+      Effect.succeed({
+        exitCode: 128,
+        stdout: "",
+        stderr: "credentials must not escape",
+      }),
+    );
+    assert.deepStrictEqual(yield* missing.adapter.openRepository(ROOT), {
+      _tag: "NotRepository",
+    });
+    const linked = makeAdapter(() =>
+      Effect.succeed(repositoryIdentity("/worktrees/topic", "/repos/main/.git")),
+    );
+    const result = yield* linked.adapter.openRepository("/worktrees/topic");
+    assert.strictEqual(result._tag, "Repository");
+    if (result._tag === "Repository")
+      assert.deepStrictEqual(result.repository.identity, {
+        kind: "git",
+        rootPath: "/worktrees/topic",
+        commonDirectoryPath: "/repos/main/.git",
+      });
+  }),
+);
+
+it.effect("maps invalid paths and unavailable commands to closed error tags", () =>
+  Effect.gen(function* () {
+    const invalid = makeAdapter(() => Effect.die("must not execute"));
+    const pathError = yield* Effect.flip(invalid.adapter.openRepository("/srv/../etc"));
+    assert.strictEqual(pathError._tag, "ProviderVcsPathError");
+    assert.deepStrictEqual(invalid.counts(), { borrows: 0, barriers: 0 });
+
+    const missingMethod = makeAdapter(() =>
+      Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound("command/exec")),
+    );
+    const methodError = yield* Effect.flip(missingMethod.adapter.openRepository(ROOT));
+    assert.strictEqual(methodError._tag, "ProviderVcsUnsupportedError");
+
+    const missingGit = makeAdapter(() =>
+      Effect.succeed({ exitCode: 127, stdout: "", stderr: "SECRET" }),
+    );
+    const executableError = yield* Effect.flip(missingGit.adapter.openRepository(ROOT));
+    assert.strictEqual(executableError._tag, "ProviderVcsUnsupportedError");
+    assert.notInclude(executableError.message, "SECRET");
+  }),
+);
+
+it.effect("bounds status and refs, and rejects malformed structured output", () =>
+  Effect.gen(function* () {
+    let command = 0;
+    const { adapter } = makeAdapter((payload) => {
+      command += 1;
+      if (command === 1) return Effect.succeed(repositoryIdentity());
+      const argv = payload.command as ReadonlyArray<string>;
+      if (argv.includes("status"))
+        return Effect.succeed({
+          exitCode: 0,
+          stderr: "",
+          stdout:
+            "# branch.oid 0123456789012345678901234567890123456789\0# branch.head main\0? one\0? two\0",
+        });
+      return Effect.succeed({
+        exitCode: 0,
+        stderr: "",
+        stdout: "refs/heads/main\0not-an-oid\0*\n",
+      });
+    });
+    const repository = yield* open(adapter);
+    const status = yield* repository.getStatus({
+      maxChangedPaths: ProviderVcsStatusPathLimit.make(1),
+    });
+    assert.strictEqual(status.changedPaths.length, 1);
+    assert.isTrue(status.truncated);
+    const error = yield* Effect.flip(
+      repository.listRefs({
+        scope: "all",
+        maxRefs: ProviderVcsRefLimit.make(2),
+      }),
+    );
+    assert.strictEqual(error._tag, "ProviderVcsProtocolError");
+  }),
+);
+
+it.effect("keeps hostile queries and revisions as data-only single argv tokens", () =>
+  Effect.gen(function* () {
+    const requests: Array<Record<string, unknown>> = [];
+    const { adapter } = makeAdapter((payload) => {
+      requests.push(payload);
+      const argv = payload.command as ReadonlyArray<string>;
+      if (argv.includes("rev-parse")) return Effect.succeed(repositoryIdentity());
+      if (argv.includes("for-each-ref"))
+        return Effect.succeed({
+          exitCode: 0,
+          stderr: "",
+          stdout: `refs/heads/main\0${"0".repeat(40)}\0*\n`,
+        });
+      return Effect.succeed({ exitCode: 0, stderr: "", stdout: "patch" });
+    });
+    const repository = yield* open(adapter);
+    yield* repository.listRefs({
+      scope: "all",
+      query: ProviderVcsRefQuery.make("--format=%(contents)"),
+      maxRefs: ProviderVcsRefLimit.make(2),
+    });
+    const revision = ProviderVcsRevision.make("topic;fetch origin evil");
+    yield* repository.getReviewDiff({
+      baseRef: revision,
+      ignoreWhitespace: true,
+      maxBytes: ProviderVcsReviewDiffByteLimit.make(100),
+    });
+    const refCommand = requests.find((payload) =>
+      (payload.command as ReadonlyArray<string>).includes("for-each-ref"),
+    )!.command as ReadonlyArray<string>;
+    assert.isFalse(refCommand.includes("--format=%(contents)"));
+    const diffCommands = requests
+      .filter((payload) => (payload.command as ReadonlyArray<string>).includes("diff"))
+      .map((payload) => payload.command as ReadonlyArray<string>);
+    assert.isTrue(diffCommands[1]!.includes("topic;fetch origin evil...HEAD"));
+    assert.strictEqual(diffCommands[1]!.at(-1), "--");
+    assert.isTrue(
+      diffCommands.every(
+        (argv) => argv.includes("--no-ext-diff") && argv.includes("--no-textconv"),
+      ),
+    );
+  }),
+);
+
+it.effect("redacts credentials, userinfo, queries, and fragments from remote URLs", () =>
+  Effect.gen(function* () {
+    assert.strictEqual(
+      redactCodexVcsRemoteUrl("https://user:secret@example.com/repo.git?token=x#frag"),
+      "https://example.com/repo.git",
+    );
+    assert.strictEqual(
+      redactCodexVcsRemoteUrl("git@example.com:org/repo.git?token=x#frag"),
+      "example.com:org/repo.git",
+    );
+    const { adapter } = makeAdapter((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      return Effect.succeed(
+        argv.includes("rev-parse")
+          ? repositoryIdentity()
+          : {
+              exitCode: 0,
+              stderr: "password=hunter2",
+              stdout:
+                "origin\thttps://u:p@example.com/r.git?q=s (fetch)\norigin\tssh://git@example.com/r.git#x (push)\n",
+            },
+      );
+    });
+    const repository = yield* open(adapter);
+    const listing = yield* repository.listRemotes({
+      maxRemotes: ProviderVcsRemoteLimit.make(1),
+    });
+    assert.deepStrictEqual(listing.remotes[0], {
+      name: "origin",
+      fetchUrl: "https://example.com/r.git",
+      pushUrl: "ssh://example.com/r.git",
+      isPrimary: true,
+    });
+  }),
+);
+
+it.effect("marks exact-cap patches truncated and reports unborn HEAD without leaking stderr", () =>
+  Effect.gen(function* () {
+    let diffs = 0;
+    const { adapter } = makeAdapter((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      if (argv.includes("rev-parse")) return Effect.succeed(repositoryIdentity());
+      diffs += 1;
+      return diffs === 1
+        ? Effect.succeed({ exitCode: 0, stderr: "", stdout: "12345" })
+        : Effect.succeed({
+            exitCode: 128,
+            stderr: "token=super-secret",
+            stdout: "",
+          });
+    });
+    const repository = yield* open(adapter);
+    const exact = yield* repository.getReviewDiff({
+      ignoreWhitespace: false,
+      maxBytes: ProviderVcsReviewDiffByteLimit.make(5),
+    });
+    assert.isTrue(exact.truncated);
+    assert.isTrue(exact.sources[0]?.truncated);
+    const error = yield* Effect.flip(
+      repository.getReviewDiff({
+        ignoreWhitespace: false,
+        maxBytes: ProviderVcsReviewDiffByteLimit.make(6),
+      }),
+    );
+    assert.strictEqual(error._tag, "ProviderVcsOperationError");
+    assert.notInclude(error.message, "super-secret");
+  }),
+);
+
+it("requires an explicit absolute POSIX Git executable and exposes no mutating command", () => {
+  assert.throws(() => CodexGitExecutablePath.make("git"));
+  assert.throws(() => CodexGitExecutablePath.make("/usr/../bin/git"));
+  const sourceCommands = new Set(["rev-parse", "status", "for-each-ref", "remote", "diff"]);
+  for (const forbidden of [
+    "fetch",
+    "push",
+    "add",
+    "commit",
+    "checkout",
+    "reset",
+    "clean",
+    "update-ref",
+  ]) {
+    assert.isFalse(sourceCommands.has(forbidden));
+  }
+});
