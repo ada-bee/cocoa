@@ -22,6 +22,7 @@ import {
   type CodexCheckpointHelperRepositoryBinding,
   type CodexCheckpointHelperRestoreRequest,
   type CodexCheckpointHelperRestoreResult,
+  type CodexCheckpointHelperSha256,
   ProviderInstanceId,
   type VcsDriverKind,
 } from "@t3tools/contracts";
@@ -354,6 +355,21 @@ export type ProviderVcsCheckpointObserveInput =
   BoundCheckpointInput<CodexCheckpointHelperObserveRequest>;
 
 /**
+ * A provider-normal mutation request prepared without dispatching it.
+ *
+ * `generationId` identifies the borrowed provider generation and
+ * `requestSha256` identifies the exact private provider request captured by
+ * `execute`, while the request itself (including provider-host paths) remains
+ * inside the adapter. Prepared executions are generation-bound and may be
+ * single-use; callers must durably record both fields before executing them.
+ */
+export interface ProviderVcsPreparedCheckpointMutation<Result> {
+  readonly generationId: number;
+  readonly requestSha256: CodexCheckpointHelperSha256;
+  readonly execute: Effect.Effect<Result, ProviderVcsError>;
+}
+
+/**
  * Optional CCH1 capability permanently bound to the same provider repository.
  *
  * The provider creates this only after a successful checkpoint-helper `open`.
@@ -362,18 +378,27 @@ export type ProviderVcsCheckpointObserveInput =
  */
 export interface ProviderVcsCheckpointCapability {
   readonly binding: CodexCheckpointHelperRepositoryBinding;
-  readonly capture: (
+  readonly prepareCapture: (
     input: ProviderVcsCheckpointCaptureInput,
-  ) => Effect.Effect<CodexCheckpointHelperCaptureResult, ProviderVcsError>;
+  ) => Effect.Effect<
+    ProviderVcsPreparedCheckpointMutation<CodexCheckpointHelperCaptureResult>,
+    ProviderVcsError
+  >;
   readonly diff: (
     input: ProviderVcsCheckpointDiffInput,
   ) => Effect.Effect<CodexCheckpointHelperDiffResult, ProviderVcsError>;
-  readonly restore: (
+  readonly prepareRestore: (
     input: ProviderVcsCheckpointRestoreInput,
-  ) => Effect.Effect<CodexCheckpointHelperRestoreResult, ProviderVcsError>;
-  readonly delete: (
+  ) => Effect.Effect<
+    ProviderVcsPreparedCheckpointMutation<CodexCheckpointHelperRestoreResult>,
+    ProviderVcsError
+  >;
+  readonly prepareDelete: (
     input: ProviderVcsCheckpointDeleteInput,
-  ) => Effect.Effect<CodexCheckpointHelperDeleteResult, ProviderVcsError>;
+  ) => Effect.Effect<
+    ProviderVcsPreparedCheckpointMutation<CodexCheckpointHelperDeleteResult>,
+    ProviderVcsError
+  >;
   readonly observe: (
     input: ProviderVcsCheckpointObserveInput,
   ) => Effect.Effect<CodexCheckpointHelperObserveResult, ProviderVcsError>;

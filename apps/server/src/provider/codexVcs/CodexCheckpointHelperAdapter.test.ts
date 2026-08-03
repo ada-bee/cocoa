@@ -1,3 +1,5 @@
+import * as NodeCrypto from "node:crypto";
+
 import { assert, it } from "@effect/vitest";
 import {
   CODEX_CHECKPOINT_HELPER_CHECKPOINT_REF_PREFIX,
@@ -6,7 +8,7 @@ import {
   CODEX_CHECKPOINT_HELPER_MAX_RESPONSE_BYTES,
   CODEX_CHECKPOINT_HELPER_RECEIPT_REF_PREFIX,
   type CodexCheckpointHelperErrorCode,
-  type CodexCheckpointHelperRequest,
+  CodexCheckpointHelperRequest,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -73,6 +75,21 @@ type Handler = (
 ) => Effect.Effect<CommandExecResponse, CodexErrors.CodexAppServerError>;
 
 const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const normalizeRequest = Schema.decodeUnknownSync(CodexCheckpointHelperRequest);
+
+const requestDigest = (request: CodexCheckpointHelperRequest): string =>
+  NodeCrypto.createHash("sha256")
+    .update(new TextEncoder().encode(encodeJson(normalizeRequest(request))))
+    .digest("hex");
+
+const commandRequestDigest = (payload: Record<string, unknown>): string => {
+  const command = payload.command as ReadonlyArray<string>;
+  const requestJson = Result.getOrThrow(Encoding.decodeBase64String(command[1]!));
+  return NodeCrypto.createHash("sha256")
+    .update(new TextEncoder().encode(requestJson))
+    .digest("hex");
+};
 
 const decodeRequest = (payload: Record<string, unknown>): CodexCheckpointHelperRequest => {
   const command = payload.command as ReadonlyArray<string>;
@@ -104,6 +121,7 @@ const helperFailure = (code: CodexCheckpointHelperErrorCode): CommandExecRespons
 });
 
 const defaultResponse = (request: CodexCheckpointHelperRequest): CommandExecResponse => {
+  const exactRequestDigest = requestDigest(request);
   switch (request.operation) {
     case "probe":
       return success({
@@ -127,7 +145,7 @@ const defaultResponse = (request: CodexCheckpointHelperRequest): CommandExecResp
           operation: "capture",
           operationId: request.operationId,
           receiptRef: `${CODEX_CHECKPOINT_HELPER_RECEIPT_REF_PREFIX}${request.operationId}`,
-          requestSha256: REQUEST_DIGEST,
+          requestSha256: exactRequestDigest,
           repositoryFingerprint: FINGERPRINT,
           status: "succeeded",
           checkpointId: request.checkpointId,
@@ -155,7 +173,7 @@ const defaultResponse = (request: CodexCheckpointHelperRequest): CommandExecResp
           operation: "restore",
           operationId: request.operationId,
           receiptRef: `${CODEX_CHECKPOINT_HELPER_RECEIPT_REF_PREFIX}${request.operationId}`,
-          requestSha256: REQUEST_DIGEST,
+          requestSha256: exactRequestDigest,
           repositoryFingerprint: FINGERPRINT,
           status: "succeeded",
           checkpointId: request.checkpointId,
@@ -171,7 +189,7 @@ const defaultResponse = (request: CodexCheckpointHelperRequest): CommandExecResp
           operation: "delete",
           operationId: request.operationId,
           receiptRef: `${CODEX_CHECKPOINT_HELPER_RECEIPT_REF_PREFIX}${request.operationId}`,
-          requestSha256: REQUEST_DIGEST,
+          requestSha256: exactRequestDigest,
           repositoryFingerprint: FINGERPRINT,
           status: "succeeded",
           checkpoints: request.checkpoints.map((checkpoint) => ({
@@ -240,7 +258,7 @@ it.effect("uses one fixed command per invocation and the exact sandbox matrix", 
     const harness = makeConnection((_payload, request) => Effect.succeed(defaultResponse(request)));
     const borrowed = makeBorrow(harness.connection);
     const capability = yield* openCapability(makeAdapter(), borrowed);
-    yield* capability.capture({
+    const preparedCapture = yield* capability.prepareCapture({
       operationId: OPERATION_ID,
       checkpointId: CHECKPOINT_ID,
       protocol: "hostile.protocol",
@@ -251,27 +269,56 @@ it.effect("uses one fixed command per invocation and the exact sandbox matrix", 
         fingerprint: "0".repeat(64),
       },
     } as never);
+    assert.strictEqual(harness.requests.length, 2);
+    assert.strictEqual(preparedCapture.generationId, borrowed.generationId);
+    const reconstructedCapture = yield* capability.prepareCapture({
+      operationId: OPERATION_ID,
+      checkpointId: CHECKPOINT_ID,
+    });
+    assert.strictEqual(reconstructedCapture.requestSha256, preparedCapture.requestSha256);
+    assert.strictEqual(harness.requests.length, 2);
+    assert.strictEqual(
+      preparedCapture.requestSha256,
+      requestDigest({
+        protocol: "cocoa.checkpoint.v1",
+        operation: "capture",
+        gitExecutablePath: GIT,
+        operationId: OPERATION_ID,
+        checkpointId: CHECKPOINT_ID,
+        expectedBinding: BINDING,
+      }),
+    );
+    yield* preparedCapture.execute;
+    assert.strictEqual(preparedCapture.requestSha256, commandRequestDigest(harness.requests[2]!));
+    const repeatedExecutionError = yield* Effect.flip(preparedCapture.execute);
+    assert.strictEqual(repeatedExecutionError._tag, "ProviderVcsOperationError");
+    assert.strictEqual(harness.requests.length, 3);
     yield* capability.diff({
       baseCheckpointId: CHECKPOINT_ID,
       targetCheckpointId: TARGET_CHECKPOINT_ID,
       ignoreWhitespace: false,
       limits: { maxPatchBytes: 4_096 },
     });
-    yield* capability.restore({
+    const preparedRestore = yield* capability.prepareRestore({
       operationId: OPERATION_ID,
       checkpointId: CHECKPOINT_ID,
       expectedCheckpointOid: OID,
     });
-    yield* capability.delete({
+    yield* preparedRestore.execute;
+    const preparedDelete = yield* capability.prepareDelete({
       operationId: OPERATION_ID,
       checkpoints: [{ checkpointId: CHECKPOINT_ID, expectedCheckpointOid: OID }],
     });
+    yield* preparedDelete.execute;
     yield* capability.observe({
       operationId: OPERATION_ID,
       expectedRequestSha256: REQUEST_DIGEST,
     });
 
     assert.strictEqual(harness.requests.length, 7);
+    assert.notProperty(capability, "capture");
+    assert.notProperty(capability, "restore");
+    assert.notProperty(capability, "delete");
     const decoded = harness.requests.map(decodeRequest);
     assert.deepStrictEqual(
       decoded.map((request) => request.operation),
@@ -328,7 +375,7 @@ it.effect("deduplicates restore writable roots from the helper-owned binding", (
                   operation: "restore",
                   operationId: request.operationId,
                   receiptRef: `${CODEX_CHECKPOINT_HELPER_RECEIPT_REF_PREFIX}${request.operationId}`,
-                  requestSha256: REQUEST_DIGEST,
+                  requestSha256: requestDigest(request),
                   repositoryFingerprint: FINGERPRINT,
                   status: "succeeded",
                   checkpointId: request.checkpointId,
@@ -348,11 +395,12 @@ it.effect("deduplicates restore writable roots from the helper-owned binding", (
       { rootPath: ROOT, commonDirectoryPath: ROOT },
       probe,
     );
-    yield* capability.restore({
+    const prepared = yield* capability.prepareRestore({
       operationId: OPERATION_ID,
       checkpointId: CHECKPOINT_ID,
       expectedCheckpointOid: OID,
     });
+    yield* prepared.execute;
     assert.deepStrictEqual(harness.requests[2]?.sandboxPolicy, {
       type: "workspaceWrite",
       writableRoots: [ROOT],
@@ -400,17 +448,19 @@ it.effect("rejects instance, path, binding, and generation mismatches without re
     );
     const preBorrowed = makeBorrow(preStale.connection, () => {
       preBarriers += 1;
-      return preBarriers === 5
+      return preBarriers === 7
         ? Effect.fail(new CodexEndpointBorrowUnavailableError({ providerInstanceId: INSTANCE_ID }))
         : Effect.void;
     });
     const preCapability = yield* openCapability(makeAdapter(), preBorrowed);
     const preError = yield* Effect.flip(
-      preCapability.restore({
-        operationId: OPERATION_ID,
-        checkpointId: CHECKPOINT_ID,
-        expectedCheckpointOid: OID,
-      }),
+      preCapability
+        .prepareRestore({
+          operationId: OPERATION_ID,
+          checkpointId: CHECKPOINT_ID,
+          expectedCheckpointOid: OID,
+        })
+        .pipe(Effect.flatMap((prepared) => prepared.execute)),
     );
     assert.strictEqual(preError._tag, "ProviderVcsDisconnectedError");
     assert.strictEqual(preStale.requests.length, 2);
@@ -419,17 +469,19 @@ it.effect("rejects instance, path, binding, and generation mismatches without re
     const stale = makeConnection((_payload, request) => Effect.succeed(defaultResponse(request)));
     const borrowed = makeBorrow(stale.connection, () => {
       barriers += 1;
-      return barriers === 6
+      return barriers === 9
         ? Effect.fail(new CodexEndpointBorrowUnavailableError({ providerInstanceId: INSTANCE_ID }))
         : Effect.void;
     });
     const capability = yield* openCapability(makeAdapter(), borrowed);
     const staleError = yield* Effect.flip(
-      capability.restore({
-        operationId: OPERATION_ID,
-        checkpointId: CHECKPOINT_ID,
-        expectedCheckpointOid: OID,
-      }),
+      capability
+        .prepareRestore({
+          operationId: OPERATION_ID,
+          checkpointId: CHECKPOINT_ID,
+          expectedCheckpointOid: OID,
+        })
+        .pipe(Effect.flatMap((prepared) => prepared.execute)),
     );
     assert.strictEqual(staleError._tag, "ProviderVcsCheckpointOutcomeUnknownError");
     assert.strictEqual(stale.requests.length, 3);
@@ -475,7 +527,9 @@ it.effect("strictly rejects malformed frames and sanitizes helper and transport 
     });
     const capability = yield* openCapability(makeAdapter(), makeBorrow(helperSecret.connection));
     const helperError = yield* Effect.flip(
-      capability.capture({ operationId: OPERATION_ID, checkpointId: CHECKPOINT_ID }),
+      capability
+        .prepareCapture({ operationId: OPERATION_ID, checkpointId: CHECKPOINT_ID })
+        .pipe(Effect.flatMap((prepared) => prepared.execute)),
     );
     assert.strictEqual(helperError._tag, "ProviderVcsOperationError");
     assert.notInclude(helperError.message, "SECRET");
@@ -495,11 +549,13 @@ it.effect("strictly rejects malformed frames and sanitizes helper and transport 
       makeBorrow(transportSecret.connection),
     );
     const restoreError = yield* Effect.flip(
-      restoreCapability.restore({
-        operationId: OPERATION_ID,
-        checkpointId: CHECKPOINT_ID,
-        expectedCheckpointOid: OID,
-      }),
+      restoreCapability
+        .prepareRestore({
+          operationId: OPERATION_ID,
+          checkpointId: CHECKPOINT_ID,
+          expectedCheckpointOid: OID,
+        })
+        .pipe(Effect.flatMap((prepared) => prepared.execute)),
     );
     assert.strictEqual(restoreError._tag, "ProviderVcsCheckpointOutcomeUnknownError");
     assert.notInclude(restoreError.message, "SECRET");
@@ -525,6 +581,22 @@ it.effect("strictly rejects malformed frames and sanitizes helper and transport 
         }),
         stderr: "",
       },
+      success({
+        operation: "capture",
+        receipt: {
+          operation: "capture",
+          operationId: OPERATION_ID,
+          receiptRef: `${CODEX_CHECKPOINT_HELPER_RECEIPT_REF_PREFIX}${OPERATION_ID}`,
+          requestSha256: REQUEST_DIGEST,
+          repositoryFingerprint: FINGERPRINT,
+          status: "succeeded",
+          checkpointId: CHECKPOINT_ID,
+          checkpointRef: `${CODEX_CHECKPOINT_HELPER_CHECKPOINT_REF_PREFIX}${CHECKPOINT_ID}`,
+          checkpointOid: OID,
+          treeOid: TREE_OID,
+        },
+        receiptObjectOid: RECEIPT_OID,
+      }),
       { exitCode: 0, stdout: "CCH1 2 " + "0".repeat(64) + "\n{}", stderr: "" },
     ];
     for (const ambiguous of ambiguousResults) {
@@ -538,7 +610,9 @@ it.effect("strictly rejects malformed frames and sanitizes helper and transport 
         makeBorrow(ambiguousHarness.connection),
       );
       const error = yield* Effect.flip(
-        ambiguousCapability.capture({ operationId: OPERATION_ID, checkpointId: CHECKPOINT_ID }),
+        ambiguousCapability
+          .prepareCapture({ operationId: OPERATION_ID, checkpointId: CHECKPOINT_ID })
+          .pipe(Effect.flatMap((prepared) => prepared.execute)),
       );
       assert.strictEqual(error._tag, "ProviderVcsCheckpointOutcomeUnknownError");
       assert.strictEqual(ambiguousHarness.requests.length, 3);
@@ -557,11 +631,13 @@ it.effect("strictly rejects malformed frames and sanitizes helper and transport 
       makeBorrow(explicitRestoreFailure.connection),
     );
     const explicitError = yield* Effect.flip(
-      explicitCapability.restore({
-        operationId: OPERATION_ID,
-        checkpointId: CHECKPOINT_ID,
-        expectedCheckpointOid: OID,
-      }),
+      explicitCapability
+        .prepareRestore({
+          operationId: OPERATION_ID,
+          checkpointId: CHECKPOINT_ID,
+          expectedCheckpointOid: OID,
+        })
+        .pipe(Effect.flatMap((prepared) => prepared.execute)),
     );
     assert.strictEqual(explicitError._tag, "ProviderVcsCheckpointRestoreIndeterminateError");
 
@@ -575,7 +651,9 @@ it.effect("strictly rejects malformed frames and sanitizes helper and transport 
       makeBorrow(missingMethod.connection),
     );
     const unsupportedError = yield* Effect.flip(
-      missingMethodCapability.capture({ operationId: OPERATION_ID, checkpointId: CHECKPOINT_ID }),
+      missingMethodCapability
+        .prepareCapture({ operationId: OPERATION_ID, checkpointId: CHECKPOINT_ID })
+        .pipe(Effect.flatMap((prepared) => prepared.execute)),
     );
     assert.strictEqual(unsupportedError._tag, "ProviderVcsUnsupportedError");
   }),
@@ -611,7 +689,9 @@ it.effect("maps every closed helper error code without propagating helper messag
       });
       const capability = yield* openCapability(makeAdapter(), makeBorrow(harness.connection));
       const error = yield* Effect.flip(
-        capability.capture({ operationId: OPERATION_ID, checkpointId: CHECKPOINT_ID }),
+        capability
+          .prepareCapture({ operationId: OPERATION_ID, checkpointId: CHECKPOINT_ID })
+          .pipe(Effect.flatMap((prepared) => prepared.execute)),
       );
       assert.strictEqual(error._tag, tag, code);
       assert.notInclude(error.message, "SECRET", code);

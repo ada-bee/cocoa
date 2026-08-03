@@ -6,6 +6,7 @@ import {
   CODEX_CHECKPOINT_HELPER_PROTOCOL,
   CodexCheckpointHelperRequest,
   CodexCheckpointHelperResponse,
+  CodexCheckpointHelperSha256,
   type CodexCheckpointHelperConfig,
   type CodexCheckpointHelperErrorCode,
   type CodexCheckpointHelperProbeResult,
@@ -263,15 +264,19 @@ export interface MakeCodexCheckpointHelperAdapterOptions {
   readonly helper: CodexCheckpointHelperConfig;
 }
 
+interface PreparedCodexCheckpointInvocation {
+  readonly request: CodexCheckpointHelperRequestShape;
+  readonly requestJson: string;
+  readonly requestSha256: CodexCheckpointHelperSha256;
+}
+
 export const makeCodexCheckpointHelperAdapter = (
   options: MakeCodexCheckpointHelperAdapterOptions,
 ): CodexCheckpointHelperAdapter => {
-  const invoke = Effect.fn("CodexCheckpointHelperAdapter.invoke")(function* (
+  const prepareInvocation = Effect.fn("CodexCheckpointHelperAdapter.prepareInvocation")(function* (
     borrowed: CodexEndpointConnectionBorrow,
-    cwd: string,
     input: CodexCheckpointHelperRequestShape,
-    binding?: CodexCheckpointHelperRepositoryBinding,
-  ): Effect.fn.Return<CodexCheckpointHelperResult, ProviderVcsError> {
+  ) {
     const operation = operationName(input.operation);
     if (borrowed.connection.identity.providerInstanceId !== options.providerInstanceId) {
       return yield* protocol(
@@ -298,6 +303,26 @@ export const makeCodexCheckpointHelperAdapter = (
         "Checkpoint helper request exceeded its byte limit.",
       );
     }
+    yield* borrowed.ensureCurrent.pipe(
+      Effect.mapError(() => disconnected(options.providerInstanceId, operation)),
+    );
+    return {
+      request,
+      requestJson,
+      requestSha256: CodexCheckpointHelperSha256.make(
+        NodeCrypto.createHash("sha256").update(encodedBytes).digest("hex"),
+      ),
+    };
+  });
+
+  const executeInvocation = Effect.fn("CodexCheckpointHelperAdapter.executeInvocation")(function* (
+    borrowed: CodexEndpointConnectionBorrow,
+    cwd: string,
+    prepared: PreparedCodexCheckpointInvocation,
+    binding?: CodexCheckpointHelperRepositoryBinding,
+  ): Effect.fn.Return<CodexCheckpointHelperResult, ProviderVcsError> {
+    const { request, requestJson } = prepared;
+    const operation = operationName(request.operation);
     yield* borrowed.ensureCurrent.pipe(
       Effect.mapError(() => disconnected(options.providerInstanceId, operation)),
     );
@@ -410,8 +435,58 @@ export const makeCodexCheckpointHelperAdapter = (
             "Checkpoint helper returned the wrong operation.",
           );
     }
+    if (
+      response.result.operation === "capture" ||
+      response.result.operation === "restore" ||
+      response.result.operation === "delete"
+    ) {
+      const mutationOperation =
+        response.result.operation === "capture"
+          ? "captureCheckpoint"
+          : response.result.operation === "restore"
+            ? "restoreCheckpoint"
+            : "deleteCheckpoints";
+      if (
+        !("operationId" in request) ||
+        response.result.receipt.requestSha256 !== prepared.requestSha256 ||
+        response.result.receipt.operationId !== request.operationId ||
+        response.result.receipt.repositoryFingerprint !== binding?.fingerprint
+      ) {
+        return yield* outcomeUnknown(options.providerInstanceId, mutationOperation);
+      }
+    }
     return response.result;
   });
+
+  const invoke = Effect.fn("CodexCheckpointHelperAdapter.invoke")(function* (
+    borrowed: CodexEndpointConnectionBorrow,
+    cwd: string,
+    input: CodexCheckpointHelperRequestShape,
+    binding?: CodexCheckpointHelperRepositoryBinding,
+  ): Effect.fn.Return<CodexCheckpointHelperResult, ProviderVcsError> {
+    const prepared = yield* prepareInvocation(borrowed, input);
+    return yield* executeInvocation(borrowed, cwd, prepared, binding);
+  });
+
+  const singleUse = <A>(
+    operation: "captureCheckpoint" | "restoreCheckpoint" | "deleteCheckpoints",
+    execution: Effect.Effect<A, ProviderVcsError>,
+  ): Effect.Effect<A, ProviderVcsError> => {
+    let executed = false;
+    return Effect.suspend(() => {
+      if (executed) {
+        return Effect.fail(
+          operationFailed(
+            options.providerInstanceId,
+            operation,
+            "Prepared checkpoint mutation was already executed.",
+          ),
+        );
+      }
+      executed = true;
+      return execution;
+    });
+  };
 
   const probe: CodexCheckpointHelperAdapter["probe"] = Effect.fn(
     "CodexCheckpointHelperAdapter.probe",
@@ -474,27 +549,37 @@ export const makeCodexCheckpointHelperAdapter = (
 
       const capability: ProviderVcsCheckpointCapability = {
         binding,
-        capture: Effect.fn("CodexCheckpointHelperAdapter.capture")(function* (input) {
-          const captureResult = yield* invoke(
-            borrowed,
-            identity.rootPath,
-            {
-              ...input,
-              protocol: CODEX_CHECKPOINT_HELPER_PROTOCOL,
-              operation: "capture",
-              gitExecutablePath: options.gitExecutablePath,
-              expectedBinding: binding,
-            },
-            binding,
-          );
-          if (captureResult.operation !== "capture") {
-            return yield* protocol(
-              options.providerInstanceId,
+        prepareCapture: Effect.fn("CodexCheckpointHelperAdapter.prepareCapture")(function* (input) {
+          const prepared = yield* prepareInvocation(borrowed, {
+            ...input,
+            protocol: CODEX_CHECKPOINT_HELPER_PROTOCOL,
+            operation: "capture",
+            gitExecutablePath: options.gitExecutablePath,
+            expectedBinding: binding,
+          });
+          return {
+            generationId: borrowed.generationId,
+            requestSha256: prepared.requestSha256,
+            execute: singleUse(
               "captureCheckpoint",
-              "Checkpoint helper returned the wrong capture operation.",
-            );
-          }
-          return captureResult;
+              Effect.gen(function* () {
+                const captureResult = yield* executeInvocation(
+                  borrowed,
+                  identity.rootPath,
+                  prepared,
+                  binding,
+                );
+                if (captureResult.operation !== "capture") {
+                  return yield* protocol(
+                    options.providerInstanceId,
+                    "captureCheckpoint",
+                    "Checkpoint helper returned the wrong capture operation.",
+                  );
+                }
+                return captureResult;
+              }),
+            ),
+          };
         }),
         diff: Effect.fn("CodexCheckpointHelperAdapter.diff")(function* (input) {
           const diffResult = yield* invoke(
@@ -518,45 +603,65 @@ export const makeCodexCheckpointHelperAdapter = (
           }
           return diffResult;
         }),
-        restore: Effect.fn("CodexCheckpointHelperAdapter.restore")(function* (input) {
-          const restoreResult = yield* invoke(
-            borrowed,
-            identity.rootPath,
-            {
-              ...input,
-              protocol: CODEX_CHECKPOINT_HELPER_PROTOCOL,
-              operation: "restore",
-              gitExecutablePath: options.gitExecutablePath,
-              expectedBinding: binding,
-            },
-            binding,
-          );
-          if (restoreResult.operation !== "restore") {
-            return yield* restoreIndeterminate(options.providerInstanceId);
-          }
-          return restoreResult;
+        prepareRestore: Effect.fn("CodexCheckpointHelperAdapter.prepareRestore")(function* (input) {
+          const prepared = yield* prepareInvocation(borrowed, {
+            ...input,
+            protocol: CODEX_CHECKPOINT_HELPER_PROTOCOL,
+            operation: "restore",
+            gitExecutablePath: options.gitExecutablePath,
+            expectedBinding: binding,
+          });
+          return {
+            generationId: borrowed.generationId,
+            requestSha256: prepared.requestSha256,
+            execute: singleUse(
+              "restoreCheckpoint",
+              Effect.gen(function* () {
+                const restoreResult = yield* executeInvocation(
+                  borrowed,
+                  identity.rootPath,
+                  prepared,
+                  binding,
+                );
+                if (restoreResult.operation !== "restore") {
+                  return yield* restoreIndeterminate(options.providerInstanceId);
+                }
+                return restoreResult;
+              }),
+            ),
+          };
         }),
-        delete: Effect.fn("CodexCheckpointHelperAdapter.delete")(function* (input) {
-          const deleteResult = yield* invoke(
-            borrowed,
-            identity.rootPath,
-            {
-              ...input,
-              protocol: CODEX_CHECKPOINT_HELPER_PROTOCOL,
-              operation: "delete",
-              gitExecutablePath: options.gitExecutablePath,
-              expectedBinding: binding,
-            },
-            binding,
-          );
-          if (deleteResult.operation !== "delete") {
-            return yield* protocol(
-              options.providerInstanceId,
+        prepareDelete: Effect.fn("CodexCheckpointHelperAdapter.prepareDelete")(function* (input) {
+          const prepared = yield* prepareInvocation(borrowed, {
+            ...input,
+            protocol: CODEX_CHECKPOINT_HELPER_PROTOCOL,
+            operation: "delete",
+            gitExecutablePath: options.gitExecutablePath,
+            expectedBinding: binding,
+          });
+          return {
+            generationId: borrowed.generationId,
+            requestSha256: prepared.requestSha256,
+            execute: singleUse(
               "deleteCheckpoints",
-              "Checkpoint helper returned the wrong delete operation.",
-            );
-          }
-          return deleteResult;
+              Effect.gen(function* () {
+                const deleteResult = yield* executeInvocation(
+                  borrowed,
+                  identity.rootPath,
+                  prepared,
+                  binding,
+                );
+                if (deleteResult.operation !== "delete") {
+                  return yield* protocol(
+                    options.providerInstanceId,
+                    "deleteCheckpoints",
+                    "Checkpoint helper returned the wrong delete operation.",
+                  );
+                }
+                return deleteResult;
+              }),
+            ),
+          };
         }),
         observe: Effect.fn("CodexCheckpointHelperAdapter.observe")(function* (input) {
           const observeResult = yield* invoke(

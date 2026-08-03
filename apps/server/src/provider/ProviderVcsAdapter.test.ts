@@ -299,19 +299,23 @@ it.effect("exposes CCH1 checkpoints only through an optional bound capability", 
     };
     const checkpoints: ProviderVcsCheckpointCapability = {
       binding: checkpointBinding,
-      capture: (input) => {
+      prepareCapture: (input) => {
         captureInputs.push(input);
         return Effect.succeed({
-          operation: "capture",
-          receipt: {
-            ...commonReceipt,
+          generationId: 7,
+          requestSha256,
+          execute: Effect.succeed({
             operation: "capture",
-            checkpointId,
-            checkpointRef,
-            checkpointOid,
-            treeOid,
-          },
-          receiptObjectOid,
+            receipt: {
+              ...commonReceipt,
+              operation: "capture",
+              checkpointId,
+              checkpointRef,
+              checkpointOid,
+              treeOid,
+            },
+            receiptObjectOid,
+          }),
         });
       },
       diff: (input) => {
@@ -327,37 +331,45 @@ it.effect("exposes CCH1 checkpoints only through an optional bound capability", 
           truncated: false,
         });
       },
-      restore: (input) => {
+      prepareRestore: (input) => {
         restoreInputs.push(input);
         return Effect.succeed({
-          operation: "restore",
-          receipt: {
-            ...commonReceipt,
+          generationId: 7,
+          requestSha256,
+          execute: Effect.succeed({
             operation: "restore",
-            checkpointId,
-            checkpointRef,
-            checkpointOid,
-          },
-          receiptObjectOid,
+            receipt: {
+              ...commonReceipt,
+              operation: "restore",
+              checkpointId,
+              checkpointRef,
+              checkpointOid,
+            },
+            receiptObjectOid,
+          }),
         });
       },
-      delete: (input) => {
+      prepareDelete: (input) => {
         deleteInputs.push(input);
         return Effect.succeed({
-          operation: "delete",
-          receipt: {
-            ...commonReceipt,
+          generationId: 7,
+          requestSha256,
+          execute: Effect.succeed({
             operation: "delete",
-            checkpoints: [
-              {
-                checkpointId,
-                checkpointRef,
-                status: "deleted",
-                deletedCheckpointOid: checkpointOid,
-              },
-            ],
-          },
-          receiptObjectOid,
+            receipt: {
+              ...commonReceipt,
+              operation: "delete",
+              checkpoints: [
+                {
+                  checkpointId,
+                  checkpointRef,
+                  status: "deleted",
+                  deletedCheckpointOid: checkpointOid,
+                },
+              ],
+            },
+            receiptObjectOid,
+          }),
         });
       },
       observe: (input) => {
@@ -384,18 +396,24 @@ it.effect("exposes CCH1 checkpoints only through an optional bound capability", 
     } as const;
     const observeInput = { operationId, expectedRequestSha256: requestSha256 } as const;
 
-    assert.strictEqual((yield* checkpoints.capture(captureInput)).receipt.treeOid, treeOid);
+    const preparedCapture = yield* checkpoints.prepareCapture(captureInput);
+    const preparedRestore = yield* checkpoints.prepareRestore(restoreInput);
+    const preparedDelete = yield* checkpoints.prepareDelete(deleteInput);
+    assert.strictEqual(preparedCapture.requestSha256, requestSha256);
+    assert.strictEqual(preparedRestore.requestSha256, requestSha256);
+    assert.strictEqual(preparedDelete.requestSha256, requestSha256);
+    assert.strictEqual(preparedCapture.generationId, 7);
+    assert.strictEqual(preparedRestore.generationId, 7);
+    assert.strictEqual(preparedDelete.generationId, 7);
+    assert.strictEqual((yield* preparedCapture.execute).receipt.treeOid, treeOid);
     assert.strictEqual((yield* checkpoints.diff(diffInput)).byteLength, 4);
-    assert.strictEqual(
-      (yield* checkpoints.restore(restoreInput)).receipt.checkpointOid,
-      checkpointOid,
-    );
-    assert.strictEqual(
-      (yield* checkpoints.delete(deleteInput)).receipt.checkpoints[0]?.status,
-      "deleted",
-    );
+    assert.strictEqual((yield* preparedRestore.execute).receipt.checkpointOid, checkpointOid);
+    assert.strictEqual((yield* preparedDelete.execute).receipt.checkpoints[0]?.status, "deleted");
     assert.strictEqual((yield* checkpoints.observe(observeInput)).status, "not_found");
 
+    assert.notProperty(checkpoints, "capture");
+    assert.notProperty(checkpoints, "restore");
+    assert.notProperty(checkpoints, "delete");
     assert.deepStrictEqual(checkpoints.binding, checkpointBinding);
     assert.deepStrictEqual(captureInputs, [captureInput]);
     assert.deepStrictEqual(diffInputs, [diffInput]);
