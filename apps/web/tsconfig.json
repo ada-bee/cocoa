@@ -25,5 +25,17 @@
       }
     ]
   },
-  "include": ["src", "vite.config.ts", "vercel.ts", "test", "../../scripts/lib/public-config.ts"]
+  "include": ["src", "vite.config.ts", "vercel.ts", "test", "../../scripts/lib/public-config.ts"],
+  "exclude": [
+    "src/cloud",
+    "src/components/cloud",
+    "src/components/clerk",
+    "src/components/settings/ConnectionsSettings.tsx",
+    "src/components/settings/ConnectionsSettings.logic.test.ts",
+    "src/components/settings/pairingUrls.ts",
+    "src/components/settings/pairingUrls.test.ts",
+    "src/hostedPairing.ts",
+    "src/hostedPairing.test.ts",
+    "src/state/relay.ts"
+  ]
 }
