@@ -1363,8 +1363,18 @@ export const ThreadTurnDiff = TurnCountRange.mapFields(
   Struct.assign({
     threadId: ThreadId,
     diff: Schema.String,
+    /** Exact UTF-8 byte length of `diff`. */
+    byteLength: NonNegativeInt,
+    /** True when the provider omitted patch bytes at the fixed response bound. */
+    truncated: Schema.Boolean,
   }),
   { unsafePreserveChecks: true },
+).check(
+  Schema.makeFilter(
+    (result) =>
+      new TextEncoder().encode(result.diff).byteLength === result.byteLength ||
+      "byteLength must equal the UTF-8 encoded diff length",
+  ),
 );
 
 export const ProviderSessionRuntimeStatus = Schema.Literals([

@@ -831,7 +831,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       }),
   );
 
-  it.effect("reads single-thread checkpoint context without hydrating unrelated threads", () =>
+  it.effect("reads path-free checkpoint diff ownership and latest count", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
@@ -950,7 +950,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           )
       `;
 
-      const context = yield* snapshotQuery.getThreadCheckpointContext(
+      const context = yield* snapshotQuery.getCheckpointDiffContext(
         ThreadId.make("thread-context"),
       );
       assert.equal(context._tag, "Some");
@@ -958,28 +958,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         assert.deepEqual(context.value, {
           threadId: ThreadId.make("thread-context"),
           projectId: asProjectId("project-context"),
-          workspaceRoot: "/tmp/context-workspace",
-          worktreePath: "/tmp/context-worktree",
-          checkpoints: [
-            {
-              turnId: asTurnId("turn-1"),
-              checkpointTurnCount: 1,
-              checkpointRef: asCheckpointRef("checkpoint-a"),
-              status: "ready",
-              files: [],
-              assistantMessageId: null,
-              completedAt: "2026-03-02T00:00:04.000Z",
-            },
-            {
-              turnId: asTurnId("turn-2"),
-              checkpointTurnCount: 2,
-              checkpointRef: asCheckpointRef("checkpoint-b"),
-              status: "ready",
-              files: [],
-              assistantMessageId: null,
-              completedAt: "2026-03-02T00:00:05.000Z",
-            },
-          ],
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          latestCheckpointTurnCount: 2,
         });
       }
     }),

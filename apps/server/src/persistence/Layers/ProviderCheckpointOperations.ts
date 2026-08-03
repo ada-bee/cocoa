@@ -17,6 +17,7 @@ import {
   GetProviderCheckpointOperationInput,
   GetProviderCheckpointOperationByIntentInput,
   GetProviderNativeCheckpointInput,
+  GetReadyProviderNativeCheckpointInput,
   IndeterminateProviderCheckpointOperationInput,
   ListPendingProviderCheckpointOperationsInput,
   ListProviderNativeCheckpointsInput,
@@ -511,6 +512,45 @@ const make = Effect.gen(function* () {
           ),
   });
 
+  const findReadyCheckpoint = SqlSchema.findOneOption({
+    Request: GetReadyProviderNativeCheckpointInput,
+    Result: ProviderNativeCheckpointDbRow,
+    execute: ({ providerInstanceId, projectId, threadId, checkpointTurnCount }) => sql`
+      SELECT
+        native.logical_checkpoint_id AS "logicalCheckpointId",
+        native.provider_instance_id AS "providerInstanceId",
+        native.project_id AS "projectId",
+        native.thread_id AS "threadId",
+        native.turn_id AS "turnId",
+        native.repository_fingerprint AS "repositoryFingerprint",
+        native.repository_object_format AS "repositoryObjectFormat",
+        native.capture_operation_id AS "captureOperationId",
+        native.checkpoint_ref AS "checkpointRef",
+        native.checkpoint_oid AS "checkpointOid",
+        native.tree_oid AS "treeOid",
+        native.receipt_ref AS "receiptRef",
+        native.receipt_object_oid AS "receiptObjectOid",
+        native.created_at AS "createdAt",
+        native.updated_at AS "updatedAt"
+      FROM provider_native_checkpoints AS native
+      INNER JOIN checkpoint_operations AS capture
+        ON capture.operation_id = native.capture_operation_id
+      WHERE native.provider_instance_id = ${providerInstanceId}
+        AND native.project_id = ${projectId}
+        AND native.thread_id = ${threadId}
+        AND capture.operation_kind = 'capture'
+        AND capture.state = 'completed'
+        AND json_extract(capture.intent_context_json, '$.checkpointTurnCount') = ${checkpointTurnCount}
+        AND (
+          (${checkpointTurnCount} = 0 AND json_extract(capture.intent_context_json, '$.kind') = 'baseline')
+          OR
+          (${checkpointTurnCount} > 0 AND json_extract(capture.intent_context_json, '$.kind') = 'post_turn')
+        )
+      ORDER BY native.created_at, native.logical_checkpoint_id
+      LIMIT 1
+    `,
+  });
+
   const deleteCheckpoint = SqlSchema.void({
     Request: GetProviderNativeCheckpointInput,
     execute: ({ logicalCheckpointId }) => sql`
@@ -788,6 +828,17 @@ const make = Effect.gen(function* () {
         Effect.flatMap((rows) => Effect.forEach(rows, materializeCheckpoint)),
         Effect.mapError(mapError),
       );
+  const getReadyLogicalCheckpoint: ProviderCheckpointOperationRepositoryShape["getReadyLogicalCheckpoint"] =
+    (input) =>
+      findReadyCheckpoint(input).pipe(
+        Effect.flatMap((row) =>
+          Option.match(row, {
+            onNone: () => Effect.succeed(Option.none()),
+            onSome: (value) => materializeCheckpoint(value).pipe(Effect.map(Option.some)),
+          }),
+        ),
+        Effect.mapError(mapError),
+      );
   const deleteLogicalCheckpoint: ProviderCheckpointOperationRepositoryShape["deleteLogicalCheckpoint"] =
     (input) => deleteCheckpoint(input).pipe(Effect.mapError(mapError));
 
@@ -808,6 +859,7 @@ const make = Effect.gen(function* () {
     upsertLogicalCheckpoint,
     getLogicalCheckpoint,
     listLogicalCheckpoints,
+    getReadyLogicalCheckpoint,
     deleteLogicalCheckpoint,
   } satisfies ProviderCheckpointOperationRepositoryShape;
 });

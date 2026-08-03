@@ -1,51 +1,343 @@
-import { ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
+import {
+  CODEX_CHECKPOINT_HELPER_MAX_PATCH_BYTES,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type CodexCheckpointHelperDiffResult,
+} from "@t3tools/contracts";
+import { Buffer } from "node:buffer";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ProviderCheckpointOperations from "../persistence/Services/ProviderCheckpointOperations.ts";
+import * as ProjectRepository from "../project/ProjectRepository.ts";
+import {
+  ProviderVcsDisconnectedError,
+  type ProviderVcsCheckpointDiffInput,
+  type ProviderVcsRepository,
+} from "../provider/ProviderVcsAdapter.ts";
 import { CheckpointDiffQuery, layer } from "./CheckpointDiffQuery.ts";
 
-it.layer(layer)("CheckpointDiffQuery fail-closed isolation", (it) => {
-  it.effect("returns explicit unsupported for turn diff queries without reading a workspace", () =>
-    Effect.gen(function* () {
-      const query = yield* CheckpointDiffQuery;
-      const result = yield* query
-        .getTurnDiff({
-          threadId: ThreadId.make("thread-turn-diff"),
-          fromTurnCount: 0,
-          toTurnCount: 1,
-          ignoreWhitespace: true,
-        })
-        .pipe(Effect.result);
+const threadId = ThreadId.make("thread-diff");
+const projectId = ProjectId.make("project-diff");
+const providerId = ProviderInstanceId.make("provider-a");
+const otherProviderId = ProviderInstanceId.make("provider-b");
+const baseId = "11111111-1111-4111-8111-111111111111";
+const targetId = "22222222-2222-4222-8222-222222222222";
+const baseOperationId = "33333333-3333-4333-8333-333333333333";
+const targetOperationId = "44444444-4444-4444-8444-444444444444";
+const baseOid = "a".repeat(40);
+const targetOid = "b".repeat(40);
+const fingerprint = "c".repeat(64);
+const binding = {
+  worktreeRoot: { canonicalPath: "/provider/worktree", device: "1", inode: "10" },
+  gitDirectoryRoot: { canonicalPath: "/provider/git", device: "1", inode: "11" },
+  gitCommonDirectoryRoot: { canonicalPath: "/provider/common", device: "1", inode: "12" },
+  objectFormat: "sha1" as const,
+  fingerprint,
+};
 
-      assert.equal(result._tag, "Failure");
-      if (result._tag !== "Failure") return;
-      assert.equal(result.failure._tag, "CheckpointUnsupportedError");
-      assert.equal(result.failure.operation, "CheckpointDiffQuery.getTurnDiff");
-      assert.equal(
-        result.failure.message,
-        "Checkpoint diffs are unavailable until the bound provider supplies checkpoint operations.",
-      );
-    }),
+const nativeCheckpoint = (
+  logicalCheckpointId: string,
+  captureOperationId: string,
+  checkpointOid: string,
+  providerInstanceId = providerId,
+): ProviderCheckpointOperations.ProviderNativeCheckpoint => ({
+  logicalCheckpointId,
+  providerInstanceId,
+  projectId,
+  threadId,
+  turnId: null,
+  repository: { fingerprint, objectFormat: "sha1" },
+  captureOperationId,
+  checkpointRef: `refs/cocoa/checkpoints/v1/${logicalCheckpointId}`,
+  checkpointOid,
+  treeOid: "d".repeat(40),
+  receiptRef: `refs/cocoa/checkpoint-receipts/v1/${captureOperationId}`,
+  receiptObjectOid: "e".repeat(40),
+  createdAt: "2026-08-04T00:00:00.000Z",
+  updatedAt: "2026-08-04T00:00:01.000Z",
+});
+
+const defaultResult = (patch = "diff"): CodexCheckpointHelperDiffResult => ({
+  operation: "diff",
+  baseCheckpointId: baseId,
+  targetCheckpointId: targetId,
+  baseOid,
+  targetOid,
+  patchBase64: Buffer.from(patch, "utf8").toString("base64"),
+  byteLength: Buffer.byteLength(patch, "utf8"),
+  truncated: false,
+});
+
+interface TestOptions {
+  readonly providerInstanceId?: ProviderInstanceId;
+  readonly latestCheckpointTurnCount?: number;
+  readonly missingTurnCount?: number;
+  readonly bindingFingerprint?: string;
+  readonly diff?: (
+    input: ProviderVcsCheckpointDiffInput,
+  ) => Effect.Effect<CodexCheckpointHelperDiffResult, ProviderVcsDisconnectedError>;
+  readonly result?: unknown;
+  readonly projectId?: ProjectId;
+  readonly threadId?: ThreadId;
+  readonly observations?: Array<unknown>;
+}
+
+const testLayer = (options: TestOptions = {}) => {
+  const activeThreadId = options.threadId ?? threadId;
+  const activeProjectId = options.projectId ?? projectId;
+  const activeProviderId = options.providerInstanceId ?? providerId;
+  const observations = options.observations ?? [];
+  const base = nativeCheckpoint(baseId, baseOperationId, baseOid, activeProviderId);
+  const target = nativeCheckpoint(targetId, targetOperationId, targetOid, activeProviderId);
+  const repository: ProviderVcsRepository = {
+    identity: { kind: "git", rootPath: "/provider/worktree", commonDirectoryPath: null },
+    capabilities: { status: true, refs: true, remotes: true, reviewDiff: true },
+    checkpoints: {
+      binding: {
+        ...binding,
+        fingerprint: options.bindingFingerprint ?? fingerprint,
+      },
+      prepareCapture: () => Effect.die("unused"),
+      diff:
+        options.diff ??
+        ((input) => {
+          observations.push(input);
+          return Effect.succeed(
+            (options.result ?? defaultResult()) as CodexCheckpointHelperDiffResult,
+          );
+        }),
+      prepareRestore: () => Effect.die("unused"),
+      prepareDelete: () => Effect.die("unused"),
+      observe: () => Effect.die("unused"),
+    },
+    getStatus: () => Effect.die("unused"),
+    listRefs: () => Effect.die("unused"),
+    listRemotes: () => Effect.die("unused"),
+    getReviewDiff: () => Effect.die("unused"),
+  };
+
+  return layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+          getCheckpointDiffContext: (requestedThreadId) => {
+            observations.push({ requestedThreadId });
+            return Effect.succeed(
+              requestedThreadId === activeThreadId
+                ? Option.some({
+                    threadId: activeThreadId,
+                    projectId: activeProjectId,
+                    providerInstanceId: activeProviderId,
+                    latestCheckpointTurnCount: options.latestCheckpointTurnCount ?? 1,
+                  })
+                : Option.none(),
+            );
+          },
+        }),
+        Layer.mock(ProviderCheckpointOperations.ProviderCheckpointOperationRepository)({
+          getReadyLogicalCheckpoint: (input) => {
+            observations.push(input);
+            if (
+              input.providerInstanceId !== activeProviderId ||
+              input.projectId !== activeProjectId ||
+              input.threadId !== activeThreadId ||
+              input.checkpointTurnCount === options.missingTurnCount
+            ) {
+              return Effect.succeed(Option.none());
+            }
+            return Effect.succeed(
+              input.checkpointTurnCount === 0 ? Option.some(base) : Option.some(target),
+            );
+          },
+        }),
+        Layer.mock(ProjectRepository.ProjectRepository)({
+          resolve: (targetOwner) => {
+            observations.push(targetOwner);
+            return Effect.succeed(repository);
+          },
+        }),
+      ),
+    ),
   );
+};
 
-  it.effect("returns explicit unsupported for full-thread diff queries, including turn zero", () =>
+it.effect("resolves turn zero and keeps all gateway paths out of provider diff inputs", () => {
+  const observations: Array<unknown> = [];
+  return Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery;
+    const result = yield* query.getFullThreadDiff({ threadId, toTurnCount: 1 });
+
+    assert.deepStrictEqual(result, {
+      threadId,
+      fromTurnCount: 0,
+      toTurnCount: 1,
+      diff: "diff",
+      byteLength: 4,
+      truncated: false,
+    });
+    assert.deepStrictEqual(observations.at(-1), {
+      baseCheckpointId: baseId,
+      targetCheckpointId: targetId,
+      ignoreWhitespace: false,
+      limits: { maxPatchBytes: CODEX_CHECKPOINT_HELPER_MAX_PATCH_BYTES },
+    });
+    assert.isFalse(
+      observations.some(
+        (item) =>
+          item !== null &&
+          typeof item === "object" &&
+          Object.keys(item).some((key) => key.toLowerCase().includes("path")),
+      ),
+    );
+  }).pipe(Effect.provide(testLayer({ observations })));
+});
+
+it.effect("keeps identical workspace owners separated by provider and project identity", () =>
+  Effect.gen(function* () {
+    const firstObservations: Array<unknown> = [];
+    const secondObservations: Array<unknown> = [];
+    const otherProjectId = ProjectId.make("project-other");
+    const otherThreadId = ThreadId.make("thread-other");
+
+    const first = yield* Effect.gen(function* () {
+      const query = yield* CheckpointDiffQuery;
+      return yield* query.getFullThreadDiff({ threadId, toTurnCount: 1 });
+    }).pipe(Effect.provide(testLayer({ observations: firstObservations })));
+    const second = yield* Effect.gen(function* () {
+      const query = yield* CheckpointDiffQuery;
+      return yield* query.getFullThreadDiff({ threadId: otherThreadId, toTurnCount: 1 });
+    }).pipe(
+      Effect.provide(
+        testLayer({
+          providerInstanceId: otherProviderId,
+          projectId: otherProjectId,
+          threadId: otherThreadId,
+          observations: secondObservations,
+        }),
+      ),
+    );
+
+    assert.equal(first.threadId, threadId);
+    assert.equal(second.threadId, otherThreadId);
+    assert.isTrue(
+      firstObservations.some(
+        (item) =>
+          item !== null &&
+          typeof item === "object" &&
+          "providerInstanceId" in item &&
+          item.providerInstanceId === providerId,
+      ),
+    );
+    assert.isTrue(
+      secondObservations.some(
+        (item) =>
+          item !== null &&
+          typeof item === "object" &&
+          "providerInstanceId" in item &&
+          item.providerInstanceId === otherProviderId,
+      ),
+    );
+    assert.isTrue(
+      secondObservations.some(
+        (item) =>
+          item !== null &&
+          typeof item === "object" &&
+          "projectId" in item &&
+          item.projectId === otherProjectId,
+      ),
+    );
+  }),
+);
+
+it.effect("rejects unavailable ranges and missing completed checkpoints", () =>
+  Effect.gen(function* () {
+    const range = yield* Effect.gen(function* () {
+      const query = yield* CheckpointDiffQuery;
+      return yield* Effect.flip(query.getTurnDiff({ threadId, fromTurnCount: 1, toTurnCount: 2 }));
+    }).pipe(Effect.provide(testLayer({ latestCheckpointTurnCount: 1 })));
+    assert.equal(range._tag, "CheckpointTurnRangeUnavailableError");
+
+    const missing = yield* Effect.gen(function* () {
+      const query = yield* CheckpointDiffQuery;
+      return yield* Effect.flip(query.getFullThreadDiff({ threadId, toTurnCount: 1 }));
+    }).pipe(Effect.provide(testLayer({ missingTurnCount: 0 })));
+    assert.equal(missing._tag, "CheckpointRefUnavailableError");
+    if (missing._tag === "CheckpointRefUnavailableError") assert.equal(missing.turnCount, 0);
+  }),
+);
+
+it.effect("rejects stale repository bindings before calling the helper", () => {
+  const observations: Array<unknown> = [];
+  return Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery;
+    const error = yield* Effect.flip(query.getFullThreadDiff({ threadId, toTurnCount: 1 }));
+    assert.equal(error._tag, "CheckpointProviderBindingMismatchError");
+    assert.equal(observations.filter((item) => "baseCheckpointId" in Object(item)).length, 0);
+  }).pipe(Effect.provide(testLayer({ bindingFingerprint: "f".repeat(64), observations })));
+});
+
+for (const [name, result] of [
+  ["invalid base64", { ...defaultResult(), patchBase64: "***" }],
+  ["invalid UTF-8", { ...defaultResult(), patchBase64: "/w==", byteLength: 1 }],
+  ["incorrect decoded length", { ...defaultResult(), byteLength: 3 }],
+] as const) {
+  it.effect(`rejects ${name} provider patches`, () =>
     Effect.gen(function* () {
       const query = yield* CheckpointDiffQuery;
-      const result = yield* query
-        .getFullThreadDiff({
-          threadId: ThreadId.make("thread-full-diff"),
-          toTurnCount: 0,
-        })
-        .pipe(Effect.result);
+      const error = yield* Effect.flip(query.getFullThreadDiff({ threadId, toTurnCount: 1 }));
+      assert.equal(error._tag, "CheckpointDiffResultInvalidError");
+    }).pipe(Effect.provide(testLayer({ result }))),
+  );
+}
 
-      assert.equal(result._tag, "Failure");
-      if (result._tag !== "Failure") return;
-      assert.equal(result.failure._tag, "CheckpointUnsupportedError");
-      assert.equal(result.failure.operation, "CheckpointDiffQuery.getFullThreadDiff");
-      assert.equal(
-        result.failure.message,
-        "Checkpoint diffs are unavailable until the bound provider supplies checkpoint operations.",
-      );
-    }),
+it.effect("preserves an exact-cap patch length and truthful provider truncation", () => {
+  const patch = "x".repeat(CODEX_CHECKPOINT_HELPER_MAX_PATCH_BYTES);
+  return Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery;
+    const result = yield* query.getTurnDiff({
+      threadId,
+      fromTurnCount: 0,
+      toTurnCount: 1,
+      ignoreWhitespace: true,
+    });
+    assert.equal(result.byteLength, CODEX_CHECKPOINT_HELPER_MAX_PATCH_BYTES);
+    assert.equal(result.diff.length, CODEX_CHECKPOINT_HELPER_MAX_PATCH_BYTES);
+    assert.isTrue(result.truncated);
+  }).pipe(
+    Effect.provide(
+      testLayer({
+        result: {
+          ...defaultResult(patch),
+          truncated: true,
+        },
+      }),
+    ),
   );
 });
+
+it.effect("sanitizes provider disconnects", () =>
+  Effect.gen(function* () {
+    const query = yield* CheckpointDiffQuery;
+    const error = yield* Effect.flip(query.getFullThreadDiff({ threadId, toTurnCount: 1 }));
+    assert.equal(error._tag, "CheckpointProviderDisconnectedError");
+    assert.notInclude(error.message, "/provider/worktree");
+  }).pipe(
+    Effect.provide(
+      testLayer({
+        diff: () =>
+          Effect.fail(
+            new ProviderVcsDisconnectedError({
+              providerInstanceId: providerId,
+              operation: "diffCheckpoints",
+              cause: new Error("secret /provider/worktree"),
+            }),
+          ),
+      }),
+    ),
+  ),
+);

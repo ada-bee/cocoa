@@ -32,6 +32,7 @@ import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
+import { ProviderCheckpointOperationRepositoryLive } from "./persistence/Layers/ProviderCheckpointOperations.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -327,7 +328,15 @@ const VcsLayerLive = Layer.empty.pipe(
 );
 
 const CheckpointingLayerLive = Layer.empty.pipe(
-  Layer.provideMerge(CheckpointDiffQuery.layer),
+  Layer.provideMerge(
+    CheckpointDiffQuery.layer.pipe(
+      Layer.provide(ProjectRepositoryLayerLive),
+      Layer.provide(OrchestrationLayerLive),
+      Layer.provide(
+        ProviderCheckpointOperationRepositoryLive.pipe(Layer.provide(PersistenceLayerLive)),
+      ),
+    ),
+  ),
   Layer.provideMerge(CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistryLayerLive))),
 );
 

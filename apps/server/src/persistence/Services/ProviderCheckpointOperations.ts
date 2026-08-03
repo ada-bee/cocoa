@@ -484,6 +484,18 @@ export const ListProviderNativeCheckpointsInput = strict(
 );
 export type ListProviderNativeCheckpointsInput = typeof ListProviderNativeCheckpointsInput.Type;
 
+/** Exact path-free lookup for a completed capture backing one logical turn. */
+export const GetReadyProviderNativeCheckpointInput = strict(
+  Schema.Struct({
+    providerInstanceId: ProviderInstanceId,
+    projectId: ProjectId,
+    threadId: ThreadId,
+    checkpointTurnCount: NonNegativeInt,
+  }),
+);
+export type GetReadyProviderNativeCheckpointInput =
+  typeof GetReadyProviderNativeCheckpointInput.Type;
+
 export class ProviderCheckpointOperationTransitionError extends Schema.TaggedErrorClass<ProviderCheckpointOperationTransitionError>()(
   "ProviderCheckpointOperationTransitionError",
   {
@@ -626,6 +638,13 @@ export interface ProviderCheckpointOperationRepositoryShape {
     input: ListProviderNativeCheckpointsInput,
   ) => Effect.Effect<
     ReadonlyArray<ProviderNativeCheckpoint>,
+    ProviderCheckpointOperationRepositoryError
+  >;
+  /** Resolve only a completed baseline/post-turn capture for this exact owner and count. */
+  readonly getReadyLogicalCheckpoint: (
+    input: GetReadyProviderNativeCheckpointInput,
+  ) => Effect.Effect<
+    Option.Option<ProviderNativeCheckpoint>,
     ProviderCheckpointOperationRepositoryError
   >;
   readonly deleteLogicalCheckpoint: (

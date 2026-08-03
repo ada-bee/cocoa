@@ -792,7 +792,7 @@ const buildAppUnderTest = (options?: {
           getCounts: () => Effect.succeed({ projectCount: 0, threadCount: 0 }),
           getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
-          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+          getCheckpointDiffContext: () => Effect.succeed(Option.none()),
           ...options?.layers?.projectionSnapshotQuery,
         }),
       ),
@@ -804,6 +804,8 @@ const buildAppUnderTest = (options?: {
               fromTurnCount: 0,
               toTurnCount: 0,
               diff: "",
+              byteLength: 0,
+              truncated: false,
             }),
           getFullThreadDiff: () =>
             Effect.succeed({
@@ -811,6 +813,8 @@ const buildAppUnderTest = (options?: {
               fromTurnCount: 0,
               toTurnCount: 0,
               diff: "",
+              byteLength: 0,
+              truncated: false,
             }),
           ...options?.layers?.checkpointDiffQuery,
         }),
@@ -5849,6 +5853,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 fromTurnCount: 0,
                 toTurnCount: 1,
                 diff: "turn-diff",
+                byteLength: 9,
+                truncated: false,
               }),
             getFullThreadDiff: () =>
               Effect.succeed({
@@ -5856,6 +5862,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 fromTurnCount: 0,
                 toTurnCount: 1,
                 diff: "full-diff",
+                byteLength: 9,
+                truncated: false,
               }),
           },
         },

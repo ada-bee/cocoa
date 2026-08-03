@@ -42,6 +42,8 @@ const operationG = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const operationH = "12121212-1212-4121-8121-121212121212";
 const operationI = "13131313-1313-4131-8131-131313131313";
 const operationJ = "16161616-1616-4161-8161-161616161616";
+const operationK = "18181818-1818-4181-8181-181818181818";
+const operationL = "19191919-1919-4191-8191-191919191919";
 const checkpointA = "22222222-2222-4222-8222-222222222222";
 const checkpointB = "44444444-4444-4444-8444-444444444444";
 const checkpointC = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -51,6 +53,8 @@ const checkpointF = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const checkpointH = "14141414-1414-4141-8141-141414141414";
 const checkpointI = "15151515-1515-4151-8151-151515151515";
 const checkpointJ = "17171717-1717-4171-8171-171717171717";
+const checkpointK = "20202020-2020-4202-8202-202020202020";
+const checkpointL = "21212121-2121-4212-8212-212121212121";
 const fingerprint = "a".repeat(64);
 const checkpointOidA = "b".repeat(40);
 const checkpointOidB = "c".repeat(40);
@@ -341,6 +345,65 @@ repositoryLayer("ProviderCheckpointOperationRepository", (it) => {
       assert.isTrue(
         Option.isNone(yield* repository.getLogicalCheckpoint({ logicalCheckpointId: checkpointD })),
       );
+    }),
+  );
+
+  it.effect("resolves completed baseline and post-turn captures by exact path-free ownership", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProviderCheckpointOperationRepository;
+      const baseline = captureInput(operationK, checkpointK);
+      const postTurn: PrepareProviderCheckpointOperationInput = {
+        ...captureInput(operationL, checkpointL),
+        intentContext: {
+          kind: "post_turn",
+          sourceEventId: EventId.make("event:post-turn"),
+          turnId,
+          baselineCheckpointId: checkpointK,
+          checkpointTurnCount: 1,
+          completedAt: later,
+          outcome: "completed",
+        },
+      };
+
+      for (const [input, checkpoint, oid] of [
+        [baseline, checkpointProjection(operationK, checkpointK, checkpointOidA), checkpointOidA],
+        [postTurn, checkpointProjection(operationL, checkpointL, checkpointOidB), checkpointOidB],
+      ] as const) {
+        yield* repository.prepare(input);
+        yield* repository.markInFlight({ operationId: input.operationId, updatedAt: later });
+        yield* repository.finalizeCapture({
+          completion: {
+            operationId: input.operationId,
+            updatedAt: later,
+            receipt: null,
+            result: captureResult(input.operationId, input.logicalCheckpointId, oid),
+          },
+          checkpoint,
+        });
+      }
+
+      const foundBaseline = yield* repository.getReadyLogicalCheckpoint({
+        providerInstanceId,
+        projectId,
+        threadId,
+        checkpointTurnCount: 0,
+      });
+      const foundPostTurn = yield* repository.getReadyLogicalCheckpoint({
+        providerInstanceId,
+        projectId,
+        threadId,
+        checkpointTurnCount: 1,
+      });
+      const wrongProvider = yield* repository.getReadyLogicalCheckpoint({
+        providerInstanceId: ProviderInstanceId.make("other-provider"),
+        projectId,
+        threadId,
+        checkpointTurnCount: 1,
+      });
+
+      assert.equal(Option.getOrThrow(foundBaseline).logicalCheckpointId, checkpointK);
+      assert.equal(Option.getOrThrow(foundPostTurn).logicalCheckpointId, checkpointL);
+      assert.isTrue(Option.isNone(wrongProvider));
     }),
   );
 

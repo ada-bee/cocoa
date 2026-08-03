@@ -7,8 +7,6 @@
  * @module ProjectionSnapshotQuery
  */
 import type {
-  CheckpointRef,
-  OrchestrationCheckpointSummary,
   OrchestrationProject,
   OrchestrationProjectShell,
   OrchestrationReadModel,
@@ -37,21 +35,11 @@ export interface ProjectionSnapshotSequence {
   readonly snapshotSequence: number;
 }
 
-export interface ProjectionThreadCheckpointContext {
+export interface ProjectionCheckpointDiffContext {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
-  readonly workspaceRoot: string;
-  readonly worktreePath: string | null;
-  readonly checkpoints: ReadonlyArray<OrchestrationCheckpointSummary>;
-}
-
-export interface ProjectionFullThreadDiffContext {
-  readonly threadId: ThreadId;
-  readonly projectId: ProjectId;
-  readonly workspaceRoot: string;
-  readonly worktreePath: string | null;
+  readonly providerInstanceId: ProviderInstanceId;
   readonly latestCheckpointTurnCount: number;
-  readonly toCheckpointRef: CheckpointRef | null;
 }
 
 /**
@@ -144,18 +132,9 @@ export interface ProjectionSnapshotQueryShape {
   /**
    * Read the checkpoint context needed to resolve a single thread diff.
    */
-  readonly getThreadCheckpointContext: (
+  readonly getCheckpointDiffContext: (
     threadId: ThreadId,
-  ) => Effect.Effect<Option.Option<ProjectionThreadCheckpointContext>, ProjectionRepositoryError>;
-
-  /**
-   * Read only the narrow context needed to compute a full-thread diff from
-   * checkpoint 0 to a specific turn count.
-   */
-  readonly getFullThreadDiffContext: (
-    threadId: ThreadId,
-    toTurnCount: number,
-  ) => Effect.Effect<Option.Option<ProjectionFullThreadDiffContext>, ProjectionRepositoryError>;
+  ) => Effect.Effect<Option.Option<ProjectionCheckpointDiffContext>, ProjectionRepositoryError>;
 
   /**
    * Read a single active thread shell row by id.

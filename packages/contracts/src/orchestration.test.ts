@@ -170,9 +170,34 @@ it.effect("rejects thread turn diff when fromTurnCount > toTurnCount", () =>
         fromTurnCount: 3,
         toTurnCount: 2,
         diff: "patch",
+        byteLength: 5,
+        truncated: false,
       }),
     );
     assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
+it.effect("requires exact UTF-8 diff byte lengths", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnDiff({
+      threadId: "thread-1",
+      fromTurnCount: 0,
+      toTurnCount: 1,
+      diff: "café",
+      byteLength: 5,
+      truncated: true,
+    });
+    assert.strictEqual(parsed.byteLength, 5);
+    assert.strictEqual(parsed.truncated, true);
+
+    const invalid = yield* Effect.exit(
+      decodeThreadTurnDiff({
+        ...parsed,
+        byteLength: 4,
+      }),
+    );
+    assert.strictEqual(invalid._tag, "Failure");
   }),
 );
 

@@ -1,4 +1,4 @@
-import { NonNegativeInt, ThreadId, type VcsError } from "@t3tools/contracts";
+import { NonNegativeInt, ProviderInstanceId, ThreadId, type VcsError } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import type { ProjectionRepositoryError } from "../persistence/Errors.ts";
@@ -94,6 +94,46 @@ export class CheckpointRefUnavailableError extends Schema.TaggedErrorClass<Check
   }
 }
 
+export class CheckpointProviderDisconnectedError extends Schema.TaggedErrorClass<CheckpointProviderDisconnectedError>()(
+  "CheckpointProviderDisconnectedError",
+  {
+    operation: CheckpointDiffOperation,
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+  },
+) {
+  override get message(): string {
+    return `Checkpoint provider '${this.providerInstanceId}' is disconnected while reading thread '${this.threadId}'.`;
+  }
+}
+
+export class CheckpointProviderBindingMismatchError extends Schema.TaggedErrorClass<CheckpointProviderBindingMismatchError>()(
+  "CheckpointProviderBindingMismatchError",
+  { operation: CheckpointDiffOperation, threadId: ThreadId },
+) {
+  override get message(): string {
+    return `Checkpoint repository binding changed for thread '${this.threadId}'.`;
+  }
+}
+
+export class CheckpointProviderOperationError extends Schema.TaggedErrorClass<CheckpointProviderOperationError>()(
+  "CheckpointProviderOperationError",
+  { operation: CheckpointDiffOperation, threadId: ThreadId },
+) {
+  override get message(): string {
+    return `Checkpoint provider operation failed for thread '${this.threadId}'.`;
+  }
+}
+
+export class CheckpointNativeProjectionError extends Schema.TaggedErrorClass<CheckpointNativeProjectionError>()(
+  "CheckpointNativeProjectionError",
+  { operation: CheckpointDiffOperation, threadId: ThreadId },
+) {
+  override get message(): string {
+    return `Checkpoint metadata is unavailable for thread '${this.threadId}'.`;
+  }
+}
+
 export type CheckpointStoreError = VcsError;
 
 export type CheckpointServiceError =
@@ -104,4 +144,8 @@ export type CheckpointServiceError =
   | CheckpointThreadNotFoundError
   | CheckpointWorkspacePathMissingError
   | CheckpointTurnRangeUnavailableError
-  | CheckpointRefUnavailableError;
+  | CheckpointRefUnavailableError
+  | CheckpointProviderDisconnectedError
+  | CheckpointProviderBindingMismatchError
+  | CheckpointProviderOperationError
+  | CheckpointNativeProjectionError;
