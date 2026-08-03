@@ -1,11 +1,22 @@
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import {
+  CODEX_CHECKPOINT_HELPER_CHECKPOINT_REF_PREFIX,
+  CODEX_CHECKPOINT_HELPER_RECEIPT_REF_PREFIX,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
   type ProviderVcsAdapter,
   ProviderVcsChangedPathKind,
+  type ProviderVcsCheckpointCapability,
+  type ProviderVcsCheckpointCaptureInput,
+  type ProviderVcsCheckpointDeleteInput,
+  type ProviderVcsCheckpointDiffInput,
+  type ProviderVcsCheckpointObserveInput,
+  ProviderVcsCheckpointRestoreIndeterminateError,
+  type ProviderVcsCheckpointRestoreInput,
   ProviderVcsDisconnectedError,
   type ProviderVcsError,
   ProviderVcsOperation,
@@ -38,6 +49,34 @@ const decodeChangedPathKind = Schema.decodeUnknownSync(ProviderVcsChangedPathKin
 const decodeDiffSourceKind = Schema.decodeUnknownSync(ProviderVcsReviewDiffSourceKind);
 const decodeReadCapabilities = Schema.decodeUnknownSync(ProviderVcsReadCapabilities);
 
+const operationId = "11111111-1111-4111-8111-111111111111";
+const checkpointId = "22222222-2222-4222-a222-222222222222";
+const targetCheckpointId = "33333333-3333-4333-b333-333333333333";
+const requestSha256 = "a".repeat(64);
+const fingerprint = "b".repeat(64);
+const checkpointOid = "c".repeat(40);
+const targetCheckpointOid = "d".repeat(40);
+const treeOid = "e".repeat(40);
+const receiptObjectOid = "f".repeat(40);
+const checkpointRef = `${CODEX_CHECKPOINT_HELPER_CHECKPOINT_REF_PREFIX}${checkpointId}`;
+const receiptRef = `${CODEX_CHECKPOINT_HELPER_RECEIPT_REF_PREFIX}${operationId}`;
+
+const checkpointBinding = {
+  worktreeRoot: { canonicalPath: "/provider/repository", device: "1", inode: "10" },
+  gitDirectoryRoot: {
+    canonicalPath: "/provider/repository/.git",
+    device: "1",
+    inode: "11",
+  },
+  gitCommonDirectoryRoot: {
+    canonicalPath: "/provider/repository/.git",
+    device: "1",
+    inode: "11",
+  },
+  objectFormat: "sha1",
+  fingerprint,
+} as const;
+
 it("bounds every provider VCS read", () => {
   assert.throws(() => ProviderVcsStatusPathLimit.make(0));
   assert.throws(() => ProviderVcsStatusPathLimit.make(PROVIDER_VCS_MAX_STATUS_PATHS + 1));
@@ -67,10 +106,30 @@ it("bounds every provider VCS read", () => {
 
 it("keeps operations, capabilities, scopes, and result kinds closed", () => {
   assert.deepStrictEqual(
-    ["openRepository", "getStatus", "listRefs", "listRemotes", "getReviewDiff"].map((value) =>
-      decodeOperation(value),
-    ),
-    ["openRepository", "getStatus", "listRefs", "listRemotes", "getReviewDiff"],
+    [
+      "openRepository",
+      "getStatus",
+      "listRefs",
+      "listRemotes",
+      "getReviewDiff",
+      "captureCheckpoint",
+      "diffCheckpoints",
+      "restoreCheckpoint",
+      "deleteCheckpoints",
+      "observeCheckpointOperation",
+    ].map((value) => decodeOperation(value)),
+    [
+      "openRepository",
+      "getStatus",
+      "listRefs",
+      "listRemotes",
+      "getReviewDiff",
+      "captureCheckpoint",
+      "diffCheckpoints",
+      "restoreCheckpoint",
+      "deleteCheckpoints",
+      "observeCheckpointOperation",
+    ],
   );
   assert.throws(() => decodeOperation("commit"));
 
@@ -120,6 +179,13 @@ it("validates bounded, non-option-like ref inputs", () => {
 type FirstArgument<Method> = Method extends (input: infer Input) => unknown ? Input : never;
 type HasExecutionEscape<Input> =
   Extract<keyof Input, "cwd" | "command" | "argv"> extends never ? false : true;
+type HasCheckpointTransportEscape<Input> =
+  Extract<
+    keyof Input,
+    "cwd" | "command" | "argv" | "protocol" | "operation" | "gitExecutablePath" | "expectedBinding"
+  > extends never
+    ? false
+    : true;
 type AssertFalse<Value extends false> = Value;
 
 const repositoryInputsHaveNoExecutionEscape: readonly [
@@ -128,6 +194,14 @@ const repositoryInputsHaveNoExecutionEscape: readonly [
   AssertFalse<HasExecutionEscape<FirstArgument<ProviderVcsRepository["listRemotes"]>>>,
   AssertFalse<HasExecutionEscape<FirstArgument<ProviderVcsRepository["getReviewDiff"]>>>,
 ] = [false, false, false, false];
+
+const checkpointInputsHaveNoTransportEscape: readonly [
+  AssertFalse<HasCheckpointTransportEscape<ProviderVcsCheckpointCaptureInput>>,
+  AssertFalse<HasCheckpointTransportEscape<ProviderVcsCheckpointDiffInput>>,
+  AssertFalse<HasCheckpointTransportEscape<ProviderVcsCheckpointRestoreInput>>,
+  AssertFalse<HasCheckpointTransportEscape<ProviderVcsCheckpointDeleteInput>>,
+  AssertFalse<HasCheckpointTransportEscape<ProviderVcsCheckpointObserveInput>>,
+] = [false, false, false, false, false];
 
 it.effect("returns explicit not-repository or a permanently bound read handle", () =>
   Effect.gen(function* () {
@@ -178,6 +252,7 @@ it.effect("returns explicit not-repository or a permanently bound read handle", 
     assert.strictEqual(opened._tag, "Repository");
     if (opened._tag === "Repository") {
       assert.deepStrictEqual(opened.repository.identity, repository.identity);
+      assert.strictEqual(opened.repository.checkpoints, undefined);
       assert.strictEqual(
         (yield* opened.repository.getStatus({
           maxChangedPaths: ProviderVcsStatusPathLimit.make(1),
@@ -193,6 +268,136 @@ it.effect("returns explicit not-repository or a permanently bound read handle", 
   }),
 );
 
+it.effect("exposes CCH1 checkpoints only through an optional bound capability", () =>
+  Effect.gen(function* () {
+    const captureInputs: Array<ProviderVcsCheckpointCaptureInput> = [];
+    const diffInputs: Array<ProviderVcsCheckpointDiffInput> = [];
+    const restoreInputs: Array<ProviderVcsCheckpointRestoreInput> = [];
+    const deleteInputs: Array<ProviderVcsCheckpointDeleteInput> = [];
+    const observeInputs: Array<ProviderVcsCheckpointObserveInput> = [];
+
+    const commonReceipt = {
+      operationId,
+      receiptRef,
+      requestSha256,
+      repositoryFingerprint: fingerprint,
+      status: "succeeded" as const,
+    };
+    const checkpoints: ProviderVcsCheckpointCapability = {
+      binding: checkpointBinding,
+      capture: (input) => {
+        captureInputs.push(input);
+        return Effect.succeed({
+          operation: "capture",
+          receipt: {
+            ...commonReceipt,
+            operation: "capture",
+            checkpointId,
+            checkpointRef,
+            checkpointOid,
+            treeOid,
+          },
+          receiptObjectOid,
+        });
+      },
+      diff: (input) => {
+        diffInputs.push(input);
+        return Effect.succeed({
+          operation: "diff",
+          baseCheckpointId: checkpointId,
+          targetCheckpointId,
+          baseOid: checkpointOid,
+          targetOid: targetCheckpointOid,
+          patchBase64: "ZGlmZg==",
+          byteLength: 4,
+          truncated: false,
+        });
+      },
+      restore: (input) => {
+        restoreInputs.push(input);
+        return Effect.succeed({
+          operation: "restore",
+          receipt: {
+            ...commonReceipt,
+            operation: "restore",
+            checkpointId,
+            checkpointRef,
+            checkpointOid,
+          },
+          receiptObjectOid,
+        });
+      },
+      delete: (input) => {
+        deleteInputs.push(input);
+        return Effect.succeed({
+          operation: "delete",
+          receipt: {
+            ...commonReceipt,
+            operation: "delete",
+            checkpoints: [
+              {
+                checkpointId,
+                checkpointRef,
+                status: "deleted",
+                deletedCheckpointOid: checkpointOid,
+              },
+            ],
+          },
+          receiptObjectOid,
+        });
+      },
+      observe: (input) => {
+        observeInputs.push(input);
+        return Effect.succeed({ operation: "observe", status: "not_found" });
+      },
+    };
+
+    const captureInput = { operationId, checkpointId } as const;
+    const diffInput = {
+      baseCheckpointId: checkpointId,
+      targetCheckpointId,
+      ignoreWhitespace: true,
+      limits: { maxPatchBytes: 1024 },
+    } as const;
+    const restoreInput = {
+      operationId,
+      checkpointId,
+      expectedCheckpointOid: checkpointOid,
+    } as const;
+    const deleteInput = {
+      operationId,
+      checkpoints: [{ checkpointId, expectedCheckpointOid: checkpointOid }],
+    } as const;
+    const observeInput = { operationId, expectedRequestSha256: requestSha256 } as const;
+
+    assert.strictEqual((yield* checkpoints.capture(captureInput)).receipt.treeOid, treeOid);
+    assert.strictEqual((yield* checkpoints.diff(diffInput)).byteLength, 4);
+    assert.strictEqual(
+      (yield* checkpoints.restore(restoreInput)).receipt.checkpointOid,
+      checkpointOid,
+    );
+    assert.strictEqual(
+      (yield* checkpoints.delete(deleteInput)).receipt.checkpoints[0]?.status,
+      "deleted",
+    );
+    assert.strictEqual((yield* checkpoints.observe(observeInput)).status, "not_found");
+
+    assert.deepStrictEqual(checkpoints.binding, checkpointBinding);
+    assert.deepStrictEqual(captureInputs, [captureInput]);
+    assert.deepStrictEqual(diffInputs, [diffInput]);
+    assert.deepStrictEqual(restoreInputs, [restoreInput]);
+    assert.deepStrictEqual(deleteInputs, [deleteInput]);
+    assert.deepStrictEqual(observeInputs, [observeInput]);
+    assert.deepStrictEqual(checkpointInputsHaveNoTransportEscape, [
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
+  }),
+);
+
 function describeError(error: ProviderVcsError): string {
   switch (error._tag) {
     case "ProviderVcsDisconnectedError":
@@ -203,6 +408,8 @@ function describeError(error: ProviderVcsError): string {
       return `${error._tag}:${error.detail}`;
     case "ProviderVcsPathError":
       return `${error._tag}:${error.providerHostPath}:${error.issue}`;
+    case "ProviderVcsCheckpointRestoreIndeterminateError":
+      return `${error._tag}:${error.operation}`;
     default: {
       const exhaustive: never = error;
       return exhaustive;
@@ -236,6 +443,10 @@ it("preserves exhaustive provider VCS failure categories", () => {
       operation: "getReviewDiff",
       detail: "provider helper rejected the request",
     }),
+    new ProviderVcsCheckpointRestoreIndeterminateError({
+      providerInstanceId,
+      operation: "restoreCheckpoint",
+    }),
   ];
 
   assert.deepStrictEqual(errors.map(describeError), [
@@ -244,7 +455,10 @@ it("preserves exhaustive provider VCS failure categories", () => {
     "ProviderVcsProtocolError:invalid response",
     "ProviderVcsPathError:/missing:directory does not exist",
     "ProviderVcsOperationError:provider helper rejected the request",
+    "ProviderVcsCheckpointRestoreIndeterminateError:restoreCheckpoint",
   ]);
   assert.match(errors[0]!.message, /provider-vcs-test.*disconnected.*getStatus/i);
   assert.match(errors[3]!.message, /\/missing.*provider-vcs-test.*openRepository/i);
+  assert.match(errors[5]!.message, /indeterminate.*provider-vcs-test.*receipt.*retry/i);
+  assert.strictEqual("cause" in errors[5]!, false);
 });

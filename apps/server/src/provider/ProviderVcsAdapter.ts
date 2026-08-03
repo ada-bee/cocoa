@@ -4,12 +4,27 @@
  * A driver resolves one provider-host path to a repository handle whose
  * operations remain permanently bound to that repository root and metadata
  * directory. Callers supply typed safety limits, but never another cwd or an
- * argv vector. Mutating repository and checkpoint operations intentionally do
- * not belong to this capability.
+ * argv vector. Read operations are always available through the base handle;
+ * checkpoint mutations are exposed only through an optional, separately bound
+ * capability.
  *
  * @module provider/ProviderVcsAdapter
  */
-import { ProviderInstanceId, type VcsDriverKind } from "@t3tools/contracts";
+import {
+  type CodexCheckpointHelperCaptureRequest,
+  type CodexCheckpointHelperCaptureResult,
+  type CodexCheckpointHelperDeleteRequest,
+  type CodexCheckpointHelperDeleteResult,
+  type CodexCheckpointHelperDiffRequest,
+  type CodexCheckpointHelperDiffResult,
+  type CodexCheckpointHelperObserveRequest,
+  type CodexCheckpointHelperObserveResult,
+  type CodexCheckpointHelperRepositoryBinding,
+  type CodexCheckpointHelperRestoreRequest,
+  type CodexCheckpointHelperRestoreResult,
+  ProviderInstanceId,
+  type VcsDriverKind,
+} from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -19,6 +34,11 @@ export const ProviderVcsOperation = Schema.Literals([
   "listRefs",
   "listRemotes",
   "getReviewDiff",
+  "captureCheckpoint",
+  "diffCheckpoints",
+  "restoreCheckpoint",
+  "deleteCheckpoints",
+  "observeCheckpointOperation",
 ]);
 export type ProviderVcsOperation = typeof ProviderVcsOperation.Type;
 
@@ -252,12 +272,29 @@ export class ProviderVcsOperationError extends Schema.TaggedErrorClass<ProviderV
   }
 }
 
+/**
+ * Restore was dispatched but its receipt could not be observed. Callers must
+ * observe the operation receipt after reconnect and must not replay restore.
+ */
+export class ProviderVcsCheckpointRestoreIndeterminateError extends Schema.TaggedErrorClass<ProviderVcsCheckpointRestoreIndeterminateError>()(
+  "ProviderVcsCheckpointRestoreIndeterminateError",
+  {
+    providerInstanceId: ProviderInstanceId,
+    operation: Schema.Literal("restoreCheckpoint"),
+  },
+) {
+  override get message(): string {
+    return `Checkpoint restore outcome is indeterminate for provider VCS '${this.providerInstanceId}'; observe its receipt before any retry.`;
+  }
+}
+
 export type ProviderVcsError =
   | ProviderVcsDisconnectedError
   | ProviderVcsUnsupportedError
   | ProviderVcsProtocolError
   | ProviderVcsPathError
-  | ProviderVcsOperationError;
+  | ProviderVcsOperationError
+  | ProviderVcsCheckpointRestoreIndeterminateError;
 
 export interface ProviderVcsRepositoryIdentity {
   readonly kind: VcsDriverKind;
@@ -267,10 +304,62 @@ export interface ProviderVcsRepositoryIdentity {
   readonly commonDirectoryPath: string | null;
 }
 
+type BoundCheckpointInput<Request> = Omit<
+  Request,
+  "protocol" | "operation" | "gitExecutablePath" | "expectedBinding"
+>;
+
+/** Logical capture parameters; transport and repository binding remain provider-owned. */
+export type ProviderVcsCheckpointCaptureInput =
+  BoundCheckpointInput<CodexCheckpointHelperCaptureRequest>;
+
+/** Logical diff parameters and CCH1 patch bounds for two captured checkpoints. */
+export type ProviderVcsCheckpointDiffInput = BoundCheckpointInput<CodexCheckpointHelperDiffRequest>;
+
+/** Logical restore parameters, including the checkpoint OID precondition. */
+export type ProviderVcsCheckpointRestoreInput =
+  BoundCheckpointInput<CodexCheckpointHelperRestoreRequest>;
+
+/** Bounded atomic checkpoint deletion parameters and OID preconditions. */
+export type ProviderVcsCheckpointDeleteInput =
+  BoundCheckpointInput<CodexCheckpointHelperDeleteRequest>;
+
+/** Receipt observation parameters used to resolve a disconnected mutation. */
+export type ProviderVcsCheckpointObserveInput =
+  BoundCheckpointInput<CodexCheckpointHelperObserveRequest>;
+
+/**
+ * Optional CCH1 capability permanently bound to the same provider repository.
+ *
+ * The provider creates this only after a successful checkpoint-helper `open`.
+ * Implementations reconstruct full CCH1 requests from their configured
+ * transport, this immutable binding, and the logical inputs below.
+ */
+export interface ProviderVcsCheckpointCapability {
+  readonly binding: CodexCheckpointHelperRepositoryBinding;
+  readonly capture: (
+    input: ProviderVcsCheckpointCaptureInput,
+  ) => Effect.Effect<CodexCheckpointHelperCaptureResult, ProviderVcsError>;
+  readonly diff: (
+    input: ProviderVcsCheckpointDiffInput,
+  ) => Effect.Effect<CodexCheckpointHelperDiffResult, ProviderVcsError>;
+  readonly restore: (
+    input: ProviderVcsCheckpointRestoreInput,
+  ) => Effect.Effect<CodexCheckpointHelperRestoreResult, ProviderVcsError>;
+  readonly delete: (
+    input: ProviderVcsCheckpointDeleteInput,
+  ) => Effect.Effect<CodexCheckpointHelperDeleteResult, ProviderVcsError>;
+  readonly observe: (
+    input: ProviderVcsCheckpointObserveInput,
+  ) => Effect.Effect<CodexCheckpointHelperObserveResult, ProviderVcsError>;
+}
+
 /** Read operations permanently pinned to one provider repository identity. */
 export interface ProviderVcsRepository {
   readonly identity: ProviderVcsRepositoryIdentity;
   readonly capabilities: ProviderVcsReadCapabilities;
+  /** Absent unless this provider supports the separately versioned CCH1 protocol. */
+  readonly checkpoints?: ProviderVcsCheckpointCapability;
   readonly getStatus: (input: {
     readonly maxChangedPaths: ProviderVcsStatusPathLimit;
   }) => Effect.Effect<ProviderVcsStatusResult, ProviderVcsError>;
