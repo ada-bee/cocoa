@@ -64,6 +64,9 @@ const isModelSelection = Schema.is(ModelSelection);
  */
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogger?: EventNdjsonLogger;
+  /** Internal test seams; production uses the active MCP registry functions. */
+  readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
+  readonly revokeMcpThread?: typeof McpSessionRegistry.revokeActiveMcpThread;
 }
 
 type ProviderServiceMethod<Name extends keyof ProviderService.ProviderService["Service"]> =
@@ -214,8 +217,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
+  const issueMcpCredential =
+    options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
+  const revokeMcpThread = options?.revokeMcpThread ?? McpSessionRegistry.revokeActiveMcpThread;
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
-    McpSessionRegistry.issueActiveMcpCredential({ threadId, providerInstanceId }).pipe(
+    issueMcpCredential({ threadId, providerInstanceId }).pipe(
       Effect.tap((credential) =>
         credential
           ? Effect.sync(() => McpProviderSession.setMcpProviderSession(credential.config))
@@ -223,9 +229,26 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       ),
     );
   const clearMcpSession = (threadId: ThreadId) =>
-    McpSessionRegistry.revokeActiveMcpThread(threadId).pipe(
+    revokeMcpThread(threadId).pipe(
       Effect.tap(() => Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
     );
+  const clearUnavailableMcpSession = (
+    threadId: ThreadId,
+    instanceInfo: ProviderAdapterRegistry.ProviderInstanceRoutingInfo,
+  ) =>
+    instanceInfo.gatewayMcpMode === "unavailable"
+      ? clearMcpSession(threadId).pipe(
+          Effect.tap(() =>
+            Effect.logWarning(
+              "Cocoa gateway MCP injection is unavailable for this provider instance; starting without gateway MCP tools",
+              {
+                providerInstanceId: instanceInfo.instanceId,
+                threadId,
+              },
+            ),
+          ),
+        )
+      : Effect.void;
 
   const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
     Effect.succeed(event).pipe(
@@ -364,6 +387,8 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       "provider.thread_id": input.binding.threadId,
     });
     return yield* Effect.gen(function* () {
+      const instanceInfo = yield* registry.getInstanceInfo(bindingInstanceId);
+      yield* clearUnavailableMcpSession(input.binding.threadId, instanceInfo);
       const adapter = yield* registry.getByInstance(bindingInstanceId);
       const hasResumeCursor =
         input.binding.resumeCursor !== null && input.binding.resumeCursor !== undefined;
@@ -397,7 +422,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
 
-      yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+      if (instanceInfo.gatewayMcpMode !== "unavailable") {
+        yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+      }
       const resumed = yield* adapter
         .startSession({
           threadId: input.binding.threadId,
@@ -590,7 +617,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.cwd.effective": effectiveCwd ?? "",
         });
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
-        yield* prepareMcpSession(threadId, resolvedInstanceId);
+        if (instanceInfo.gatewayMcpMode === "unavailable") {
+          yield* clearUnavailableMcpSession(threadId, instanceInfo);
+        } else {
+          yield* prepareMcpSession(threadId, resolvedInstanceId);
+        }
         const session = yield* adapter
           .startSession({
             ...input,

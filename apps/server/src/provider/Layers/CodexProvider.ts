@@ -591,7 +591,12 @@ export const checkCodexEndpointProviderStatus = Effect.fn("checkCodexEndpointPro
         version: connection.compatibility.serverVersion ?? null,
         status: accountStatus.status,
         auth: accountStatus.auth,
-        ...(accountStatus.message ? { message: accountStatus.message } : {}),
+        ...(accountStatus.message
+          ? { message: accountStatus.message }
+          : {
+              message:
+                "Cocoa gateway MCP tools are deferred for endpoint-backed Codex sessions until a routable gateway MCP endpoint is configured.",
+            }),
       },
     });
   },

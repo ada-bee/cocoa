@@ -61,6 +61,7 @@ const makeProviderAdapterRegistry = Effect.fn("makeProviderAdapterRegistry")(fun
               displayName: instance.displayName,
               accentColor: instance.accentColor,
               enabled: instance.enabled,
+              gatewayMcpMode: instance.gatewayMcpMode ?? "inject",
               continuationIdentity: instance.continuationIdentity,
             }),
       ),

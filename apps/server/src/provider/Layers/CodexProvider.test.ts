@@ -215,6 +215,7 @@ it.effect("builds an authenticated remote snapshot from every model page", () =>
     assert.equal(status.status, "ready");
     assert.equal(status.version, "0.146.0");
     assert.equal(status.auth.status, "authenticated");
+    assert.include(status.message, "Cocoa gateway MCP tools are deferred");
     assert.deepStrictEqual(
       status.models.map(({ slug, isCustom, isDefault }) => ({ slug, isCustom, isDefault })),
       [

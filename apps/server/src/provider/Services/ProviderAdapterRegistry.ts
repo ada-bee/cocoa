@@ -28,7 +28,7 @@ import type * as Stream from "effect/Stream";
 
 import type { ProviderAdapterError, ProviderUnsupportedError } from "../Errors.ts";
 import type { ProviderAdapterShape } from "./ProviderAdapter.ts";
-import type { ProviderContinuationIdentity } from "../ProviderDriver.ts";
+import type { GatewayMcpMode, ProviderContinuationIdentity } from "../ProviderDriver.ts";
 
 export interface ProviderInstanceRoutingInfo {
   readonly instanceId: ProviderInstanceId;
@@ -36,6 +36,7 @@ export interface ProviderInstanceRoutingInfo {
   readonly displayName: string | undefined;
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
+  readonly gatewayMcpMode?: GatewayMcpMode;
   readonly continuationIdentity: ProviderContinuationIdentity;
 }
 

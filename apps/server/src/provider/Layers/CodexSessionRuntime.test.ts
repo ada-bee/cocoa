@@ -1,10 +1,11 @@
 import * as NodeAssert from "node:assert/strict";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe } from "vite-plus/test";
-import { DEFAULT_MODEL, ThreadId } from "@t3tools/contracts";
+import { DEFAULT_MODEL, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
@@ -16,10 +17,14 @@ import {
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
+  CodexSessionRuntimeEndpointMcpConfigurationError,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
+  makeCodexEndpointSessionRuntime,
   openCodexThread,
 } from "./CodexSessionRuntime.ts";
+import type { CodexEndpointConnection } from "../codexEndpoint/CodexEndpointConnection.ts";
+import type { CodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
 describe("CodexSessionRuntimeIdentifierGenerationError", () => {
@@ -316,6 +321,29 @@ describe("hasConfiguredMcpServer", () => {
       true,
     );
   });
+
+  it.effect("keeps endpoint runtimes fail-closed when MCP args somehow arrive", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const providerInstanceId = ProviderInstanceId.make("codex_remote");
+        const failure = yield* makeCodexEndpointSessionRuntime({
+          connection: {
+            identity: { providerInstanceId },
+          } as CodexEndpointConnection["Service"],
+          router: {} as CodexEndpointRouter,
+          options: {
+            threadId: ThreadId.make("thread-endpoint-mcp-rejected"),
+            providerInstanceId,
+            cwd: "/remote/project",
+            runtimeMode: "full-access",
+            appServerArgs: ["-c", "mcp_servers.t3-code.url=http://127.0.0.1/mcp"],
+          },
+        }).pipe(Effect.flip);
+
+        NodeAssert.ok(Schema.is(CodexSessionRuntimeEndpointMcpConfigurationError)(failure));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  );
 });
 
 describe("codexSessionAppServerArgs", () => {

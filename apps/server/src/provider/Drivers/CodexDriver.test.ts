@@ -210,6 +210,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             instance.continuationIdentity.continuationKey,
             `codex:instance:${INSTANCE_ID}`,
           );
+          assert.equal(instance.gatewayMcpMode, "unavailable");
           assert.isNull(instance.snapshot.maintenanceCapabilities.update);
 
           const runtimeOptions = {
@@ -316,6 +317,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         assert.equal(endpointCalls, 0);
         assert.equal(localCalls, 0);
         assert.isFalse(instance.enabled);
+        assert.equal(instance.gatewayMcpMode, "unavailable");
         assert.isNull(instance.snapshot.maintenanceCapabilities.update);
       }),
     ),
@@ -411,6 +413,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         assert.deepStrictEqual(endpointCalls, []);
         assert.deepStrictEqual(localCalls, ["home", "materialize", "text-generation", "probe"]);
         assert.equal(instance.continuationIdentity.continuationKey, "codex:home:/legacy/.codex");
+        assert.isUndefined(instance.gatewayMcpMode);
       }),
     ),
   );

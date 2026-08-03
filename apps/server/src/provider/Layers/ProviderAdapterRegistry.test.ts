@@ -103,6 +103,7 @@ const fakeCursorAdapter: CursorAdapter.CursorAdapterShape = {
 const makeFakeInstance = (
   driverKindString: "codex" | "claudeAgent" | "cursor" | "opencode",
   adapter: ProviderInstance["adapter"],
+  gatewayMcpMode?: ProviderInstance["gatewayMcpMode"],
 ): ProviderInstance => {
   const driverKind = ProviderDriverKind.make(driverKindString);
   return {
@@ -114,6 +115,7 @@ const makeFakeInstance = (
     },
     displayName: undefined,
     enabled: true,
+    ...(gatewayMcpMode !== undefined ? { gatewayMcpMode } : {}),
     snapshot: {
       maintenanceCapabilities: makeManualOnlyProviderMaintenanceCapabilities({
         provider: driverKind,
@@ -129,7 +131,7 @@ const makeFakeInstance = (
 };
 
 const fakeInstances: ReadonlyArray<ProviderInstance> = [
-  makeFakeInstance("codex", fakeCodexAdapter),
+  makeFakeInstance("codex", fakeCodexAdapter, "unavailable"),
   makeFakeInstance("claudeAgent", fakeClaudeAdapter),
   makeFakeInstance("opencode", fakeOpenCodeAdapter),
   makeFakeInstance("cursor", fakeCursorAdapter),
@@ -170,11 +172,15 @@ it.layer(layer)("ProviderAdapterRegistryLive", (it) => {
         displayName: undefined,
         accentColor: undefined,
         enabled: true,
+        gatewayMcpMode: "inject",
         continuationIdentity: {
           driverKind: CLAUDE_AGENT_DRIVER,
           continuationKey: "claudeAgent:instance:claudeAgent",
         },
       });
+
+      const codexInfo = yield* registry.getInstanceInfo(defaultInstanceIdForDriver(CODEX_DRIVER));
+      assert.equal(codexInfo.gatewayMcpMode, "unavailable");
 
       const instances = yield* registry.listInstances();
       assert.deepStrictEqual(instances, [

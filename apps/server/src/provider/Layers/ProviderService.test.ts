@@ -12,6 +12,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
+  EnvironmentId,
   EventId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -57,6 +58,8 @@ import {
 } from "../../persistence/Layers/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
 
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
@@ -84,12 +87,16 @@ type LegacyProviderRuntimeEvent = {
   readonly [key: string]: unknown;
 };
 
-function makeFakeCodexAdapter(provider: ProviderDriverKind = CODEX_DRIVER) {
+function makeFakeCodexAdapter(
+  provider: ProviderDriverKind = CODEX_DRIVER,
+  onStartSession?: (input: ProviderSessionStartInput) => void,
+) {
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
   const startSession = vi.fn((input: ProviderSessionStartInput) =>
     Effect.sync(() => {
+      onStartSession?.(input);
       const now = "2026-01-01T00:00:00.000Z";
       const session: ProviderSession = {
         provider,
@@ -267,15 +274,32 @@ const hasMetricSnapshot = (
       Object.entries(attributes).every(([key, value]) => snapshot.attributes?.[key] === value),
   );
 
-function makeProviderServiceLayer() {
-  const codex = makeFakeCodexAdapter();
+function makeProviderServiceLayer(options?: {
+  readonly gatewayMcpMode?: "inject" | "unavailable";
+  readonly onCodexStartSession?: (input: ProviderSessionStartInput) => void;
+  readonly providerServiceOptions?: Parameters<typeof makeProviderServiceLive>[0];
+}) {
+  const codex = makeFakeCodexAdapter(CODEX_DRIVER, options?.onCodexStartSession);
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
-  const registry = makeAdapterRegistryMock({
+  const registryBase = makeAdapterRegistryMock({
     [ProviderDriverKind.make("codex")]: codex.adapter,
     [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
     [ProviderDriverKind.make("cursor")]: cursor.adapter,
   });
+  const registry =
+    options?.gatewayMcpMode === undefined
+      ? registryBase
+      : {
+          ...registryBase,
+          getInstanceInfo: (instanceId: ProviderInstanceId) =>
+            registryBase.getInstanceInfo(instanceId).pipe(
+              Effect.map((info) => ({
+                ...info,
+                gatewayMcpMode: options.gatewayMcpMode ?? "inject",
+              })),
+            ),
+        };
 
   const providerAdapterLayer = Layer.succeed(
     ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -288,7 +312,7 @@ function makeProviderServiceLayer() {
 
   const layer = it.layer(
     Layer.mergeAll(
-      makeProviderServiceLive().pipe(
+      makeProviderServiceLive(options?.providerServiceOptions).pipe(
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
@@ -584,6 +608,124 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
 );
 
 const routing = makeProviderServiceLayer();
+
+const makeTestMcpProviderSession = (
+  threadId: ThreadId,
+  providerInstanceId: ProviderInstanceId,
+): McpProviderSession.McpProviderSessionConfig => ({
+  environmentId: EnvironmentId.make("environment-mcp-test"),
+  threadId,
+  providerSessionId: `provider-session-${threadId}`,
+  providerInstanceId,
+  endpoint: "http://127.0.0.1:3773/mcp",
+  authorizationHeader: "Bearer test-token",
+});
+
+const unavailableMcpObservedSessions: Array<
+  McpProviderSession.McpProviderSessionConfig | undefined
+> = [];
+const unavailableMcpIssue = vi.fn((request: McpSessionRegistry.McpCredentialRequest) =>
+  Effect.succeed({
+    config: makeTestMcpProviderSession(request.threadId, request.providerInstanceId),
+  }),
+);
+const unavailableMcpRevoke = vi.fn((_threadId: ThreadId) => Effect.void);
+const unavailableMcp = makeProviderServiceLayer({
+  gatewayMcpMode: "unavailable",
+  onCodexStartSession: (input) => {
+    unavailableMcpObservedSessions.push(McpProviderSession.readMcpProviderSession(input.threadId));
+  },
+  providerServiceOptions: {
+    issueMcpCredential: unavailableMcpIssue,
+    revokeMcpThread: unavailableMcpRevoke,
+  },
+});
+
+unavailableMcp.layer("ProviderServiceLive unavailable gateway MCP", (it) => {
+  it.effect("clears stale MCP state and starts and recovers without issuing credentials", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-endpoint-no-mcp");
+      unavailableMcpIssue.mockClear();
+      unavailableMcpRevoke.mockClear();
+      unavailableMcpObservedSessions.length = 0;
+      McpProviderSession.setMcpProviderSession(
+        makeTestMcpProviderSession(threadId, codexInstanceId),
+      );
+
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/remote/project",
+        runtimeMode: "full-access",
+      });
+
+      assert.deepStrictEqual(unavailableMcpObservedSessions, [undefined]);
+      assert.equal(unavailableMcpIssue.mock.calls.length, 0);
+      assert.deepStrictEqual(unavailableMcpRevoke.mock.calls, [[threadId]]);
+      assert.isUndefined(McpProviderSession.readMcpProviderSession(threadId));
+
+      yield* unavailableMcp.codex.stopSession(threadId);
+      McpProviderSession.setMcpProviderSession(
+        makeTestMcpProviderSession(threadId, codexInstanceId),
+      );
+      yield* provider.sendTurn({
+        threadId,
+        input: "resume without gateway MCP",
+        attachments: [],
+      });
+
+      assert.deepStrictEqual(unavailableMcpObservedSessions, [undefined, undefined]);
+      assert.equal(unavailableMcpIssue.mock.calls.length, 0);
+      assert.deepStrictEqual(unavailableMcpRevoke.mock.calls, [[threadId], [threadId]]);
+      assert.isUndefined(McpProviderSession.readMcpProviderSession(threadId));
+      McpProviderSession.clearMcpProviderSession(threadId);
+    }),
+  );
+});
+
+const injectMcpObservedSessions: Array<McpProviderSession.McpProviderSessionConfig | undefined> =
+  [];
+const injectMcpIssue = vi.fn((request: McpSessionRegistry.McpCredentialRequest) =>
+  Effect.succeed({
+    config: makeTestMcpProviderSession(request.threadId, request.providerInstanceId),
+  }),
+);
+const injectMcp = makeProviderServiceLayer({
+  onCodexStartSession: (input) => {
+    injectMcpObservedSessions.push(McpProviderSession.readMcpProviderSession(input.threadId));
+  },
+  providerServiceOptions: {
+    issueMcpCredential: injectMcpIssue,
+  },
+});
+
+injectMcp.layer("ProviderServiceLive injectable gateway MCP", (it) => {
+  it.effect("preserves credential injection for legacy/default instances", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-legacy-mcp");
+      injectMcpIssue.mockClear();
+      injectMcpObservedSessions.length = 0;
+      McpProviderSession.clearMcpProviderSession(threadId);
+
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/local/project",
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(injectMcpIssue.mock.calls.length, 1);
+      assert.equal(injectMcpObservedSessions.length, 1);
+      assert.equal(injectMcpObservedSessions[0]?.threadId, threadId);
+      assert.equal(injectMcpObservedSessions[0]?.providerInstanceId, codexInstanceId);
+      McpProviderSession.clearMcpProviderSession(threadId);
+    }),
+  );
+});
 
 it.effect("ProviderServiceLive writes canonical events to the emitting thread segment", () =>
   Effect.gen(function* () {

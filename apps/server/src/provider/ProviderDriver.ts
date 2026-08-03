@@ -68,10 +68,18 @@ export interface ProviderInstance {
   readonly displayName: string | undefined;
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
+  /**
+   * Whether ProviderService may inject Cocoa's gateway-local MCP endpoint into
+   * sessions for this instance. Omitted values retain the legacy inject
+   * behavior for upstream and third-party drivers.
+   */
+  readonly gatewayMcpMode?: GatewayMcpMode;
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
 }
+
+export type GatewayMcpMode = "inject" | "unavailable";
 
 export interface ProviderContinuationIdentity {
   readonly driverKind: ProviderDriverKind;
