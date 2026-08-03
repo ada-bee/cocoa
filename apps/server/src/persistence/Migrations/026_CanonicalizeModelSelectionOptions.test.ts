@@ -18,6 +18,7 @@ layer("026_CanonicalizeModelSelectionOptions", (it) => {
       yield* sql`
           INSERT INTO projection_projects (
             project_id,
+            provider_instance_id,
             title,
             workspace_root,
             default_model_selection_json,
@@ -29,6 +30,7 @@ layer("026_CanonicalizeModelSelectionOptions", (it) => {
           VALUES
             (
               'project-legacy',
+              'claudeAgent',
               'Legacy options project',
               '/tmp/legacy',
               '{"provider":"claudeAgent","model":"claude-opus-4-6","options":{"effort":"max","fastMode":true}}',
@@ -39,6 +41,7 @@ layer("026_CanonicalizeModelSelectionOptions", (it) => {
             ),
             (
               'project-no-options',
+              'codex',
               'No options project',
               '/tmp/no-options',
               '{"provider":"codex","model":"gpt-5.4"}',
@@ -49,6 +52,7 @@ layer("026_CanonicalizeModelSelectionOptions", (it) => {
             ),
             (
               'project-null-selection',
+              'codex',
               'Null model selection project',
               '/tmp/null-selection',
               NULL,
@@ -59,6 +63,7 @@ layer("026_CanonicalizeModelSelectionOptions", (it) => {
             ),
             (
               'project-already-array',
+              'codex',
               'Already-canonical options project',
               '/tmp/already-array',
               '{"provider":"codex","model":"gpt-5.4","options":[{"id":"reasoningEffort","value":"high"}]}',

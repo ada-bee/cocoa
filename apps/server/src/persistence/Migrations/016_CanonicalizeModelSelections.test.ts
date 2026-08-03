@@ -22,6 +22,7 @@ layer("016_CanonicalizeModelSelections", (it) => {
           yield* sql`
         INSERT INTO projection_projects (
           project_id,
+          provider_instance_id,
           title,
           workspace_root,
           default_model,
@@ -31,9 +32,9 @@ layer("016_CanonicalizeModelSelections", (it) => {
           deleted_at
         )
         VALUES
-          ('project-codex', 'Codex project', '/tmp/project-codex', 'gpt-5.4', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL),
-          ('project-claude', 'Claude project', '/tmp/project-claude', 'claude-sonnet-4-6', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL),
-          ('project-null', 'Null project', '/tmp/project-null', NULL, '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL)
+          ('project-codex', 'codex', 'Codex project', '/tmp/project-codex', 'gpt-5.4', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL),
+          ('project-claude', 'claudeAgent', 'Claude project', '/tmp/project-claude', 'claude-sonnet-4-6', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL),
+          ('project-null', 'codex', 'Null project', '/tmp/project-null', NULL, '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL)
       `;
           yield* sql`
         UPDATE projection_projects

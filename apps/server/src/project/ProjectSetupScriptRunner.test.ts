@@ -33,9 +33,11 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
     getArchivedShellSnapshot: () => Effect.die("unused"),
     getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 1 }),
     getCounts: () => Effect.die("unused"),
-    getActiveProjectByWorkspaceRoot: ({ workspaceRoot }) =>
+    getActiveProjectByWorkspaceRoot: ({ providerInstanceId, workspaceRoot }) =>
       Effect.succeed(
-        workspaceRoot === project.workspaceRoot ? Option.some(project) : Option.none(),
+        providerInstanceId === project.providerInstanceId && workspaceRoot === project.workspaceRoot
+          ? Option.some(project)
+          : Option.none(),
       ),
     getProjectShellById: (projectId) =>
       Effect.succeed(projectId === project.id ? Option.some(project) : Option.none()),
@@ -125,6 +127,7 @@ describe("ProjectSetupScriptRunner", () => {
         const result = yield* runner.runForThread({
           threadId: "thread-1",
           projectCwd: "/repo/project",
+          providerInstanceId: ProviderInstanceId.make("codex"),
           worktreePath: "/repo/worktrees/a",
         });
 

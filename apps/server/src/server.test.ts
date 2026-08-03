@@ -4917,7 +4917,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("creates a missing workspace root during websocket project.create dispatch", () =>
+  it.effect("does not create a remote workspace root on project.create dispatch", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -4945,10 +4945,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           }),
         ),
       );
-      const stat = yield* fs.stat(missingWorkspaceRoot);
-
       assert.isAtLeast(response.sequence, 0);
-      assert.equal(stat.type, "Directory");
+      assert.isFalse(yield* fs.exists(missingWorkspaceRoot));
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
