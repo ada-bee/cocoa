@@ -27,6 +27,11 @@ export interface CodexAppServerClientOptions {
   ) => Effect.Effect<void, never>;
 }
 
+export type CodexAppServerFramedClientOptions = Omit<
+  CodexProtocol.CodexAppServerFramedProtocolOptions,
+  "onNotification" | "onRequest"
+>;
+
 interface CodexAppServerClientRaw {
   readonly notifications: CodexProtocol.CodexAppServerPatchedProtocol["incomingNotifications"];
   readonly requests: CodexProtocol.CodexAppServerPatchedProtocol["incomingRequests"];
@@ -85,10 +90,19 @@ type ServerNotificationHandler = (
   payload: unknown,
 ) => Effect.Effect<void, CodexError.CodexAppServerError>;
 
-export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make")(function* (
-  stdio: Stdio.Stdio,
-  options: CodexAppServerClientOptions = {},
-  terminationError?: Effect.Effect<CodexError.CodexAppServerError>,
+interface CodexAppServerProtocolHandlers {
+  readonly onNotification: NonNullable<
+    CodexProtocol.CodexAppServerFramedProtocolOptions["onNotification"]
+  >;
+  readonly onRequest: NonNullable<CodexProtocol.CodexAppServerFramedProtocolOptions["onRequest"]>;
+}
+
+type CodexAppServerProtocolFactory = (
+  handlers: CodexAppServerProtocolHandlers,
+) => Effect.Effect<CodexProtocol.CodexAppServerPatchedProtocol, never, Scope.Scope>;
+
+const makeWithProtocol = Effect.fn("effect-codex-app-server/client/makeWithProtocol")(function* (
+  makeProtocol: CodexAppServerProtocolFactory,
 ): Effect.fn.Return<CodexAppServerClient["Service"], never, Scope.Scope> {
   const requestHandlers = new Map<string, ServerRequestHandler>();
   const notificationHandlers = new Map<string, Array<ServerNotificationHandler>>();
@@ -185,13 +199,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
       : Effect.fail(CodexError.CodexAppServerRequestError.methodNotFound(request.method));
   };
 
-  const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
-    stdio,
-    ...(terminationError ? { terminationError } : {}),
-    ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
-    ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
-    ...(options.rawObservation ? { rawObservation: options.rawObservation } : {}),
-    ...(options.logger ? { logger: options.logger } : {}),
+  const transport = yield* makeProtocol({
     onNotification: dispatchNotification,
     onRequest: dispatchRequest,
   });
@@ -252,10 +260,45 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
   });
 });
 
+export const makeFramed = Effect.fn("effect-codex-app-server/CodexAppServerClient.makeFramed")(
+  function* (
+    options: CodexAppServerFramedClientOptions,
+  ): Effect.fn.Return<CodexAppServerClient["Service"], never, Scope.Scope> {
+    return yield* makeWithProtocol((handlers) =>
+      CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...options,
+        ...handlers,
+      }),
+    );
+  },
+);
+
+export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make")(function* (
+  stdio: Stdio.Stdio,
+  options: CodexAppServerClientOptions = {},
+  terminationError?: Effect.Effect<CodexError.CodexAppServerError>,
+): Effect.fn.Return<CodexAppServerClient["Service"], never, Scope.Scope> {
+  return yield* makeWithProtocol((handlers) =>
+    CodexProtocol.makeCodexAppServerPatchedProtocol({
+      stdio,
+      ...(terminationError ? { terminationError } : {}),
+      ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
+      ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
+      ...(options.rawObservation ? { rawObservation: options.rawObservation } : {}),
+      ...(options.logger ? { logger: options.logger } : {}),
+      ...handlers,
+    }),
+  );
+});
+
 export const layer = (
   stdio: Stdio.Stdio,
   options: CodexAppServerClientOptions = {},
 ): Layer.Layer<CodexAppServerClient> => Layer.effect(CodexAppServerClient, make(stdio, options));
+
+export const layerFramed = (
+  options: CodexAppServerFramedClientOptions,
+): Layer.Layer<CodexAppServerClient> => Layer.effect(CodexAppServerClient, makeFramed(options));
 
 export const layerChildProcess = (
   handle: ChildProcessSpawner.ChildProcessHandle,

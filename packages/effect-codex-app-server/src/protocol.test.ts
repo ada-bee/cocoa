@@ -149,10 +149,7 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     () =>
       Effect.gen(function* () {
         const { stdio, input, output } = yield* makeInMemoryStdio();
-        const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
-          stdio,
-          rawObservation: { capacity: 16 },
-        });
+        const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({ stdio });
 
         const notificationDeferred =
           yield* Deferred.make<ReadonlyArray<CodexProtocol.CodexAppServerIncomingNotification>>();
@@ -487,6 +484,50 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     }),
   );
 
+  it.effect("backpressures a full outgoing frame buffer without losing frames", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const startConsuming = yield* Deferred.make<void>();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        incoming: frames.incoming,
+        outgoing: (outgoing) =>
+          Deferred.await(startConsuming).pipe(
+            Effect.flatMap(() =>
+              outgoing.pipe(
+                Stream.runForEach((frame) => Queue.offer(frames.output, frame)),
+                Effect.asVoid,
+              ),
+            ),
+          ),
+      });
+
+      const bufferedFrameCount = 256;
+      for (let index = 0; index < bufferedFrameCount; index += 1) {
+        yield* transport.notify(`message-${index}`);
+      }
+
+      const backpressured = yield* transport
+        .notify(`message-${bufferedFrameCount}`)
+        .pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      assert.isUndefined(backpressured.pollUnsafe());
+
+      yield* Deferred.succeed(startConsuming, undefined);
+      yield* Fiber.join(backpressured);
+
+      const emitted = yield* Effect.forEach(Array.from({ length: bufferedFrameCount + 1 }), () =>
+        Queue.take(frames.output),
+      );
+      assert.deepEqual(
+        emitted,
+        Array.from(
+          { length: bufferedFrameCount + 1 },
+          (_, index) => `{"method":"message-${index}"}`,
+        ),
+      );
+    }),
+  );
+
   it.effect("continues reading frames while a server-request handler is waiting", () =>
     Effect.gen(function* () {
       const frames = yield* makeInMemoryFramedTransport();
@@ -546,7 +587,68 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     }),
   );
 
-  it.effect("keeps raw observation disabled unless explicitly requested", () =>
+  it.effect("fails new requests and notifications after transport termination", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const termination = yield* Deferred.make<CodexError.CodexAppServerError>();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...frames,
+        onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
+      });
+
+      yield* Queue.end(frames.input);
+      const terminalError = yield* Deferred.await(termination);
+
+      const requestError = yield* transport.request("thread/read", { threadId: "thread-1" }).pipe(
+        Effect.match({
+          onFailure: (error) => error,
+          onSuccess: () => assert.fail("Expected the post-termination request to fail"),
+        }),
+      );
+      const notificationError = yield* transport.notify("initialized").pipe(
+        Effect.match({
+          onFailure: (error) => error,
+          onSuccess: () => assert.fail("Expected the post-termination notification to fail"),
+        }),
+      );
+
+      assert.strictEqual(requestError, terminalError);
+      assert.strictEqual(notificationError, terminalError);
+    }),
+  );
+
+  it.effect("terminates when the framed output sink completes", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const outputCompleted = yield* Deferred.make<void>();
+      const termination = yield* Deferred.make<CodexError.CodexAppServerError>();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        incoming: frames.incoming,
+        outgoing: () => Deferred.await(outputCompleted),
+        onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
+      });
+
+      const pending = yield* transport
+        .request("thread/read", { threadId: "thread-1" })
+        .pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* Deferred.succeed(outputCompleted, undefined);
+
+      const terminalError = yield* Deferred.await(termination);
+      assert.instanceOf(terminalError, CodexError.CodexAppServerTransportError);
+      assert.equal(terminalError.operation, "write-output-stream");
+
+      const requestError = yield* Fiber.join(pending).pipe(
+        Effect.match({
+          onFailure: (error) => error,
+          onSuccess: () => assert.fail("Expected the pending request to fail"),
+        }),
+      );
+      assert.strictEqual(requestError, terminalError);
+    }),
+  );
+
+  it.effect("observes raw messages with the bounded default capacity", () =>
     Effect.gen(function* () {
       const frames = yield* makeInMemoryFramedTransport();
       const handled = yield* Deferred.make<void>();
@@ -555,11 +657,19 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
         onNotification: () => Deferred.succeed(handled, undefined).pipe(Effect.asVoid),
       });
 
+      const observed = yield* transport.incomingNotifications.pipe(
+        Stream.take(1),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
       yield* Queue.offer(frames.input, '{"method":"thread/started","params":{}}');
       yield* Deferred.await(handled);
 
-      assert.deepEqual(yield* Stream.runCollect(transport.incomingNotifications), []);
-      assert.deepEqual(yield* Stream.runCollect(transport.incomingRequests), []);
+      assert.deepEqual(
+        (yield* Fiber.join(observed)).map(({ method }) => method),
+        ["thread/started"],
+      );
     }),
   );
 
