@@ -179,6 +179,24 @@ const asTransportError = (cause: unknown) =>
     cause,
   });
 
+/**
+ * Node streams treat an `error` event with no listener as an uncaught exception.
+ *
+ * The Effect stream adapters still observe and propagate these errors through
+ * their own listeners. This listener is only a lifetime guard for teardown
+ * races where an adapter removes its listener before `destroy(error)` emits on
+ * the next turn of the Node event loop.
+ */
+const guardDuplexErrorLifecycle = (duplex: NodeStream.Duplex): void => {
+  const handleError = () => {};
+  const handleClose = () => {
+    duplex.off("error", handleError);
+    duplex.off("close", handleClose);
+  };
+  duplex.on("error", handleError);
+  duplex.on("close", handleClose);
+};
+
 export const makeSshProxyConnector = Effect.fn("CodexEndpoint.makeSshProxyConnector")(function* (
   transport: CodexSshProxyTransport,
 ): Effect.fn.Return<
@@ -191,6 +209,8 @@ export const makeSshProxyConnector = Effect.fn("CodexEndpoint.makeSshProxyConnec
     readableHighWaterMark: SSH_PROXY_BRIDGE_HIGH_WATER_MARK,
     writableHighWaterMark: SSH_PROXY_BRIDGE_HIGH_WATER_MARK,
   });
+  guardDuplexErrorLifecycle(webSocketSide);
+  guardDuplexErrorLifecycle(sshSide);
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
       webSocketSide.destroy();

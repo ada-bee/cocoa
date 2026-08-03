@@ -106,9 +106,17 @@ const parseClientFrame = (
   };
 };
 
-const makeProxyHarness = Effect.fn("test.makeProxyHarness")(function* (stderr = "") {
+interface ProxyHarnessOptions {
+  readonly completeHandshake?: boolean;
+}
+
+const makeProxyHarness = Effect.fn("test.makeProxyHarness")(function* (
+  stderr = "",
+  options: ProxyHarnessOptions = {},
+) {
   const stdout = yield* Queue.unbounded<Uint8Array, Cause.Done>();
   const exitCode = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+  const handshakeStarted = yield* Deferred.make<void>();
   const receivedFrames: string[] = [];
   let capturedCommand: StandardCommand | undefined;
   let running = true;
@@ -124,6 +132,8 @@ const makeProxyHarness = Effect.fn("test.makeProxyHarness")(function* (stderr = 
       if (headerEnd < 0) return;
       handshakeRequest = input.subarray(0, headerEnd + 4).toString();
       input = input.subarray(headerEnd + 4);
+      Deferred.doneUnsafe(handshakeStarted, Effect.void);
+      if (options.completeHandshake === false) return;
       const key = /^sec-websocket-key:\s*(.+)$/imu.exec(handshakeRequest)?.[1]?.trim();
       if (!key) throw new Error("Missing Sec-WebSocket-Key in test handshake");
       const accept = NodeCrypto.createHash("sha1")
@@ -193,6 +203,7 @@ const makeProxyHarness = Effect.fn("test.makeProxyHarness")(function* (stderr = 
     get killCount() {
       return killCount;
     },
+    handshakeStarted: Deferred.await(handshakeStarted),
     exit: (code: number) => {
       running = false;
       Deferred.doneUnsafe(exitCode, Effect.succeed(ChildProcessSpawner.ExitCode(code)));
@@ -253,6 +264,30 @@ it.effect("surfaces process exit with bounded redacted stderr diagnostics", () =
       expect(processError.exitCode).toBe(23);
       expect(processError.diagnostics).toContain("Bearer [redacted]");
       expect(processError.diagnostics).not.toContain("do-not-leak-this");
+    }).pipe(Effect.scoped, Effect.provide(dependencies(harness.spawner)));
+  }),
+);
+
+it.effect("surfaces process exit while the WebSocket handshake bridge is active", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeProxyHarness("ssh: connect failed", {
+      completeHandshake: false,
+    });
+    yield* Effect.gen(function* () {
+      const opening = yield* makeSshProxyConnector(transport).pipe(Effect.flip, Effect.forkChild);
+      yield* harness.handshakeStarted.pipe(Effect.timeout("1 second"));
+      harness.exit(255);
+
+      const error = yield* Fiber.join(opening).pipe(Effect.timeout("1 second"));
+      expect(error._tag).toBe("CodexSshProxyProcessExitedError");
+      if (error._tag !== "CodexSshProxyProcessExitedError") return;
+      expect(error.exitCode).toBe(255);
+      expect(error.diagnostics).toContain("ssh: connect failed");
+
+      // `Duplex.destroy(error)` emits asynchronously. Drain the Node event
+      // loop so this test also proves bridge teardown has no unhandled stream
+      // error after the typed connector failure has been observed.
+      yield* Effect.promise(() => new Promise<void>((resolve) => globalThis.setImmediate(resolve)));
     }).pipe(Effect.scoped, Effect.provide(dependencies(harness.spawner)));
   }),
 );
