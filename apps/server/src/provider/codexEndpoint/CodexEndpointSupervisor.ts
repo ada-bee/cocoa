@@ -8,6 +8,7 @@ import * as Exit from "effect/Exit";
 import * as PubSub from "effect/PubSub";
 import * as Random from "effect/Random";
 import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as FileSystem from "effect/FileSystem";
@@ -163,6 +164,7 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
   const parentScope = yield* Effect.scope;
   const changes = yield* PubSub.unbounded<CodexEndpointSupervisorState>();
   const firstAttemptSettled = yield* Deferred.make<void>();
+  const transitionSemaphore = yield* Semaphore.make(1);
   const stateRef = yield* SynchronizedRef.make<SupervisorInternalState>({
     publicState: { _tag: "Connecting", attempt: 1 },
     current: null,
@@ -174,14 +176,40 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
   const publishTransition = <A>(
     transition: (state: SupervisorInternalState) => readonly [A, SupervisorInternalState] | null,
   ): Effect.Effect<A | null> =>
-    SynchronizedRef.modifyEffect(stateRef, (state) => {
-      const result = transition(state);
-      if (result === null) {
-        return Effect.succeed([null, state] as const);
-      }
-      const [value, next] = result;
-      return PubSub.publish(changes, next.publicState).pipe(Effect.as([value, next] as const));
-    });
+    transitionSemaphore.withPermits(1)(
+      SynchronizedRef.modify(
+        stateRef,
+        (
+          state,
+        ): readonly [
+          (
+            | { readonly _tag: "Skipped" }
+            | {
+                readonly _tag: "Applied";
+                readonly value: A;
+                readonly publicState: CodexEndpointSupervisorState;
+              }
+          ),
+          SupervisorInternalState,
+        ] => {
+          const result = transition(state);
+          if (result === null) {
+            return [{ _tag: "Skipped" } as const, state] as const;
+          }
+          const [value, next] = result;
+          return [
+            { _tag: "Applied", value, publicState: next.publicState } as const,
+            next,
+          ] as const;
+        },
+      ).pipe(
+        Effect.flatMap((result) =>
+          result._tag === "Skipped"
+            ? Effect.succeed(null)
+            : PubSub.publish(changes, result.publicState).pipe(Effect.as(result.value)),
+        ),
+      ),
+    );
 
   const unavailable = (threadId: ThreadId) =>
     new CodexSessionRuntimeEndpointUnavailableError({

@@ -164,6 +164,49 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
     ),
   );
 
+  it.effect("commits a Ready generation before publishing its transition", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const connection = makeConnection(1);
+        const supervisor = yield* makeSupervisor({
+          makeEndpoint: (() =>
+            Effect.succeed(connection)) as CodexEndpointSupervisorDependencies["makeEndpoint"],
+          makeRouter: (() =>
+            Effect.succeed(ROUTER)) as CodexEndpointSupervisorDependencies["makeRouter"],
+        });
+        const changes = yield* supervisor.subscribeChanges;
+        const observed = yield* Deferred.make<{
+          readonly current: CodexEndpointSupervisorState;
+          readonly borrowAvailable: boolean;
+          readonly generationId: number | null;
+        }>();
+        yield* Stream.fromSubscription(changes).pipe(
+          Stream.runForEach((transition) =>
+            transition._tag === "Ready"
+              ? Effect.gen(function* () {
+                  const current = yield* supervisor.getState;
+                  const borrowResult = yield* supervisor.borrow(THREAD_ID).pipe(Effect.result);
+                  yield* Deferred.succeed(observed, {
+                    current,
+                    borrowAvailable: borrowResult._tag === "Success",
+                    generationId:
+                      borrowResult._tag === "Success" ? borrowResult.success.generationId : null,
+                  });
+                })
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+
+        yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
+        const value = yield* Deferred.await(observed);
+        assert.equal(value.current._tag, "Ready");
+        assert.isTrue(value.borrowAvailable);
+        assert.equal(value.generationId, 1);
+      }),
+    ),
+  );
+
   it.effect("keeps an initial transient failure live and recovers through a gated retry", () =>
     Effect.scoped(
       Effect.gen(function* () {
