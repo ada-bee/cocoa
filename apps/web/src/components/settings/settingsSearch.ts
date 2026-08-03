@@ -81,11 +81,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
   },
   {
-    id: "provider-update-checks",
-    title: "Provider update checks",
-    to: "/settings/general",
-  },
-  {
     id: "auto-open-task-panel",
     title: "Auto-open task panel",
     to: "/settings/general",

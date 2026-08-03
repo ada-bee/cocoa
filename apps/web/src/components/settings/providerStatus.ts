@@ -1,4 +1,4 @@
-import type { ServerProvider, ServerProviderVersionAdvisory } from "@t3tools/contracts";
+import type { ServerProvider } from "@t3tools/contracts";
 
 /**
  * Visual treatment for each server-reported provider status. Centralized so
@@ -80,38 +80,8 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
   };
 }
 
-/**
- * Normalize a version string for display. Adds the `v` prefix when the
- * driver reported a bare version (e.g. `1.2.3`) so cards render
- * consistently regardless of driver.
- */
+/** Normalize a server-reported provider version for display. */
 export function getProviderVersionLabel(version: string | null | undefined) {
   if (!version) return null;
   return version.startsWith("v") ? version : `v${version}`;
-}
-
-export function getProviderVersionAdvisoryPresentation(
-  advisory: ServerProviderVersionAdvisory | undefined,
-): {
-  readonly detail: string;
-  readonly updateCommand: string | null;
-  readonly emphasis: "normal" | "strong";
-} | null {
-  if (!advisory || advisory.status === "current" || advisory.status === "unknown") {
-    return null;
-  }
-
-  const label = "Update available";
-  const version = advisory.latestVersion;
-  const versionLabel = getProviderVersionLabel(version);
-
-  return {
-    detail:
-      advisory.message ??
-      (versionLabel
-        ? `${label}: install ${versionLabel}.`
-        : `${label}: install the latest provider version.`),
-    updateCommand: advisory.updateCommand,
-    emphasis: "normal" as const,
-  };
 }

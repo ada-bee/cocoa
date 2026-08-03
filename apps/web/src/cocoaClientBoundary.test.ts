@@ -7,6 +7,8 @@ import platformSource from "./connection/platform.ts?raw";
 import sidebarSource from "./components/Sidebar.tsx?raw";
 import commandPaletteSource from "./components/CommandPalette.tsx?raw";
 import directConnectionsSettingsSource from "./components/settings/DirectConnectionsSettings.tsx?raw";
+import providerStatusSource from "./components/settings/providerStatus.ts?raw";
+import settingsSearchSource from "./components/settings/settingsSearch.ts?raw";
 import primaryHttpLayerSource from "./environments/primary/httpLayer.ts?raw";
 import runtimeSource from "./lib/runtime.ts?raw";
 import connectionsRouteSource from "./routes/settings.connections.tsx?raw";
@@ -18,6 +20,8 @@ const cocoaClientRoots = [
   sidebarSource,
   commandPaletteSource,
   directConnectionsSettingsSource,
+  providerStatusSource,
+  settingsSearchSource,
   primaryHttpLayerSource,
   runtimeSource,
   connectionsRouteSource,
@@ -43,6 +47,8 @@ describe("Cocoa web client boundary", () => {
       "DesktopLocal",
       "getLocalEnvironment",
       "readDesktopPrimaryBearerToken",
+      "provider-update",
+      "install the latest provider",
       'from "../components/settings/ConnectionsSettings"',
     ]) {
       expect(cocoaClientRoots).not.toContain(forbidden);
