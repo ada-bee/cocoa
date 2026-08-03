@@ -34,6 +34,7 @@ import type * as Scope from "effect/Scope";
 import type * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import type { ProviderAdapterError, ProviderDriverError } from "./Errors.ts";
 import type { ProviderTerminalAdapter } from "./ProviderTerminalAdapter.ts";
+import type { ProviderVcsAdapter } from "./ProviderVcsAdapter.ts";
 import type { ProviderWorkspaceAdapter } from "./ProviderWorkspaceAdapter.ts";
 import type { ProviderAdapterShape } from "./Services/ProviderAdapter.ts";
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
@@ -90,6 +91,8 @@ export interface ProviderInstance {
   readonly workspace?: ProviderWorkspaceAdapter;
   /** Optional provider-host interactive terminal access, permanently scoped to this instance. */
   readonly terminal?: ProviderTerminalAdapter;
+  /** Optional provider-host read-only VCS access, permanently scoped to this instance. */
+  readonly vcs?: ProviderVcsAdapter;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
 }
 
