@@ -113,7 +113,7 @@ export class WorkspaceSearchIndex extends Context.Service<
       kind?: ProjectEntryKind,
     ) => Effect.Effect<ProjectSearchEntriesResult, WorkspaceSearchIndexSearchFailed>;
     readonly searchContents: (
-      input: Omit<ProjectSearchContentsInput, "cwd">,
+      input: Omit<ProjectSearchContentsInput, "target">,
     ) => Effect.Effect<ProjectSearchContentsResult, WorkspaceSearchIndexSearchFailed>;
     readonly refresh: () => Effect.Effect<
       void,
@@ -225,7 +225,7 @@ function codePointBefore(line: string, index: number): string | undefined {
   return codePointAt(line, previousIndex);
 }
 
-function buildContentSearchQuery(input: Omit<ProjectSearchContentsInput, "cwd">): {
+function buildContentSearchQuery(input: Omit<ProjectSearchContentsInput, "target">): {
   readonly searchQuery: string;
   readonly regexMode: boolean;
 } {

@@ -32,13 +32,12 @@ import {
   OrchestrationGetTurnDiffError,
   ORCHESTRATION_WS_METHODS,
   type ProjectId,
-  type ProjectEntriesFailure,
-  type ProjectFileFailure,
-  type ProjectFileOperation,
   ProjectListEntriesError,
   ProjectReadFileError,
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
+  ProjectWorkspaceFailure,
+  type ProjectWorkspaceTarget,
   ProjectWriteFileError,
   RelayClientInstallFailedError,
   type RelayClientInstallProgressEvent,
@@ -150,51 +149,60 @@ function legacySetupFailureDescription(cause: unknown): string {
   return String(cause);
 }
 
+class ProjectWorkspaceTargetResolutionError extends Schema.TaggedErrorClass<ProjectWorkspaceTargetResolutionError>()(
+  "ProjectWorkspaceTargetResolutionError",
+  {
+    failure: ProjectWorkspaceFailure,
+    retryable: Schema.Boolean,
+  },
+) {}
+
+function projectTargetResolutionFailureContext(error: ProjectWorkspaceTargetResolutionError): {
+  readonly failure: ProjectWorkspaceFailure;
+  readonly retryable: boolean;
+} {
+  return { failure: error.failure, retryable: error.retryable };
+}
+
 function projectEntriesFailureContext(error: WorkspaceEntries.WorkspaceEntriesError): {
-  readonly failure: ProjectEntriesFailure;
-  readonly normalizedCwd?: string;
-  readonly timeout?: string;
-  readonly detail?: string;
+  readonly failure: ProjectWorkspaceFailure;
+  readonly retryable: boolean;
 } {
   switch (error._tag) {
     case "WorkspaceRootNotExistsError":
       return {
         failure: "workspace_root_not_found",
-        normalizedCwd: error.normalizedWorkspaceRoot,
+        retryable: false,
       };
     case "WorkspaceRootCreateFailedError":
       return {
-        failure: "workspace_root_create_failed",
-        normalizedCwd: error.normalizedWorkspaceRoot,
+        failure: "operation_failed",
+        retryable: false,
       };
     case "WorkspaceRootStatFailedError":
       return {
-        failure: "workspace_root_stat_failed",
-        normalizedCwd: error.normalizedWorkspaceRoot,
-        detail: error.phase,
+        failure: "operation_failed",
+        retryable: false,
       };
     case "WorkspaceRootNotDirectoryError":
       return {
         failure: "workspace_root_not_directory",
-        normalizedCwd: error.normalizedWorkspaceRoot,
+        retryable: false,
       };
     case "WorkspaceSearchIndexCreateFailed":
       return {
-        failure: "search_index_create_failed",
-        normalizedCwd: error.cwd,
-        detail: error.reason,
+        failure: "operation_failed",
+        retryable: true,
       };
     case "WorkspaceSearchIndexScanTimedOut":
       return {
-        failure: "search_index_scan_timed_out",
-        normalizedCwd: error.cwd,
-        timeout: error.timeout,
+        failure: "search_timed_out",
+        retryable: true,
       };
     case "WorkspaceSearchIndexSearchFailed":
       return {
-        failure: "search_index_search_failed",
-        normalizedCwd: error.cwd,
-        detail: error.reason,
+        failure: "operation_failed",
+        retryable: true,
       };
     default:
       return unexpectedCompatibilityError(error);
@@ -223,32 +231,20 @@ function projectFileFailureContext(
     | WorkspaceFileSystem.WorkspaceFileSystemError
     | WorkspacePaths.WorkspacePathOutsideRootError,
 ): {
-  readonly failure: ProjectFileFailure;
-  readonly resolvedPath?: string;
-  readonly resolvedWorkspaceRoot?: string;
-  readonly operation?: ProjectFileOperation;
-  readonly operationPath?: string;
+  readonly failure: ProjectWorkspaceFailure;
+  readonly retryable: boolean;
 } {
   switch (error._tag) {
     case "WorkspacePathOutsideRootError":
-      return { failure: "workspace_path_outside_root" };
+      return { failure: "path_outside_workspace", retryable: false };
     case "WorkspaceFileSystemOperationError":
-      return {
-        failure: "operation_failed",
-        resolvedPath: error.resolvedPath,
-        operation: error.operation,
-        operationPath: error.operationPath,
-      };
+      return { failure: "operation_failed", retryable: false };
     case "WorkspaceFilePathEscapeError":
-      return {
-        failure: "resolved_path_outside_root",
-        resolvedPath: error.resolvedPath,
-        resolvedWorkspaceRoot: error.resolvedWorkspaceRoot,
-      };
+      return { failure: "path_outside_workspace", retryable: false };
     case "WorkspacePathNotFileError":
-      return { failure: "path_not_file", resolvedPath: error.resolvedPath };
+      return { failure: "path_not_file", retryable: false };
     case "WorkspaceBinaryFileError":
-      return { failure: "binary_file", resolvedPath: error.resolvedPath };
+      return { failure: "binary_file", retryable: false };
     default:
       return unexpectedCompatibilityError(error);
   }
@@ -354,6 +350,53 @@ const makeWsRpcLayer = (
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+      const resolveLocalWorkspaceRoot = Effect.fn("WsRpc.resolveLocalWorkspaceRoot")(function* (
+        target: ProjectWorkspaceTarget,
+      ): Effect.fn.Return<string, ProjectWorkspaceTargetResolutionError> {
+        const project = yield* projectionSnapshotQuery.getProjectShellById(target.projectId).pipe(
+          Effect.map(Option.getOrUndefined),
+          Effect.mapError(
+            () =>
+              new ProjectWorkspaceTargetResolutionError({
+                failure: "operation_failed",
+                retryable: true,
+              }),
+          ),
+        );
+        if (project === undefined) {
+          return yield* new ProjectWorkspaceTargetResolutionError({
+            failure: "project_not_found",
+            retryable: false,
+          });
+        }
+        if (target.threadId === undefined) {
+          return project.workspaceRoot;
+        }
+
+        const thread = yield* projectionSnapshotQuery.getThreadShellById(target.threadId).pipe(
+          Effect.map(Option.getOrUndefined),
+          Effect.mapError(
+            () =>
+              new ProjectWorkspaceTargetResolutionError({
+                failure: "operation_failed",
+                retryable: true,
+              }),
+          ),
+        );
+        if (thread === undefined) {
+          return yield* new ProjectWorkspaceTargetResolutionError({
+            failure: "thread_not_found",
+            retryable: false,
+          });
+        }
+        if (thread.projectId !== target.projectId) {
+          return yield* new ProjectWorkspaceTargetResolutionError({
+            failure: "thread_project_mismatch",
+            retryable: false,
+          });
+        }
+        return thread.worktreePath ?? project.workspaceRoot;
+      });
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
@@ -1603,15 +1646,25 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectsSearchEntries]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsSearchEntries,
-            workspaceEntries.search(input).pipe(
+            resolveLocalWorkspaceRoot(input.target).pipe(
+              Effect.flatMap((cwd) =>
+                workspaceEntries.search({
+                  cwd,
+                  query: input.query,
+                  limit: input.limit,
+                  ...(input.kind === undefined ? {} : { kind: input.kind }),
+                }),
+              ),
               Effect.mapError(
                 (cause) =>
                   new ProjectSearchEntriesError({
-                    cwd: input.cwd,
+                    target: input.target,
+                    operation: "search-entries",
                     queryLength: input.query.length,
                     limit: input.limit,
-                    ...projectEntriesFailureContext(cause),
-                    cause,
+                    ...(cause._tag === "ProjectWorkspaceTargetResolutionError"
+                      ? projectTargetResolutionFailureContext(cause)
+                      : projectEntriesFailureContext(cause)),
                   }),
               ),
             ),
@@ -1620,15 +1673,27 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectsSearchContents]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsSearchContents,
-            workspaceEntries.searchContents(input).pipe(
+            resolveLocalWorkspaceRoot(input.target).pipe(
+              Effect.flatMap((cwd) =>
+                workspaceEntries.searchContents({
+                  cwd,
+                  query: input.query,
+                  limit: input.limit,
+                  caseSensitive: input.caseSensitive,
+                  wholeWord: input.wholeWord,
+                  useRegex: input.useRegex,
+                }),
+              ),
               Effect.mapError(
                 (cause) =>
                   new ProjectSearchContentsError({
-                    cwd: input.cwd,
+                    target: input.target,
+                    operation: "search-contents",
                     queryLength: input.query.length,
                     limit: input.limit,
-                    ...projectEntriesFailureContext(cause),
-                    cause,
+                    ...(cause._tag === "ProjectWorkspaceTargetResolutionError"
+                      ? projectTargetResolutionFailureContext(cause)
+                      : projectEntriesFailureContext(cause)),
                   }),
               ),
             ),
@@ -1637,13 +1702,16 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectsListEntries]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsListEntries,
-            workspaceEntries.list(input).pipe(
+            resolveLocalWorkspaceRoot(input.target).pipe(
+              Effect.flatMap((cwd) => workspaceEntries.list({ cwd })),
               Effect.mapError(
                 (cause) =>
                   new ProjectListEntriesError({
-                    ...input,
-                    ...projectEntriesFailureContext(cause),
-                    cause,
+                    target: input.target,
+                    operation: "list-entries",
+                    ...(cause._tag === "ProjectWorkspaceTargetResolutionError"
+                      ? projectTargetResolutionFailureContext(cause)
+                      : projectEntriesFailureContext(cause)),
                   }),
               ),
             ),
@@ -1652,13 +1720,19 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectsReadFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsReadFile,
-            workspaceFileSystem.readFile(input).pipe(
+            resolveLocalWorkspaceRoot(input.target).pipe(
+              Effect.flatMap((cwd) =>
+                workspaceFileSystem.readFile({ cwd, relativePath: input.relativePath }),
+              ),
               Effect.mapError(
                 (cause) =>
                   new ProjectReadFileError({
-                    ...input,
-                    ...projectFileFailureContext(cause),
-                    cause,
+                    target: input.target,
+                    operation: "read-file",
+                    relativePath: input.relativePath,
+                    ...(cause._tag === "ProjectWorkspaceTargetResolutionError"
+                      ? projectTargetResolutionFailureContext(cause)
+                      : projectFileFailureContext(cause)),
                   }),
               ),
             ),
@@ -1667,14 +1741,23 @@ const makeWsRpcLayer = (
         [WS_METHODS.projectsWriteFile]: (input) =>
           observeRpcEffect(
             WS_METHODS.projectsWriteFile,
-            workspaceFileSystem.writeFile(input).pipe(
+            resolveLocalWorkspaceRoot(input.target).pipe(
+              Effect.flatMap((cwd) =>
+                workspaceFileSystem.writeFile({
+                  cwd,
+                  relativePath: input.relativePath,
+                  contents: input.contents,
+                }),
+              ),
               Effect.mapError(
                 (cause) =>
                   new ProjectWriteFileError({
-                    cwd: input.cwd,
+                    target: input.target,
+                    operation: "write-file",
                     relativePath: input.relativePath,
-                    ...projectFileFailureContext(cause),
-                    cause,
+                    ...(cause._tag === "ProjectWorkspaceTargetResolutionError"
+                      ? projectTargetResolutionFailureContext(cause)
+                      : projectFileFailureContext(cause)),
                   }),
               ),
             ),

@@ -16,6 +16,7 @@ import {
   KeybindingRule,
   MessageId,
   ExternalLauncherCommandNotFoundError,
+  type OrchestrationProjectShell,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
   type OrchestrationCommand,
@@ -215,6 +216,39 @@ const makeDefaultOrchestrationThreadShell = (
     ...overrides,
   };
 };
+
+const makeDefaultOrchestrationProjectShell = (
+  overrides: Partial<OrchestrationProjectShell> = {},
+): OrchestrationProjectShell => {
+  const now = "2026-01-01T00:00:00.000Z";
+  return {
+    id: defaultProjectId,
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    title: "Default Project",
+    workspaceRoot: "/tmp/default-project",
+    defaultModelSelection,
+    scripts: [],
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+};
+
+const workspaceProjection = (
+  workspaceRoot: string,
+  thread: OrchestrationThreadShell | undefined = undefined,
+): Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]> => ({
+  getProjectShellById: (projectId) =>
+    Effect.succeed(
+      projectId === defaultProjectId
+        ? Option.some(makeDefaultOrchestrationProjectShell({ workspaceRoot }))
+        : Option.none(),
+    ),
+  getThreadShellById: (threadId) =>
+    Effect.succeed(
+      thread !== undefined && thread.id === threadId ? Option.some(thread) : Option.none(),
+    ),
+});
 
 const browserOtlpTracingLayer = Layer.mergeAll(
   FetchHttpClient.layer,
@@ -4415,7 +4449,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const result = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsSearchEntries]({
-            cwd: workspaceDir,
+            target: { projectId: defaultProjectId },
             query: "needle",
             limit: 10,
           }),
@@ -4636,22 +4670,35 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "export const needle = 1;",
       );
 
-      yield* buildAppUnderTest();
+      yield* buildAppUnderTest({
+        layers: { projectionSnapshotQuery: workspaceProjection(workspaceDir) },
+      });
 
       const wsUrl = yield* getWsServerUrl("/ws");
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.projectsSearchEntries]({
-            cwd: workspaceDir,
-            query: "needle",
-            limit: 10,
+          Effect.all({
+            entries: client[WS_METHODS.projectsSearchEntries]({
+              target: { projectId: defaultProjectId },
+              query: "needle",
+              limit: 10,
+            }),
+            contents: client[WS_METHODS.projectsSearchContents]({
+              target: { projectId: defaultProjectId },
+              query: "needle = 1",
+              limit: 10,
+              caseSensitive: true,
+              wholeWord: false,
+              useRegex: false,
+            }),
           }),
         ),
       );
 
-      assert.isAtLeast(response.entries.length, 1);
-      assert.isTrue(response.entries.some((entry) => entry.path === "needle-file.ts"));
-      assert.equal(response.truncated, false);
+      assert.isAtLeast(response.entries.entries.length, 1);
+      assert.isTrue(response.entries.entries.some((entry) => entry.path === "needle-file.ts"));
+      assert.equal(response.entries.truncated, false);
+      assert.isTrue(response.contents.matches.some((match) => match.path === "needle-file.ts"));
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
@@ -4666,15 +4713,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "export const answer = 42;\n",
       );
 
-      yield* buildAppUnderTest();
+      yield* buildAppUnderTest({
+        layers: { projectionSnapshotQuery: workspaceProjection(workspaceDir) },
+      });
 
       const wsUrl = yield* getWsServerUrl("/ws");
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           Effect.all({
-            listing: client[WS_METHODS.projectsListEntries]({ cwd: workspaceDir }),
+            listing: client[WS_METHODS.projectsListEntries]({
+              target: { projectId: defaultProjectId },
+            }),
             file: client[WS_METHODS.projectsReadFile]({
-              cwd: workspaceDir,
+              target: { projectId: defaultProjectId },
               relativePath: "src/index.ts",
             }),
           }),
@@ -4688,6 +4739,129 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         byteLength: 26,
         truncated: false,
       });
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
+  it.effect("resolves project workspace targets from persisted project and thread state", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-root-" });
+      const worktreeRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-worktree-root-" });
+      const spoofedRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-spoofed-root-" });
+      yield* fs.writeFileString(path.join(projectRoot, "marker.txt"), "project-root");
+      yield* fs.writeFileString(path.join(worktreeRoot, "marker.txt"), "worktree-root");
+      yield* fs.writeFileString(path.join(spoofedRoot, "marker.txt"), "spoofed-root");
+
+      const worktreeThreadId = ThreadId.make("thread-worktree-target");
+      const mismatchThreadId = ThreadId.make("thread-project-mismatch");
+      const otherProjectId = ProjectId.make("project-other");
+      const missingProjectId = ProjectId.make("project-missing");
+      const queryFailureProjectId = ProjectId.make("project-query-failure");
+      const missingThreadId = ThreadId.make("thread-missing");
+      const worktreeThread = makeDefaultOrchestrationThreadShell({
+        id: worktreeThreadId,
+        worktreePath: worktreeRoot,
+      });
+      const mismatchThread = makeDefaultOrchestrationThreadShell({
+        id: mismatchThreadId,
+        projectId: otherProjectId,
+      });
+
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getProjectShellById: (projectId) =>
+              projectId === queryFailureProjectId
+                ? Effect.fail(
+                    new PersistenceSqlError({
+                      operation: "resolve secret-token at /private/workspace",
+                      cause: new Error("authorization: Bearer secret-token"),
+                    }),
+                  )
+                : Effect.succeed(
+                    projectId === defaultProjectId
+                      ? Option.some(
+                          makeDefaultOrchestrationProjectShell({ workspaceRoot: projectRoot }),
+                        )
+                      : Option.none(),
+                  ),
+            getThreadShellById: (threadId) =>
+              Effect.succeed(
+                threadId === worktreeThreadId
+                  ? Option.some(worktreeThread)
+                  : threadId === mismatchThreadId
+                    ? Option.some(mismatchThread)
+                    : Option.none(),
+              ),
+          },
+        },
+      });
+
+      const spoofedInput = {
+        target: { projectId: defaultProjectId },
+        cwd: spoofedRoot,
+        relativePath: "marker.txt",
+      };
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const results = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.all({
+            project: client[WS_METHODS.projectsReadFile](spoofedInput),
+            worktree: client[WS_METHODS.projectsReadFile]({
+              target: { projectId: defaultProjectId, threadId: worktreeThreadId },
+              relativePath: "marker.txt",
+            }),
+            missingProject: client[WS_METHODS.projectsListEntries]({
+              target: { projectId: missingProjectId },
+            }).pipe(Effect.result),
+            missingThread: client[WS_METHODS.projectsListEntries]({
+              target: { projectId: defaultProjectId, threadId: missingThreadId },
+            }).pipe(Effect.result),
+            mismatch: client[WS_METHODS.projectsListEntries]({
+              target: { projectId: defaultProjectId, threadId: mismatchThreadId },
+            }).pipe(Effect.result),
+            resolutionFailure: client[WS_METHODS.projectsListEntries]({
+              target: { projectId: queryFailureProjectId },
+            }).pipe(Effect.result),
+          }),
+        ),
+      );
+
+      assert.equal(results.project.contents, "project-root");
+      assert.equal(results.worktree.contents, "worktree-root");
+      for (const [result, failure] of [
+        [results.missingProject, "project_not_found"],
+        [results.missingThread, "thread_not_found"],
+        [results.mismatch, "thread_project_mismatch"],
+      ] as const) {
+        if (result._tag !== "Failure" || result.failure._tag !== "ProjectListEntriesError") {
+          assert.fail(`Expected ProjectListEntriesError with failure '${failure}'.`);
+        }
+        assert.equal(result.failure.failure, failure);
+        assert.equal(result.failure.operation, "list-entries");
+        assert.equal(result.failure.retryable, false);
+        assert.notProperty(result.failure, "cause");
+        assert.notProperty(result.failure, "cwd");
+        assert.notProperty(result.failure, "workspaceRoot");
+        assert.notProperty(result.failure, "resolvedPath");
+        assert.notProperty(result.failure, "normalizedCwd");
+      }
+      if (
+        results.resolutionFailure._tag !== "Failure" ||
+        results.resolutionFailure.failure._tag !== "ProjectListEntriesError"
+      ) {
+        assert.fail("Expected a sanitized ProjectListEntriesError for projection failure.");
+      }
+      const resolutionFailure = results.resolutionFailure.failure;
+      assert.equal(resolutionFailure.failure, "operation_failed");
+      assert.equal(resolutionFailure.retryable, true);
+      assert.equal(resolutionFailure.message, "Failed to list workspace entries.");
+      assert.notProperty(resolutionFailure, "cause");
+      assert.notProperty(resolutionFailure, "detail");
+      assert.notProperty(resolutionFailure, "cwd");
+      assert.notInclude(resolutionFailure.message, "secret-token");
+      assert.notInclude(resolutionFailure.message, "/private/workspace");
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
@@ -4712,6 +4886,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       yield* buildAppUnderTest({
         layers: {
+          projectionSnapshotQuery: workspaceProjection(workspaceDir),
           vcsDriver: {
             isInsideWorkTree: () => Effect.succeed(true),
             listWorkspaceFiles: () =>
@@ -4736,7 +4911,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsSearchEntries]({
-            cwd: workspaceDir,
+            target: { projectId: defaultProjectId },
             query: "ignored-search-target",
             limit: 10,
           }),
@@ -4761,27 +4936,46 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const outsideFile = path.join(outsideDir, "outside.txt");
       yield* fs.writeFileString(outsideFile, "outside\n");
       yield* fs.symlink(outsideFile, path.join(workspaceDir, "linked-outside.txt"));
-      const resolvedOutsideFile = yield* fs.realPath(outsideFile);
-
-      yield* buildAppUnderTest();
 
       const invalidWorkspace = path.join(workspaceDir, "missing-workspace");
       const missingBrowseParent = path.join(workspaceDir, "missing-browse");
       const sensitiveQuery = "authorization: Bearer secret-token";
+      const readProjectId = ProjectId.make("project-read-safe-error");
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getProjectShellById: (projectId) =>
+              Effect.succeed(
+                projectId === defaultProjectId
+                  ? Option.some(
+                      makeDefaultOrchestrationProjectShell({ workspaceRoot: invalidWorkspace }),
+                    )
+                  : projectId === readProjectId
+                    ? Option.some(
+                        makeDefaultOrchestrationProjectShell({
+                          id: readProjectId,
+                          workspaceRoot: workspaceDir,
+                        }),
+                      )
+                    : Option.none(),
+              ),
+          },
+        },
+      });
       const wsUrl = yield* getWsServerUrl("/ws");
       const results = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           Effect.all({
             search: client[WS_METHODS.projectsSearchEntries]({
-              cwd: invalidWorkspace,
+              target: { projectId: defaultProjectId },
               query: sensitiveQuery,
               limit: 10,
             }).pipe(Effect.result),
-            list: client[WS_METHODS.projectsListEntries]({ cwd: invalidWorkspace }).pipe(
-              Effect.result,
-            ),
+            list: client[WS_METHODS.projectsListEntries]({
+              target: { projectId: defaultProjectId },
+            }).pipe(Effect.result),
             read: client[WS_METHODS.projectsReadFile]({
-              cwd: workspaceDir,
+              target: { projectId: readProjectId },
               relativePath: "linked-outside.txt",
             }).pipe(Effect.result),
             browse: client[WS_METHODS.filesystemBrowse]({
@@ -4799,19 +4993,19 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.fail("Expected a ProjectSearchEntriesError");
       }
       const searchError = results.search.failure;
-      assert.equal(
-        searchError.message,
-        `Failed to search workspace entries in '${invalidWorkspace}'.`,
-      );
-      assert.equal(searchError.cwd, invalidWorkspace);
+      assert.equal(searchError.message, "Failed to search workspace entries.");
+      assert.deepEqual(searchError.target, { projectId: defaultProjectId });
+      assert.equal(searchError.operation, "search-entries");
       assert.equal(searchError.queryLength, sensitiveQuery.length);
       assert.notProperty(searchError, "query");
       assert.notInclude(searchError.message, "Bearer");
       assert.notInclude(searchError.message, "secret-token");
       assert.equal(searchError.limit, 10);
       assert.equal(searchError.failure, "workspace_root_not_found");
-      assert.equal(searchError.normalizedCwd, invalidWorkspace);
-      assert.isDefined(searchError.cause);
+      assert.equal(searchError.retryable, false);
+      assert.notProperty(searchError, "cause");
+      assert.notProperty(searchError, "cwd");
+      assert.notProperty(searchError, "normalizedCwd");
 
       if (
         results.list._tag !== "Failure" ||
@@ -4820,25 +5014,29 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.fail("Expected a ProjectListEntriesError");
       }
       const listError = results.list.failure;
-      assert.equal(listError.message, `Failed to list workspace entries in '${invalidWorkspace}'.`);
-      assert.equal(listError.cwd, invalidWorkspace);
+      assert.equal(listError.message, "Failed to list workspace entries.");
+      assert.deepEqual(listError.target, { projectId: defaultProjectId });
+      assert.equal(listError.operation, "list-entries");
       assert.equal(listError.failure, "workspace_root_not_found");
-      assert.equal(listError.normalizedCwd, invalidWorkspace);
-      assert.isDefined(listError.cause);
+      assert.equal(listError.retryable, false);
+      assert.notProperty(listError, "cause");
+      assert.notProperty(listError, "cwd");
+      assert.notProperty(listError, "workspaceRoot");
+      assert.notProperty(listError, "normalizedCwd");
 
       if (results.read._tag !== "Failure" || results.read.failure._tag !== "ProjectReadFileError") {
         assert.fail("Expected a ProjectReadFileError");
       }
       const readError = results.read.failure;
-      assert.equal(
-        readError.message,
-        `Failed to read workspace file 'linked-outside.txt' in '${workspaceDir}'.`,
-      );
-      assert.equal(readError.cwd, workspaceDir);
+      assert.equal(readError.message, "Failed to read workspace file 'linked-outside.txt'.");
+      assert.deepEqual(readError.target, { projectId: readProjectId });
+      assert.equal(readError.operation, "read-file");
       assert.equal(readError.relativePath, "linked-outside.txt");
-      assert.equal(readError.failure, "resolved_path_outside_root");
-      assert.equal(readError.resolvedPath, resolvedOutsideFile);
-      assert.isDefined(readError.cause);
+      assert.equal(readError.failure, "path_outside_workspace");
+      assert.equal(readError.retryable, false);
+      assert.notProperty(readError, "cause");
+      assert.notProperty(readError, "resolvedPath");
+      assert.notProperty(readError, "workspaceRoot");
 
       if (
         results.browse._tag !== "Failure" ||
@@ -4873,11 +5071,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* fs.chmod(blockedRoot, 0o000);
 
       const result = yield* Effect.gen(function* () {
-        yield* buildAppUnderTest();
+        yield* buildAppUnderTest({
+          layers: { projectionSnapshotQuery: workspaceProjection(workspaceRoot) },
+        });
         const wsUrl = yield* getWsServerUrl("/ws");
         return yield* Effect.scoped(
           withWsRpcClient(wsUrl, (client) =>
-            client[WS_METHODS.projectsListEntries]({ cwd: workspaceRoot }).pipe(Effect.result),
+            client[WS_METHODS.projectsListEntries]({
+              target: { projectId: defaultProjectId },
+            }).pipe(Effect.result),
           ),
         );
       }).pipe(Effect.ensuring(fs.chmod(blockedRoot, 0o700).pipe(Effect.ignore)));
@@ -4886,9 +5088,10 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.fail("Expected a ProjectListEntriesError");
       }
       const error = result.failure;
-      assert.equal(error.failure, "workspace_root_stat_failed");
-      assert.equal(error.normalizedCwd, workspaceRoot);
-      assert.equal(error.detail, "validate-existing");
+      assert.equal(error.failure, "operation_failed");
+      assert.equal(error.retryable, false);
+      assert.notProperty(error, "workspaceRoot");
+      assert.notProperty(error, "normalizedCwd");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
@@ -4898,13 +5101,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const path = yield* Path.Path;
       const workspaceDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-write-" });
 
-      yield* buildAppUnderTest();
+      yield* buildAppUnderTest({
+        layers: { projectionSnapshotQuery: workspaceProjection(workspaceDir) },
+      });
 
       const wsUrl = yield* getWsServerUrl("/ws");
       const response = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsWriteFile]({
-            cwd: workspaceDir,
+            target: { projectId: defaultProjectId },
             relativePath: "nested/created.txt",
             contents: "written-by-rpc",
           }),
@@ -4955,13 +5160,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const workspaceDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-write-" });
 
-      yield* buildAppUnderTest();
+      yield* buildAppUnderTest({
+        layers: { projectionSnapshotQuery: workspaceProjection(workspaceDir) },
+      });
 
       const wsUrl = yield* getWsServerUrl("/ws");
       const result = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
           client[WS_METHODS.projectsWriteFile]({
-            cwd: workspaceDir,
+            target: { projectId: defaultProjectId },
             relativePath: "../escape.txt",
             contents: "nope",
           }),
@@ -4972,14 +5179,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.fail("Expected a ProjectWriteFileError");
       }
       const writeError = result.failure;
-      assert.equal(
-        writeError.message,
-        `Failed to write workspace file '../escape.txt' in '${workspaceDir}'.`,
-      );
-      assert.equal(writeError.cwd, workspaceDir);
+      assert.equal(writeError.message, "Failed to write workspace file '../escape.txt'.");
+      assert.deepEqual(writeError.target, { projectId: defaultProjectId });
+      assert.equal(writeError.operation, "write-file");
       assert.equal(writeError.relativePath, "../escape.txt");
-      assert.equal(writeError.failure, "workspace_path_outside_root");
-      assert.isDefined(writeError.cause);
+      assert.equal(writeError.failure, "path_outside_workspace");
+      assert.equal(writeError.retryable, false);
+      assert.notProperty(writeError, "cause");
+      assert.notProperty(writeError, "cwd");
+      assert.notProperty(writeError, "workspaceRoot");
+      assert.notProperty(writeError, "resolvedPath");
       assert.notProperty(writeError, "contents");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );

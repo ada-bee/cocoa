@@ -12,7 +12,6 @@ import * as Schema from "effect/Schema";
 import type {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
-  ProjectListEntriesInput,
   ProjectListEntriesResult,
   ProjectSearchContentsInput,
   ProjectSearchContentsResult,
@@ -84,6 +83,21 @@ export const WorkspaceEntriesError = Schema.Union([
 ]);
 export type WorkspaceEntriesError = typeof WorkspaceEntriesError.Type;
 
+/** Gateway-local input after a durable project target has been resolved. */
+export interface WorkspaceListEntriesInput {
+  readonly cwd: string;
+}
+
+/** Gateway-local input after a durable project target has been resolved. */
+export type WorkspaceSearchEntriesInput = Omit<ProjectSearchEntriesInput, "target"> & {
+  readonly cwd: string;
+};
+
+/** Gateway-local input after a durable project target has been resolved. */
+export type WorkspaceSearchContentsInput = Omit<ProjectSearchContentsInput, "target"> & {
+  readonly cwd: string;
+};
+
 export class WorkspaceEntries extends Context.Service<
   WorkspaceEntries,
   {
@@ -91,13 +105,13 @@ export class WorkspaceEntries extends Context.Service<
       input: FilesystemBrowseInput,
     ) => Effect.Effect<FilesystemBrowseResult, WorkspaceEntriesBrowseError>;
     readonly list: (
-      input: ProjectListEntriesInput,
+      input: WorkspaceListEntriesInput,
     ) => Effect.Effect<ProjectListEntriesResult, WorkspaceEntriesError>;
     readonly search: (
-      input: ProjectSearchEntriesInput,
+      input: WorkspaceSearchEntriesInput,
     ) => Effect.Effect<ProjectSearchEntriesResult, WorkspaceEntriesError>;
     readonly searchContents: (
-      input: ProjectSearchContentsInput,
+      input: WorkspaceSearchContentsInput,
     ) => Effect.Effect<ProjectSearchContentsResult, WorkspaceEntriesError>;
     readonly refresh: (cwd: string) => Effect.Effect<void>;
   }

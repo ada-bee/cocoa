@@ -100,13 +100,23 @@ export const WorkspaceFileSystemError = Schema.Union([
 ]);
 export type WorkspaceFileSystemError = typeof WorkspaceFileSystemError.Type;
 
+/** Gateway-local input after a durable project target has been resolved. */
+export type WorkspaceReadFileInput = Omit<ProjectReadFileInput, "target"> & {
+  readonly cwd: string;
+};
+
+/** Gateway-local input after a durable project target has been resolved. */
+export type WorkspaceWriteFileInput = Omit<ProjectWriteFileInput, "target"> & {
+  readonly cwd: string;
+};
+
 /** Service tag for workspace file operations. */
 export class WorkspaceFileSystem extends Context.Service<
   WorkspaceFileSystem,
   {
     /** Read a UTF-8 text file relative to the workspace root. */
     readonly readFile: (
-      input: ProjectReadFileInput,
+      input: WorkspaceReadFileInput,
     ) => Effect.Effect<
       ProjectReadFileResult,
       WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
@@ -118,7 +128,7 @@ export class WorkspaceFileSystem extends Context.Service<
      * workspace root.
      */
     readonly writeFile: (
-      input: ProjectWriteFileInput,
+      input: WorkspaceWriteFileInput,
     ) => Effect.Effect<
       ProjectWriteFileResult,
       WorkspaceFileSystemError | WorkspacePaths.WorkspacePathOutsideRootError
