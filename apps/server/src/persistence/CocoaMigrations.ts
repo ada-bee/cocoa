@@ -4,8 +4,12 @@ import * as Layer from "effect/Layer";
 import * as Migrator from "effect/unstable/sql/Migrator";
 
 import Migration0001 from "./CocoaMigrations/001_ProviderCheckpointOperations.ts";
+import Migration0002 from "./CocoaMigrations/002_TurnDispatchJournal.ts";
 
-export const cocoaMigrationEntries = [[1, "ProviderCheckpointOperations", Migration0001]] as const;
+export const cocoaMigrationEntries = [
+  [1, "ProviderCheckpointOperations", Migration0001],
+  [2, "TurnDispatchJournal", Migration0002],
+] as const;
 
 export const cocoaMigrationManifest = cocoaMigrationEntries.map(
   ([id, name]) => [id, name] as const,

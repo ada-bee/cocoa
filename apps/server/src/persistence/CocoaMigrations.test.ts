@@ -18,7 +18,10 @@ layer("Cocoa migrations", (it) => {
       yield* runCocoaMigrations();
 
       assert.equal(migrationManifest.at(-1)?.[0], 35);
-      assert.deepStrictEqual(cocoaMigrationManifest, [[1, "ProviderCheckpointOperations"]]);
+      assert.deepStrictEqual(cocoaMigrationManifest, [
+        [1, "ProviderCheckpointOperations"],
+        [2, "TurnDispatchJournal"],
+      ]);
 
       yield* sql`
         INSERT INTO effect_sql_migrations (migration_id, name)
@@ -37,7 +40,10 @@ layer("Cocoa migrations", (it) => {
       `;
 
       assert.deepStrictEqual(upstream, [{ migrationId: 36, name: "FutureUpstreamMigration" }]);
-      assert.deepStrictEqual(cocoa, [{ migrationId: 1, name: "ProviderCheckpointOperations" }]);
+      assert.deepStrictEqual(cocoa, [
+        { migrationId: 1, name: "ProviderCheckpointOperations" },
+        { migrationId: 2, name: "TurnDispatchJournal" },
+      ]);
     }),
   );
 });
