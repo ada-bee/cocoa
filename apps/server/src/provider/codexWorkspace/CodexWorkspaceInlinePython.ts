@@ -9,6 +9,7 @@ export const CODEX_WORKSPACE_HELPER_FRAME_PREFIX = "CWH1";
 
 export const CODEX_WORKSPACE_INLINE_PYTHON = String.raw`
 import base64
+import collections
 import errno
 import hashlib
 import json
@@ -20,6 +21,8 @@ PROTOCOL = 1
 MAX_PATH_BYTES = 4096
 MAX_READ_BYTES = 1024 * 1024
 MAX_LIST_ENTRIES = 25000
+MAX_LIST_DEPTH = 64
+MAX_LIST_DIRECTORIES = 10000
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_SAFE_INTEGER = 9007199254740991
 FRAME_PREFIX = b"CWH1"
@@ -203,34 +206,68 @@ def stat_relative(root_fd, path):
         os.close(parent)
 
 def valid_entry_name(name):
-    validate_component(name)
-    if any(0xD800 <= ord(character) <= 0xDFFF for character in name):
+    if name in ("", ".", "..") or "/" in name or "\\" in name or "\x00" in name:
+        raise HelperError("operation_failed", "Directory contains an invalid entry name.")
+    try:
+        encoded = name.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HelperError("operation_failed", "Directory contains a non-UTF-8 entry name.")
+    if len(encoded) > MAX_PATH_BYTES or any(0xD800 <= ord(character) <= 0xDFFF for character in name):
         raise HelperError("operation_failed", "Directory contains a non-UTF-8 entry name.")
 
 def list_response(request, root_fd):
     limits = require_object(request.get("limits"))
     max_entries = require_int(limits.get("maxEntries"), 1, MAX_LIST_ENTRIES, "Invalid entry limit.")
-    if require_int(limits.get("maxDepth"), 0, 64, "Invalid depth limit.") != 1:
-        raise HelperError("unsupported_operation", "Only direct directory listings are supported.")
-    if require_int(limits.get("maxDirectories"), 1, 10000, "Invalid directory limit.") != 1:
-        raise HelperError("unsupported_operation", "Only one directory may be listed per request.")
+    max_depth = require_int(limits.get("maxDepth"), 0, MAX_LIST_DEPTH, "Invalid depth limit.")
+    max_directories = require_int(limits.get("maxDirectories"), 1, MAX_LIST_DIRECTORIES, "Invalid directory limit.")
     response_limit = require_int(limits.get("maxResponseBytes"), 1, MAX_RESPONSE_BYTES, "Invalid response limit.")
     directory_fd = open_relative_directory(root_fd, split_relative(request.get("relativePath")))
     entries = []
     truncated = False
-    try:
-        with os.scandir(directory_fd) as iterator:
-            for entry in iterator:
-                valid_entry_name(entry.name)
-                if len(entries) >= max_entries:
+    if max_depth > 0:
+        pending = collections.deque([([], 0)])
+        directories_scanned = 0
+        try:
+            while pending:
+                if directories_scanned == max_directories:
                     truncated = True
                     break
+                relative_directory, depth = pending.popleft()
+                directories_scanned += 1
+                opened_fd = open_relative_directory(directory_fd, relative_directory)
+                direct_entries = []
                 try:
-                    value = entry.stat(follow_symlinks=False)
-                except OSError as error:
-                    raise map_os_error(error)
-                entries.append({"path": entry.name, "kind": entry_kind(value.st_mode)})
-    finally:
+                    with os.scandir(opened_fd) as iterator:
+                        for entry in iterator:
+                            if len(entries) + len(direct_entries) == max_entries:
+                                truncated = True
+                                break
+                            valid_entry_name(entry.name)
+                            try:
+                                value = entry.stat(follow_symlinks=False)
+                            except OSError as error:
+                                raise map_os_error(error)
+                            direct_entries.append((entry.name, entry_kind(value.st_mode)))
+                finally:
+                    os.close(opened_fd)
+                direct_entries.sort(key=lambda item: item[0])
+                for name, kind in direct_entries:
+                    components = relative_directory + [name]
+                    path = "/".join(components)
+                    child_depth = depth + 1
+                    if kind == "directory" and child_depth < max_depth:
+                        if directories_scanned + len(pending) < max_directories:
+                            pending.append((components, child_depth))
+                        else:
+                            truncated = True
+                    entries.append({"path": path, "kind": kind})
+                if len(entries) == max_entries:
+                    if pending:
+                        truncated = True
+                    break
+        finally:
+            os.close(directory_fd)
+    else:
         os.close(directory_fd)
     entries.sort(key=lambda item: item["path"])
 
@@ -248,7 +285,10 @@ def list_response(request, root_fd):
             low = middle
         else:
             high = middle - 1
-    return make(entries[:low], True), response_limit
+    candidate = make(entries[:low], True)
+    if len(encode_payload(candidate)) > response_limit:
+        raise HelperError("limit_exceeded", "Directory response byte limit is too small.")
+    return candidate, response_limit
 
 def read_response(request, root_fd):
     max_bytes = require_int(request.get("maxBytes"), 1, MAX_READ_BYTES, "Invalid read limit.")

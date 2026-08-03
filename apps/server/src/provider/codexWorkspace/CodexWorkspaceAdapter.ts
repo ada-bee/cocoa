@@ -27,6 +27,8 @@ import {
   ProviderWorkspaceDisconnectedError,
   type ProviderWorkspaceDirectoryListing,
   type ProviderWorkspaceDirectoryEntry,
+  type ProviderWorkspaceEntry,
+  type ProviderWorkspaceEntryListing,
   type ProviderWorkspaceError,
   type ProviderWorkspaceFileRead,
   type ProviderWorkspaceMetadata,
@@ -205,8 +207,9 @@ export const makeCodexWorkspaceAdapter = (
 ): ProviderWorkspaceAdapter => {
   const execute = Effect.fn("CodexWorkspaceAdapter.execute")(function* (
     input: CodexWorkspaceHelperRequestShape,
+    providerOperation?: ProviderWorkspaceOperation,
   ): Effect.fn.Return<CodexWorkspaceHelperResult, ProviderWorkspaceError> {
-    const operation = operationName(input.operation);
+    const operation = providerOperation ?? operationName(input.operation);
     const relativePath = "relativePath" in input ? input.relativePath : "<workspace-root>";
     if (
       options.helper.type === "cocoa-workspace-helper-v1" &&
@@ -334,6 +337,75 @@ export const makeCodexWorkspaceAdapter = (
     const root: CodexWorkspaceHelperRootIdentity = result.root;
     const requestRoot = root.canonicalRoot;
 
+    const performList = Effect.fn("CodexWorkspaceAdapter.performList")(function* (input: {
+      readonly relativePath: string;
+      readonly maxEntries: number;
+      readonly maxDepth: number;
+      readonly maxDirectories: number;
+      readonly operation: "listDirectory" | "listEntries";
+    }): Effect.fn.Return<ProviderWorkspaceEntryListing, ProviderWorkspaceError> {
+      const maxEntries = Math.min(input.maxEntries, 25_000);
+      const listResult = yield* execute(
+        {
+          protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
+          operation: "list",
+          root: requestRoot,
+          expectedRoot: root,
+          relativePath: input.relativePath,
+          limits: {
+            maxEntries: CodexWorkspaceHelperListEntryLimit.make(maxEntries),
+            maxDepth: CodexWorkspaceHelperListDepthLimit.make(input.maxDepth),
+            maxDirectories: CodexWorkspaceHelperListDirectoryLimit.make(input.maxDirectories),
+            maxResponseBytes: CodexWorkspaceHelperResponseByteLimit.make(
+              CODEX_WORKSPACE_HELPER_MAX_RESPONSE_BYTES,
+            ),
+          },
+        } as CodexWorkspaceHelperRequestShape,
+        input.operation,
+      );
+      if (listResult.operation !== "list") {
+        return yield* protocol(
+          options.providerInstanceId,
+          input.operation,
+          "Workspace helper returned the wrong listing result.",
+        );
+      }
+      if (listResult.entries.length > maxEntries) {
+        return yield* protocol(
+          options.providerInstanceId,
+          input.operation,
+          "Workspace helper exceeded the requested entry bound.",
+        );
+      }
+      const entries: Array<ProviderWorkspaceEntry> = [];
+      const seen = new Set<string>();
+      for (const entry of listResult.entries) {
+        const components = entry.path.split("/");
+        if (
+          entry.path === "" ||
+          entry.path.startsWith("/") ||
+          entry.path.includes("\\") ||
+          components.length > input.maxDepth ||
+          components.some(
+            (component) => component === "" || component === "." || component === "..",
+          ) ||
+          seen.has(entry.path)
+        ) {
+          return yield* protocol(
+            options.providerInstanceId,
+            input.operation,
+            "Workspace helper returned an invalid relative entry path.",
+          );
+        }
+        seen.add(entry.path);
+        entries.push({ path: entry.path, kind: entry.kind });
+      }
+      return {
+        entries,
+        truncated: listResult.truncated,
+      } satisfies ProviderWorkspaceEntryListing;
+    });
+
     return {
       getMetadata: Effect.fn("CodexWorkspaceAdapter.getMetadata")(function* (input) {
         const metadataResult = yield* execute({
@@ -353,38 +425,16 @@ export const makeCodexWorkspaceAdapter = (
         return toProviderMetadata(metadataResult.metadata);
       }),
       listDirectory: Effect.fn("CodexWorkspaceAdapter.listDirectory")(function* (input) {
-        const maxEntries = Math.min(input.maxEntries, 25_000);
-        const listResult = yield* execute({
-          protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
-          operation: "list",
-          root: requestRoot,
-          expectedRoot: root,
+        const listing = yield* performList({
           relativePath: input.relativePath,
-          limits: {
-            maxEntries: CodexWorkspaceHelperListEntryLimit.make(maxEntries),
-            maxDepth: CodexWorkspaceHelperListDepthLimit.make(1),
-            maxDirectories: CodexWorkspaceHelperListDirectoryLimit.make(1),
-            maxResponseBytes: CodexWorkspaceHelperResponseByteLimit.make(
-              CODEX_WORKSPACE_HELPER_MAX_RESPONSE_BYTES,
-            ),
-          },
-        } as CodexWorkspaceHelperRequestShape);
-        if (listResult.operation !== "list") {
-          return yield* protocol(
-            options.providerInstanceId,
-            "listDirectory",
-            "Workspace helper returned the wrong listing result.",
-          );
-        }
+          maxEntries: input.maxEntries,
+          maxDepth: 1,
+          maxDirectories: 1,
+          operation: "listDirectory",
+        });
         const entries: Array<ProviderWorkspaceDirectoryEntry> = [];
-        for (const entry of listResult.entries) {
-          if (
-            entry.path === "" ||
-            entry.path.includes("/") ||
-            entry.path.includes("\\") ||
-            entry.path === "." ||
-            entry.path === ".."
-          ) {
+        for (const entry of listing.entries) {
+          if (entry.path.includes("/")) {
             return yield* protocol(
               options.providerInstanceId,
               "listDirectory",
@@ -395,8 +445,17 @@ export const makeCodexWorkspaceAdapter = (
         }
         return {
           entries,
-          truncated: listResult.truncated,
+          truncated: listing.truncated,
         } satisfies ProviderWorkspaceDirectoryListing;
+      }),
+      listEntries: Effect.fn("CodexWorkspaceAdapter.listEntries")(function* (input) {
+        return yield* performList({
+          relativePath: input.relativePath,
+          maxEntries: input.maxEntries,
+          maxDepth: input.maxDepth,
+          maxDirectories: input.maxDirectories,
+          operation: "listEntries",
+        });
       }),
       readFile: Effect.fn("CodexWorkspaceAdapter.readFile")(function* (input) {
         const readResult = yield* execute({

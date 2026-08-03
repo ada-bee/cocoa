@@ -17,9 +17,12 @@ import * as Schema from "effect/Schema";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type {
   ProviderWorkspaceDirectoryListing,
+  ProviderWorkspaceEntryListing,
   ProviderWorkspaceError,
   ProviderWorkspaceFileRead,
   ProviderWorkspaceMaxEntries,
+  ProviderWorkspaceMaxDepth,
+  ProviderWorkspaceMaxDirectories,
   ProviderWorkspaceMetadata,
   ProviderWorkspaceReadByteLimit,
   ProviderWorkspaceRoot,
@@ -139,6 +142,13 @@ export interface ProjectWorkspaceShape {
     readonly relativePath: string;
     readonly maxEntries: ProviderWorkspaceMaxEntries;
   }) => Effect.Effect<ProviderWorkspaceDirectoryListing, ProjectWorkspaceError>;
+  readonly listEntries: (input: {
+    readonly target: ProjectWorkspaceTarget;
+    readonly relativePath: string;
+    readonly maxEntries: ProviderWorkspaceMaxEntries;
+    readonly maxDepth: ProviderWorkspaceMaxDepth;
+    readonly maxDirectories: ProviderWorkspaceMaxDirectories;
+  }) => Effect.Effect<ProviderWorkspaceEntryListing, ProjectWorkspaceError>;
   readonly readFile: (input: {
     readonly target: ProjectWorkspaceTarget;
     readonly relativePath: string;
@@ -258,7 +268,25 @@ export const make = Effect.gen(function* () {
     },
   );
 
-  return ProjectWorkspace.of({ validateRoot, getMetadata, listDirectory, readFile });
+  const listEntries: ProjectWorkspaceShape["listEntries"] = Effect.fn(
+    "ProjectWorkspace.listEntries",
+  )(function* (input) {
+    const root = yield* resolveRoot(input.target);
+    return yield* root.listEntries({
+      relativePath: input.relativePath,
+      maxEntries: input.maxEntries,
+      maxDepth: input.maxDepth,
+      maxDirectories: input.maxDirectories,
+    });
+  });
+
+  return ProjectWorkspace.of({
+    validateRoot,
+    getMetadata,
+    listDirectory,
+    listEntries,
+    readFile,
+  });
 });
 
 export const layer = Layer.effect(ProjectWorkspace, make);

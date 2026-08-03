@@ -253,6 +253,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
                     return {
                       getMetadata: () => Effect.die("unused"),
                       listDirectory: () => Effect.die("unused"),
+                      listEntries: () => Effect.die("unused"),
                       readFile: () => Effect.die("unused"),
                     };
                   }).pipe(Effect.orDie),

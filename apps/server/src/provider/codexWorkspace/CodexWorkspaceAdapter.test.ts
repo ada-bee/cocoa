@@ -19,6 +19,8 @@ import type * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import {
+  ProviderWorkspaceMaxDepth,
+  ProviderWorkspaceMaxDirectories,
   ProviderWorkspaceMaxEntries,
   ProviderWorkspaceReadByteLimit,
 } from "../ProviderWorkspaceAdapter.ts";
@@ -381,6 +383,107 @@ it.effect("invokes the packaged native helper without Python flags or an inline 
   }),
 );
 
+it.effect("sends identical bounded recursive list requests to inline and native helpers", () =>
+  Effect.gen(function* () {
+    const requests = new Map<string, CodexWorkspaceHelperRequest>();
+    const run = (helper: CodexWorkspaceHelperConfig) => {
+      const { adapter } = makeAdapter({
+        helper,
+        handler: (_method, payload) => {
+          const request = decodeRequest(payload);
+          if (request.operation === "validate") {
+            return Effect.succeed(
+              success({
+                operation: "validate",
+                root: ROOT,
+                metadata: { kind: "directory" },
+              }),
+            );
+          }
+          if (request.operation !== "list") return Effect.die("unexpected helper operation");
+          requests.set(helper.type, request);
+          return Effect.succeed(
+            success({
+              operation: "list",
+              entries: [
+                { path: "src", kind: "directory" },
+                { path: "src/index.ts", kind: "file" },
+                { path: "vendor-link", kind: "symlink" },
+              ],
+              truncated: true,
+            }),
+          );
+        },
+      });
+      return Effect.gen(function* () {
+        const root = yield* adapter.openRoot("/srv/project");
+        return yield* root.listEntries({
+          relativePath: "packages/app",
+          maxEntries: ProviderWorkspaceMaxEntries.make(30),
+          maxDepth: ProviderWorkspaceMaxDepth.make(4),
+          maxDirectories: ProviderWorkspaceMaxDirectories.make(7),
+        });
+      });
+    };
+
+    const inline = yield* run(HELPER);
+    const native = yield* run(NATIVE_HELPER);
+    assert.deepStrictEqual(native, inline);
+    assert.deepStrictEqual(
+      requests.get("cocoa-workspace-helper-v1"),
+      requests.get("inline-python3-v1"),
+    );
+    assert.deepStrictEqual(requests.get("inline-python3-v1"), {
+      protocol: 1,
+      operation: "list",
+      root: ROOT.canonicalRoot,
+      expectedRoot: ROOT,
+      relativePath: "packages/app",
+      limits: {
+        maxEntries: 30,
+        maxDepth: 4,
+        maxDirectories: 7,
+        maxResponseBytes: 8 * 1024 * 1024,
+      },
+    });
+  }),
+);
+
+it.effect("rejects recursive helper entries outside the requested depth or normalized shape", () =>
+  Effect.gen(function* () {
+    for (const path of ["nested/too/deep", "nested//invalid", "../outside", "\\windows"]) {
+      const { adapter } = makeAdapter({
+        handler: (_method, payload) => {
+          const request = decodeRequest(payload);
+          return Effect.succeed(
+            request.operation === "validate"
+              ? success({
+                  operation: "validate",
+                  root: ROOT,
+                  metadata: { kind: "directory" },
+                })
+              : success({
+                  operation: "list",
+                  entries: [{ path, kind: "file" }],
+                  truncated: false,
+                }),
+          );
+        },
+      });
+      const root = yield* adapter.openRoot("/srv/project");
+      const result = yield* root
+        .listEntries({
+          relativePath: "",
+          maxEntries: ProviderWorkspaceMaxEntries.make(10),
+          maxDepth: ProviderWorkspaceMaxDepth.make(2),
+          maxDirectories: ProviderWorkspaceMaxDirectories.make(2),
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(result._tag, "ProviderWorkspaceProtocolError");
+    }
+  }),
+);
+
 it.effect("normalizes RPC, framing, process, and helper-domain failures", () =>
   Effect.gen(function* () {
     const cases: ReadonlyArray<{
@@ -441,6 +544,13 @@ it("confines the inline Python helper with descriptors and enforces read/list bo
     NodeFS.mkdirSync(outside);
     NodeFS.writeFileSync(NodePath.join(workspace, "alpha.txt"), "0123456789", "utf8");
     NodeFS.writeFileSync(NodePath.join(workspace, "beta.txt"), "beta", "utf8");
+    NodeFS.mkdirSync(NodePath.join(workspace, "tree", "deep"), { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(workspace, "tree", "child.txt"), "child", "utf8");
+    NodeFS.writeFileSync(
+      NodePath.join(workspace, "tree", "deep", "grandchild.txt"),
+      "grandchild",
+      "utf8",
+    );
     NodeFS.writeFileSync(NodePath.join(outside, "secret.txt"), "secret", "utf8");
     NodeFS.symlinkSync(outside, NodePath.join(workspace, "escape"));
     NodeFS.symlinkSync(workspace, workspaceLink);
@@ -484,6 +594,54 @@ it("confines the inline Python helper with descriptors and enforces read/list bo
     }
     assert.strictEqual(listing.result.entries.length, 1);
     assert.isTrue(listing.result.truncated);
+
+    const recursiveList = (relativePath: string, maxDepth: number, maxDirectories = 100) =>
+      run({
+        protocol: 1,
+        operation: "list",
+        root: workspace,
+        expectedRoot: root,
+        relativePath,
+        limits: {
+          maxEntries: 100,
+          maxDepth,
+          maxDirectories,
+          maxResponseBytes: 1024 * 1024,
+        },
+      });
+    const paths = (response: CodexWorkspaceHelperResponse): ReadonlyArray<string> => {
+      assert.isTrue(response.ok);
+      if (!response.ok || response.result.operation !== "list") {
+        assert.fail("expected recursive list result");
+      }
+      return response.result.entries.map((entry) => entry.path);
+    };
+
+    const depthZero = recursiveList("", 0);
+    assert.deepStrictEqual(paths(depthZero), []);
+    if (depthZero.ok && depthZero.result.operation === "list") {
+      assert.isFalse(depthZero.result.truncated);
+    }
+    const depthOnePaths = paths(recursiveList("", 1));
+    assert.include(depthOnePaths, "tree");
+    assert.notInclude(depthOnePaths, "tree/child.txt");
+    const depthTwoPaths = paths(recursiveList("", 2));
+    assert.include(depthTwoPaths, "tree/child.txt");
+    assert.include(depthTwoPaths, "tree/deep");
+    assert.notInclude(depthTwoPaths, "tree/deep/grandchild.txt");
+
+    const relativePaths = paths(recursiveList("tree", 2));
+    assert.deepStrictEqual(relativePaths, ["child.txt", "deep", "deep/grandchild.txt"]);
+
+    const directoryBound = recursiveList("", 4, 2);
+    const directoryBoundPaths = paths(directoryBound);
+    if (directoryBound.ok && directoryBound.result.operation === "list") {
+      assert.isTrue(directoryBound.result.truncated);
+    }
+    assert.include(directoryBoundPaths, "escape");
+    assert.include(directoryBoundPaths, "tree/child.txt");
+    assert.notInclude(directoryBoundPaths, "tree/deep/grandchild.txt");
+    assert.isFalse(directoryBoundPaths.some((path) => path.includes("secret")));
 
     const read = run({
       protocol: 1,

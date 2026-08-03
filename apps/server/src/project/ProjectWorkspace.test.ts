@@ -21,6 +21,8 @@ import {
   ProviderWorkspaceUnsupportedError,
   type ProviderWorkspaceAdapter,
   type ProviderWorkspaceError,
+  ProviderWorkspaceMaxDepth,
+  ProviderWorkspaceMaxDirectories,
   ProviderWorkspaceMaxEntries,
   ProviderWorkspaceReadByteLimit,
   PROVIDER_WORKSPACE_MAX_READ_BYTES,
@@ -44,6 +46,16 @@ it("requires directory listing bounds to be positive integers", () => {
   assert.throws(() => ProviderWorkspaceMaxEntries.make(0));
   assert.throws(() => ProviderWorkspaceMaxEntries.make(1.5));
   assert.strictEqual(ProviderWorkspaceMaxEntries.make(1), 1);
+});
+
+it("bounds recursive listing depth and scanned directories", () => {
+  assert.throws(() => ProviderWorkspaceMaxDepth.make(-1));
+  assert.throws(() => ProviderWorkspaceMaxDepth.make(65));
+  assert.strictEqual(ProviderWorkspaceMaxDepth.make(0), 0);
+  assert.strictEqual(ProviderWorkspaceMaxDepth.make(64), 64);
+  assert.throws(() => ProviderWorkspaceMaxDirectories.make(0));
+  assert.throws(() => ProviderWorkspaceMaxDirectories.make(10_001));
+  assert.strictEqual(ProviderWorkspaceMaxDirectories.make(10_000), 10_000);
 });
 
 it("bounds provider workspace reads at one MiB", () => {
@@ -134,6 +146,8 @@ it.effect(
       readonly root: string;
       readonly relativePath?: string;
       readonly maxEntries?: number;
+      readonly maxDepth?: number;
+      readonly maxDirectories?: number;
       readonly maxBytes?: number;
     }> = [];
     const makeWorkspace = (provider: string, kind: "file" | "directory") => ({
@@ -162,6 +176,32 @@ it.effect(
               return {
                 entries: [{ name: `${provider}.txt`, kind: "file" as const }],
                 truncated: true,
+              };
+            }),
+          listEntries: ({
+            relativePath,
+            maxEntries,
+            maxDepth,
+            maxDirectories,
+          }: {
+            readonly relativePath: string;
+            readonly maxEntries: ProviderWorkspaceMaxEntries;
+            readonly maxDepth: ProviderWorkspaceMaxDepth;
+            readonly maxDirectories: ProviderWorkspaceMaxDirectories;
+          }) =>
+            Effect.sync(() => {
+              calls.push({
+                provider,
+                operation: "listEntries",
+                root,
+                relativePath,
+                maxEntries,
+                maxDepth,
+                maxDirectories,
+              });
+              return {
+                entries: [{ path: `src/${provider}.txt`, kind: "file" as const }],
+                truncated: false,
               };
             }),
           readFile: ({
@@ -218,6 +258,13 @@ it.effect(
         relativePath: "README.md",
         maxBytes: ProviderWorkspaceReadByteLimit.make(16),
       });
+      const recursive = yield* workspace.listEntries({
+        target: { projectId: projectA },
+        relativePath: "",
+        maxEntries: ProviderWorkspaceMaxEntries.make(10),
+        maxDepth: ProviderWorkspaceMaxDepth.make(3),
+        maxDirectories: ProviderWorkspaceMaxDirectories.make(4),
+      });
 
       assert.strictEqual(metadataA.kind, "file");
       assert.strictEqual(metadataB.kind, "directory");
@@ -226,6 +273,10 @@ it.effect(
         truncated: true,
       });
       assert.strictEqual(new TextDecoder().decode(read.bytes), "a");
+      assert.deepStrictEqual(recursive, {
+        entries: [{ path: "src/a.txt", kind: "file" }],
+        truncated: false,
+      });
       assert.deepStrictEqual(calls, [
         {
           provider: "a",
@@ -248,6 +299,15 @@ it.effect(
           relativePath: "README.md",
           maxBytes: 16,
         },
+        {
+          provider: "a",
+          operation: "listEntries",
+          root: sharedRoot,
+          relativePath: "",
+          maxEntries: 10,
+          maxDepth: 3,
+          maxDirectories: 4,
+        },
       ]);
     }).pipe(Effect.provide(testLayer({ projects, instances })));
   },
@@ -262,6 +322,7 @@ it.effect("validates only the persisted root and does not expose a root handle",
         return {
           getMetadata: () => Effect.die("unused"),
           listDirectory: () => Effect.die("unused"),
+          listEntries: () => Effect.die("unused"),
           readFile: () => Effect.die("unused"),
         };
       }),
@@ -382,6 +443,7 @@ it.effect("preserves normalized provider workspace failure categories", () => {
       Effect.succeed({
         getMetadata: () => Effect.fail(errors[errorIndex++]!),
         listDirectory: () => Effect.die("unused"),
+        listEntries: () => Effect.die("unused"),
         readFile: () => Effect.die("unused"),
       }),
   };
@@ -410,6 +472,7 @@ it.effect("routes a verified thread to its provider-owned worktree root", () => 
         return {
           getMetadata: () => Effect.succeed({ kind: "directory" as const }),
           listDirectory: () => Effect.succeed({ entries: [], truncated: false }),
+          listEntries: () => Effect.succeed({ entries: [], truncated: false }),
           readFile: () => Effect.die("unused"),
         };
       }),

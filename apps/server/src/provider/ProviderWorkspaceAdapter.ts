@@ -3,8 +3,8 @@
  *
  * A driver validates an absolute provider-host root once and returns a handle
  * whose operations are permanently bound to that root. Consumers can inspect
- * metadata and direct directory children, but cannot substitute a different
- * root or access arbitrary file contents through this capability.
+ * metadata, bounded directory trees, and bounded file prefixes, but cannot
+ * substitute a different root or perform unbounded workspace access.
  *
  * @module provider/ProviderWorkspaceAdapter
  */
@@ -16,6 +16,7 @@ export const ProviderWorkspaceOperation = Schema.Literals([
   "openRoot",
   "getMetadata",
   "listDirectory",
+  "listEntries",
   "readFile",
 ]);
 export type ProviderWorkspaceOperation = typeof ProviderWorkspaceOperation.Type;
@@ -49,6 +50,32 @@ export type ProviderWorkspaceMaxEntries = typeof ProviderWorkspaceMaxEntries.Typ
 export interface ProviderWorkspaceDirectoryListing {
   readonly entries: ReadonlyArray<ProviderWorkspaceDirectoryEntry>;
   /** True when more direct children existed than the requested bound. */
+  readonly truncated: boolean;
+}
+
+export const PROVIDER_WORKSPACE_MAX_LIST_DEPTH = 64;
+export const ProviderWorkspaceMaxDepth = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isLessThanOrEqualTo(PROVIDER_WORKSPACE_MAX_LIST_DEPTH),
+).pipe(Schema.brand("ProviderWorkspaceMaxDepth"));
+export type ProviderWorkspaceMaxDepth = typeof ProviderWorkspaceMaxDepth.Type;
+
+export const PROVIDER_WORKSPACE_MAX_LIST_DIRECTORIES = 10_000;
+export const ProviderWorkspaceMaxDirectories = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(1),
+  Schema.isLessThanOrEqualTo(PROVIDER_WORKSPACE_MAX_LIST_DIRECTORIES),
+).pipe(Schema.brand("ProviderWorkspaceMaxDirectories"));
+export type ProviderWorkspaceMaxDirectories = typeof ProviderWorkspaceMaxDirectories.Type;
+
+export interface ProviderWorkspaceEntry {
+  /** A normalized path relative to the requested directory. */
+  readonly path: string;
+  readonly kind: ProviderWorkspaceEntryKind;
+}
+
+export interface ProviderWorkspaceEntryListing {
+  readonly entries: ReadonlyArray<ProviderWorkspaceEntry>;
+  /** True only when entry, directory, or response bounds omitted in-scope entries. */
   readonly truncated: boolean;
 }
 
@@ -153,6 +180,12 @@ export interface ProviderWorkspaceRoot {
     readonly relativePath: string;
     readonly maxEntries: ProviderWorkspaceMaxEntries;
   }) => Effect.Effect<ProviderWorkspaceDirectoryListing, ProviderWorkspaceError>;
+  readonly listEntries: (input: {
+    readonly relativePath: string;
+    readonly maxEntries: ProviderWorkspaceMaxEntries;
+    readonly maxDepth: ProviderWorkspaceMaxDepth;
+    readonly maxDirectories: ProviderWorkspaceMaxDirectories;
+  }) => Effect.Effect<ProviderWorkspaceEntryListing, ProviderWorkspaceError>;
   readonly readFile: (input: {
     readonly relativePath: string;
     readonly maxBytes: ProviderWorkspaceReadByteLimit;
