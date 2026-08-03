@@ -1,4 +1,4 @@
-import type { CodexEndpointTransport, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { ProviderInstanceId, type CodexEndpointTransport, type ThreadId } from "@t3tools/contracts";
 
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as PubSub from "effect/PubSub";
 import * as Random from "effect/Random";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
@@ -69,6 +70,21 @@ export interface CodexEndpointBorrow {
   readonly ensureCurrent: Effect.Effect<void, CodexSessionRuntimeEndpointUnavailableError>;
 }
 
+export class CodexEndpointBorrowUnavailableError extends Schema.TaggedErrorClass<CodexEndpointBorrowUnavailableError>()(
+  "CodexEndpointBorrowUnavailableError",
+  { providerInstanceId: ProviderInstanceId },
+) {
+  override get message(): string {
+    return `Codex endpoint provider instance '${this.providerInstanceId}' is unavailable.`;
+  }
+}
+
+export interface CodexEndpointConnectionBorrow {
+  readonly generationId: number;
+  readonly connection: CodexEndpointConnection["Service"];
+  readonly ensureCurrent: Effect.Effect<void, CodexEndpointBorrowUnavailableError>;
+}
+
 export interface CodexEndpointSupervisorDependencies {
   readonly makeEndpoint: typeof CodexEndpointFactory.make;
   readonly makeRouter: typeof makeCodexEndpointRouter;
@@ -95,6 +111,11 @@ export interface CodexEndpointSupervisor {
   readonly borrow: (
     threadId: ThreadId,
   ) => Effect.Effect<CodexEndpointBorrow, CodexSessionRuntimeEndpointUnavailableError>;
+  /** Borrow the current connection for provider-scoped work unrelated to a Cocoa session. */
+  readonly borrowConnection: Effect.Effect<
+    CodexEndpointConnectionBorrow,
+    CodexEndpointBorrowUnavailableError
+  >;
   readonly getState: Effect.Effect<CodexEndpointSupervisorState>;
   readonly subscribeChanges: Effect.Effect<
     PubSub.Subscription<CodexEndpointSupervisorState>,
@@ -211,34 +232,63 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
       ),
     );
 
-  const unavailable = (threadId: ThreadId) =>
+  const sessionUnavailable = (threadId: ThreadId) =>
     new CodexSessionRuntimeEndpointUnavailableError({
       threadId,
       providerInstanceId: options.providerInstanceId,
     });
 
-  const ensureGenerationCurrent = (generation: CodexEndpointGeneration, threadId: ThreadId) =>
+  const connectionUnavailable = () =>
+    new CodexEndpointBorrowUnavailableError({
+      providerInstanceId: options.providerInstanceId,
+    });
+
+  const isGenerationCurrent = (
+    state: SupervisorInternalState,
+    generation: CodexEndpointGeneration,
+  ): boolean => !state.closed && state.current === generation && state.publicState._tag === "Ready";
+
+  const ensureGenerationCurrent = <E>(generation: CodexEndpointGeneration, unavailable: () => E) =>
     SynchronizedRef.get(stateRef).pipe(
       Effect.flatMap((state) =>
-        !state.closed && state.current === generation && state.publicState._tag === "Ready"
-          ? Effect.void
-          : Effect.fail(unavailable(threadId)),
+        isGenerationCurrent(state, generation) ? Effect.void : Effect.fail(unavailable()),
+      ),
+    );
+
+  const currentGeneration = <E>(unavailable: () => E): Effect.Effect<CodexEndpointGeneration, E> =>
+    SynchronizedRef.get(stateRef).pipe(
+      Effect.flatMap((state) =>
+        state.current !== null && isGenerationCurrent(state, state.current)
+          ? Effect.succeed(state.current)
+          : Effect.fail(unavailable()),
       ),
     );
 
   const borrow: CodexEndpointSupervisor["borrow"] = Effect.fn("CodexEndpointSupervisor.borrow")(
     function* (threadId) {
-      const generation = (yield* SynchronizedRef.get(stateRef)).current;
-      if (generation === null) {
-        return yield* unavailable(threadId);
-      }
+      const unavailable = () => sessionUnavailable(threadId);
+      const generation = yield* currentGeneration(unavailable);
       return {
         generationId: generation.id,
         connection: generation.connection,
         router: generation.router,
-        ensureCurrent: ensureGenerationCurrent(generation, threadId),
+        ensureCurrent: ensureGenerationCurrent(generation, unavailable),
       } satisfies CodexEndpointBorrow;
     },
+  );
+
+  const borrowConnection: CodexEndpointSupervisor["borrowConnection"] = currentGeneration(
+    connectionUnavailable,
+  ).pipe(
+    Effect.map(
+      (generation) =>
+        ({
+          generationId: generation.id,
+          connection: generation.connection,
+          ensureCurrent: ensureGenerationCurrent(generation, connectionUnavailable),
+        }) satisfies CodexEndpointConnectionBorrow,
+    ),
+    Effect.withSpan("CodexEndpointSupervisor.borrowConnection"),
   );
 
   const acquireGeneration = Effect.fn("CodexEndpointSupervisor.acquireGeneration")(function* () {
@@ -458,6 +508,7 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
   return {
     start,
     borrow,
+    borrowConnection,
     getState: SynchronizedRef.get(stateRef).pipe(Effect.map((state) => state.publicState)),
     subscribeChanges: PubSub.subscribe(changes),
   } satisfies CodexEndpointSupervisor;

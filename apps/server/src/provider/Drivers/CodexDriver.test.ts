@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -374,6 +375,69 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           assert.equal(generationReleases, 2);
         }),
       ),
+  );
+
+  it.effect("uses a provider-scoped connection borrow for endpoint status checks", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const instanceScope = yield* Scope.make();
+        const endpoint = yield* makeTerminationConnection(INSTANCE_ID, 1);
+        const adapter = { stopAll: () => Effect.void } as unknown as CodexAdapterShape;
+        let connectionBorrowCalls = 0;
+        const fabricatedThreadIds: Array<ThreadId> = [];
+
+        const driver = makeCodexDriver({
+          makeEndpointSupervisor: (() =>
+            Effect.gen(function* () {
+              const changes =
+                yield* PubSub.unbounded<CodexEndpointSupervisor.CodexEndpointSupervisorState>();
+              yield* Effect.addFinalizer(() => PubSub.shutdown(changes));
+              return {
+                start: () => Effect.void,
+                borrow: (threadId: ThreadId) =>
+                  Effect.sync(() => {
+                    fabricatedThreadIds.push(threadId);
+                  }).pipe(Effect.andThen(Effect.die("provider status must not borrow a session"))),
+                borrowConnection: Effect.sync(() => {
+                  connectionBorrowCalls += 1;
+                  return {
+                    generationId: 1,
+                    connection: endpoint.connection,
+                    ensureCurrent: Effect.void,
+                  };
+                }),
+                getState: Effect.succeed({
+                  _tag: "Ready" as const,
+                  generationId: 1,
+                  compatibility: endpoint.connection.compatibility,
+                }),
+                subscribeChanges: PubSub.subscribe(changes),
+              } satisfies CodexEndpointSupervisor.CodexEndpointSupervisor;
+            })) as CodexDriverDependencies["makeEndpointSupervisor"],
+          makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],
+          checkEndpointProviderStatus: ((_config: CodexSettings, connection: unknown) => {
+            assert.strictEqual(connection, endpoint.connection);
+            return Effect.succeed(providerDraft("ready", "0.1.0"));
+          }) as CodexDriverDependencies["checkEndpointProviderStatus"],
+        });
+
+        const instance = yield* driver
+          .create({
+            instanceId: INSTANCE_ID,
+            displayName: undefined,
+            accentColor: undefined,
+            environment: [],
+            enabled: true,
+            config: ENDPOINT_CONFIG,
+          })
+          .pipe(Effect.provideService(Scope.Scope, instanceScope));
+
+        assert.isAbove(connectionBorrowCalls, 0);
+        assert.deepStrictEqual(fabricatedThreadIds, []);
+        assert.equal((yield* instance.snapshot.getSnapshot).status, "ready");
+        yield* Scope.close(instanceScope, Exit.void);
+      }),
+    ),
   );
 
   it.effect("does not connect or invoke local seams for a disabled endpoint instance", () =>

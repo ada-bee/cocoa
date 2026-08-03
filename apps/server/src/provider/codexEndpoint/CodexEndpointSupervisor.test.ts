@@ -160,6 +160,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
         assert.equal(borrow.connection, connection);
         assert.equal(borrow.router, ROUTER);
         yield* borrow.ensureCurrent;
+
+        const connectionBorrow = yield* supervisor.borrowConnection;
+        assert.equal(connectionBorrow.generationId, 1);
+        assert.equal(connectionBorrow.connection, connection);
+        yield* connectionBorrow.ensureCurrent;
       }),
     ),
   );
@@ -229,6 +234,13 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
         yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
         assert.equal((yield* supervisor.getState)._tag, "Retrying");
         assert.equal((yield* supervisor.borrow(THREAD_ID).pipe(Effect.result))._tag, "Failure");
+        const connectionBorrow = yield* supervisor.borrowConnection.pipe(Effect.result);
+        assert.equal(connectionBorrow._tag, "Failure");
+        if (connectionBorrow._tag === "Failure") {
+          assert.equal(connectionBorrow.failure._tag, "CodexEndpointBorrowUnavailableError");
+          assert.equal(connectionBorrow.failure.providerInstanceId, INSTANCE_ID);
+          assert.isFalse("threadId" in connectionBorrow.failure);
+        }
 
         const ready = yield* awaitState(supervisor, (state) => state._tag === "Ready").pipe(
           Effect.forkChild,
@@ -348,10 +360,12 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
         });
         yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
         const oldBorrow = yield* supervisor.borrow(THREAD_ID);
+        const oldConnectionBorrow = yield* supervisor.borrowConnection;
 
         yield* first.terminate();
         const request = yield* Queue.take(gated.requests);
         assert.equal((yield* supervisor.borrow(THREAD_ID).pipe(Effect.result))._tag, "Failure");
+        assert.equal((yield* supervisor.borrowConnection.pipe(Effect.result))._tag, "Failure");
         const ready = yield* awaitState(supervisor, (state) => state._tag === "Ready").pipe(
           Effect.forkChild,
         );
@@ -362,6 +376,15 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
         assert.equal(nextBorrow.generationId, 2);
         assert.equal(nextBorrow.connection, second);
         assert.equal((yield* oldBorrow.ensureCurrent.pipe(Effect.result))._tag, "Failure");
+        const nextConnectionBorrow = yield* supervisor.borrowConnection;
+        assert.equal(nextConnectionBorrow.generationId, 2);
+        assert.equal(nextConnectionBorrow.connection, second);
+        const staleConnectionBorrow = yield* oldConnectionBorrow.ensureCurrent.pipe(Effect.result);
+        assert.equal(staleConnectionBorrow._tag, "Failure");
+        if (staleConnectionBorrow._tag === "Failure") {
+          assert.equal(staleConnectionBorrow.failure.providerInstanceId, INSTANCE_ID);
+          assert.isFalse("threadId" in staleConnectionBorrow.failure);
+        }
       }),
     ),
   );

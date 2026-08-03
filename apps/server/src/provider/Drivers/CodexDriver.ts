@@ -25,7 +25,6 @@
 import {
   CodexSettings,
   ProviderDriverKind,
-  ThreadId,
   TextGenerationError,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -373,9 +372,7 @@ export const makeCodexDriver = (
                 if (state.compatibility.serverVersion !== undefined) {
                   yield* Ref.set(observedServerVersion, state.compatibility.serverVersion);
                 }
-                const borrowed = yield* supervisor
-                  .borrow(ThreadId.make(`provider-status:${instanceId}`))
-                  .pipe(Effect.result);
+                const borrowed = yield* supervisor.borrowConnection.pipe(Effect.result);
                 if (borrowed._tag === "Failure") {
                   yield* Effect.yieldNow;
                   continue;
