@@ -13,6 +13,8 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import type { CodexAppServerFramedProtocolOptions } from "effect-codex-app-server/protocol";
 
 export const DEFAULT_INCOMING_FRAME_CAPACITY = 256;
+export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+export const DEFAULT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
 export class CodexEndpointUnsupportedAuthenticationError extends Schema.TaggedErrorClass<CodexEndpointUnsupportedAuthenticationError>()(
   "CodexEndpointUnsupportedAuthenticationError",
@@ -158,6 +160,8 @@ export interface CodexEndpointFramedTransport extends Pick<
 
 export interface DirectWebSocketConnectorOptions {
   readonly incomingFrameCapacity?: number;
+  readonly handshakeTimeoutMs?: number;
+  readonly maxPayloadBytes?: number;
   readonly makeWebSocket?: CodexEndpointWebSocketFactory;
 }
 
@@ -252,8 +256,28 @@ const openWebSocket = Effect.fn("CodexEndpoint.openWebSocket")(function* (
       socket.on("error", handleError);
       socket.on("close", handleClose);
       return Effect.sync(() => {
+        if (settled) {
+          cleanup();
+          return;
+        }
+        settled = true;
         cleanup();
-        if (!settled) socket.terminate();
+
+        // `ws` emits an asynchronous error while aborting a CONNECTING socket.
+        // Keep a sink installed until the paired close event so interruption
+        // cannot turn that expected abort into an uncaught EventEmitter error.
+        const handleAbortError = () => {};
+        const cleanupAbort = () => {
+          socket.off("error", handleAbortError);
+          socket.off("close", cleanupAbort);
+        };
+        socket.on("error", handleAbortError);
+        socket.on("close", cleanupAbort);
+        try {
+          socket.terminate();
+        } catch {
+          cleanupAbort();
+        }
       });
     },
   );
@@ -261,13 +285,14 @@ const openWebSocket = Effect.fn("CodexEndpoint.openWebSocket")(function* (
 
 const closeWebSocket = (socket: CodexEndpointWebSocket) =>
   Effect.try(() => {
-    if (socket.readyState === NodeSocket.NodeWS.WebSocket.CONNECTING) {
-      socket.terminate();
-    } else if (
+    if (
+      socket.readyState === NodeSocket.NodeWS.WebSocket.CONNECTING ||
       socket.readyState === NodeSocket.NodeWS.WebSocket.OPEN ||
       socket.readyState === NodeSocket.NodeWS.WebSocket.CLOSING
     ) {
-      socket.close(1000, "Cocoa endpoint scope closed");
+      // Scope release must finish synchronously. `close()` can retain the TCP
+      // socket and its close timer for 30 seconds, so use the hard close here.
+      socket.terminate();
     }
   }).pipe(Effect.ignore);
 
@@ -287,13 +312,31 @@ export const makeDirectWebSocketConnector = Effect.fn("CodexEndpoint.makeDirectW
     if (!Number.isSafeInteger(capacity) || capacity <= 0) {
       return yield* Effect.die(new RangeError("incomingFrameCapacity must be a positive integer"));
     }
+    const handshakeTimeout = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+    if (!Number.isSafeInteger(handshakeTimeout) || handshakeTimeout <= 0) {
+      return yield* Effect.die(new RangeError("handshakeTimeoutMs must be a positive integer"));
+    }
+    const maxPayload = options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
+    if (!Number.isSafeInteger(maxPayload) || maxPayload <= 0) {
+      return yield* Effect.die(new RangeError("maxPayloadBytes must be a positive integer"));
+    }
 
     const authorization = yield* readAuthorizationHeader(transport);
     const headers = authorization === undefined ? {} : { Authorization: authorization };
     const makeWebSocket = options.makeWebSocket ?? defaultWebSocketFactory;
     const socket = yield* Effect.acquireRelease(
-      openWebSocket(transport.url, { headers }, makeWebSocket),
+      openWebSocket(
+        transport.url,
+        {
+          headers,
+          handshakeTimeout,
+          maxPayload,
+          perMessageDeflate: false,
+        },
+        makeWebSocket,
+      ),
       closeWebSocket,
+      { interruptible: true },
     );
 
     const incomingQueue = yield* Queue.bounded<
@@ -382,43 +425,33 @@ export const makeDirectWebSocketConnector = Effect.fn("CodexEndpoint.makeDirectW
       frames.pipe(
         Stream.runForEach((frame) =>
           Effect.callback<void, CodexErrors.CodexAppServerError>((resume) => {
-            if (socket.readyState !== NodeSocket.NodeWS.WebSocket.OPEN) {
-              resume(
-                Effect.fail(
-                  transportError(
-                    "write-output-stream",
-                    new CodexEndpointWebSocketSendError({
-                      cause: new Error("WebSocket is not open"),
-                    }),
-                  ),
-                ),
+            const failSend = (cause: unknown) => {
+              const error = transportError(
+                "write-output-stream",
+                new CodexEndpointWebSocketSendError({ cause }),
               );
+              complete(error);
+              try {
+                socket.terminate();
+              } catch {
+                // The typed transport error remains the observable failure.
+              }
+              resume(Effect.fail(error));
+            };
+            if (socket.readyState !== NodeSocket.NodeWS.WebSocket.OPEN) {
+              failSend(new Error("WebSocket is not open"));
               return;
             }
             try {
               socket.send(frame, (cause) => {
                 if (cause) {
-                  resume(
-                    Effect.fail(
-                      transportError(
-                        "write-output-stream",
-                        new CodexEndpointWebSocketSendError({ cause }),
-                      ),
-                    ),
-                  );
+                  failSend(cause);
                 } else {
                   resume(Effect.void);
                 }
               });
             } catch (cause) {
-              resume(
-                Effect.fail(
-                  transportError(
-                    "write-output-stream",
-                    new CodexEndpointWebSocketSendError({ cause }),
-                  ),
-                ),
-              );
+              failSend(cause);
             }
           }),
         ),

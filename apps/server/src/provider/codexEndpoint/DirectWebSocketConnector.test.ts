@@ -11,6 +11,8 @@ import * as Stream from "effect/Stream";
 import {
   type CodexEndpointWebSocket,
   type CodexEndpointWebSocketFactory,
+  DEFAULT_HANDSHAKE_TIMEOUT_MS,
+  DEFAULT_MAX_PAYLOAD_BYTES,
   makeDirectWebSocketConnector,
 } from "./DirectWebSocketConnector.ts";
 
@@ -25,6 +27,7 @@ class FakeWebSocket implements CodexEndpointWebSocket {
   public resumeCount = 0;
   public closeCount = 0;
   public terminateCount = 0;
+  public sendError: Error | undefined;
 
   private readonly openListeners = new Set<() => void>();
   private readonly messageListeners = new Set<MessageListener>();
@@ -57,7 +60,7 @@ class FakeWebSocket implements CodexEndpointWebSocket {
 
   send(data: string, callback: (error?: Error) => void): void {
     this.sent.push(data);
-    callback();
+    callback(this.sendError);
   }
 
   close(code = 1000, reason = ""): void {
@@ -161,8 +164,28 @@ it.effect("opens without Authorization when authentication is disabled", () => {
     yield* connection.outgoing(Stream.make("first", "second"));
 
     expect(harness.capturedUrl).toBe(noAuthentication.url);
-    expect(harness.capturedOptions?.headers).toEqual({});
+    expect(harness.capturedOptions).toMatchObject({
+      headers: {},
+      handshakeTimeout: DEFAULT_HANDSHAKE_TIMEOUT_MS,
+      maxPayload: DEFAULT_MAX_PAYLOAD_BYTES,
+      perMessageDeflate: false,
+    });
     expect(harness.socket.sent).toEqual(["first", "second"]);
+  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+});
+
+it.effect("terminates a connecting socket when opening is interrupted", () => {
+  const socket = new FakeWebSocket();
+  const makeWebSocket: CodexEndpointWebSocketFactory = () => socket;
+
+  return Effect.gen(function* () {
+    const opening = yield* makeDirectWebSocketConnector(noAuthentication, {
+      makeWebSocket,
+    }).pipe(Effect.scoped, Effect.forkChild);
+    yield* Effect.yieldNow;
+    yield* Fiber.interrupt(opening);
+
+    expect(socket.terminateCount).toBe(1);
   }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
 });
 
@@ -244,6 +267,30 @@ it.effect("fails incoming frames when the socket emits an error", () => {
   }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
 });
 
+it.effect("converges both transport directions when a send fails", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const connection = yield* makeDirectWebSocketConnector(noAuthentication, {
+      makeWebSocket: harness.makeWebSocket,
+    });
+    const incomingFailure = yield* Stream.runHead(connection.incoming).pipe(
+      Effect.flip,
+      Effect.forkChild,
+    );
+    yield* Effect.yieldNow;
+    harness.socket.sendError = new Error("send failed");
+
+    const outgoingError = yield* connection.outgoing(Stream.make("frame")).pipe(Effect.flip);
+    const incomingError = yield* Fiber.join(incomingFailure);
+    const terminationError = yield* connection.terminationError;
+
+    expect(outgoingError._tag).toBe("CodexAppServerTransportError");
+    expect(incomingError).toBe(outgoingError);
+    expect(terminationError).toBe(outgoingError);
+    expect(harness.socket.terminateCount).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+});
+
 it.effect("propagates abnormal disconnects through the incoming stream", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
@@ -302,7 +349,7 @@ it.effect("closes the socket when its scope is finalized", () => {
       makeWebSocket: harness.makeWebSocket,
     }).pipe(Effect.scoped);
 
-    expect(harness.socket.closeCount).toBe(1);
+    expect(harness.socket.terminateCount).toBe(1);
     expect(harness.socket.readyState).toBe(3);
   }).pipe(Effect.provide(noOpFileSystem));
 });
