@@ -7,7 +7,7 @@ import type {
   AuthSessionId,
   AuthSessionState,
 } from "@t3tools/contracts";
-import { EnvironmentHttpCommonError, PRIMARY_LOCAL_ENVIRONMENT_ID } from "@t3tools/contracts";
+import { EnvironmentHttpCommonError } from "@t3tools/contracts";
 import type { EnvironmentHttpCommonError as EnvironmentHttpCommonErrorType } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -84,22 +84,6 @@ export const isPrimaryEnvironmentPairingCredentialRejectedError = Schema.is(
   PrimaryEnvironmentPairingCredentialRejectedError,
 );
 
-export class PrimaryEnvironmentAuthSessionTimeoutError extends Schema.TaggedErrorClass<PrimaryEnvironmentAuthSessionTimeoutError>()(
-  "PrimaryEnvironmentAuthSessionTimeoutError",
-  {
-    timeoutMs: Schema.Number,
-    elapsedMs: Schema.Number,
-  },
-) {
-  override get message(): string {
-    return "Timed out waiting for authenticated session after bootstrap.";
-  }
-}
-
-export const isPrimaryEnvironmentAuthSessionTimeoutError = Schema.is(
-  PrimaryEnvironmentAuthSessionTimeoutError,
-);
-
 export class PrimaryEnvironmentPairingCredentialRequiredError extends Schema.TaggedErrorClass<PrimaryEnvironmentPairingCredentialRequiredError>()(
   "PrimaryEnvironmentPairingCredentialRequiredError",
   {
@@ -150,8 +134,6 @@ type ServerAuthGateState =
 
 let bootstrapPromise: Promise<ServerAuthGateState> | null = null;
 let resolvedAuthenticatedGateState: ServerAuthGateState | null = null;
-const AUTH_SESSION_ESTABLISH_TIMEOUT_MS = 2_000;
-const AUTH_SESSION_ESTABLISH_STEP_MS = 100;
 
 export function peekPairingTokenFromUrl(): string | null {
   return getPairingTokenFromUrl(new URL(window.location.href));
@@ -173,17 +155,6 @@ export function takePairingTokenFromUrl(): string | null {
   }
   stripPairingTokenFromUrl();
   return token;
-}
-
-function getDesktopBootstrapCredential(): string | null {
-  // Both backends share the same bootstrap token (DesktopBackendConfiguration
-  // mints one tokenRef and feeds it to both resolvers), so picking the
-  // primary entry is fine even when the WSL backend is also registered.
-  const bootstraps = window.desktopBridge?.getLocalEnvironmentBootstraps() ?? [];
-  const primary = bootstraps.find((entry) => entry.id === PRIMARY_LOCAL_ENVIRONMENT_ID);
-  return typeof primary?.bootstrapToken === "string" && primary.bootstrapToken.length > 0
-    ? primary.bootstrapToken
-    : null;
 }
 
 export async function fetchSessionState(): Promise<AuthSessionState> {
@@ -255,27 +226,6 @@ async function exchangeBootstrapCredential(credential: string): Promise<AuthBrow
   });
 }
 
-async function waitForAuthenticatedSessionAfterBootstrap(): Promise<AuthSessionState> {
-  const startedAt = Date.now();
-
-  while (true) {
-    const session = await fetchSessionState();
-    if (session.authenticated) {
-      return session;
-    }
-
-    const elapsedMs = Date.now() - startedAt;
-    if (elapsedMs >= AUTH_SESSION_ESTABLISH_TIMEOUT_MS) {
-      throw new PrimaryEnvironmentAuthSessionTimeoutError({
-        timeoutMs: AUTH_SESSION_ESTABLISH_TIMEOUT_MS,
-        elapsedMs,
-      });
-    }
-
-    await waitForBootstrapRetry(AUTH_SESSION_ESTABLISH_STEP_MS);
-  }
-}
-
 const TRANSIENT_BOOTSTRAP_STATUS_CODES = new Set([502, 503, 504]);
 const BOOTSTRAP_RETRY_TIMEOUT_MS = 15_000;
 const BOOTSTRAP_RETRY_STEP_MS = 500;
@@ -318,30 +268,15 @@ function isTransientBootstrapError(error: unknown): boolean {
 }
 
 async function bootstrapServerAuth(): Promise<ServerAuthGateState> {
-  const bootstrapCredential = getDesktopBootstrapCredential();
   const currentSession = await fetchSessionState();
   if (currentSession.authenticated) {
     return { status: "authenticated" };
   }
 
-  if (!bootstrapCredential) {
-    return {
-      status: "requires-auth",
-      auth: currentSession.auth,
-    };
-  }
-
-  try {
-    await exchangeBootstrapCredential(bootstrapCredential);
-    await waitForAuthenticatedSessionAfterBootstrap();
-    return { status: "authenticated" };
-  } catch (error) {
-    return {
-      status: "requires-auth",
-      auth: currentSession.auth,
-      errorMessage: error instanceof Error ? error.message : "Authentication failed.",
-    };
-  }
+  return {
+    status: "requires-auth",
+    auth: currentSession.auth,
+  };
 }
 
 export async function submitServerAuthCredential(credential: string): Promise<void> {

@@ -4,6 +4,10 @@ import packageJson from "../package.json" with { type: "json" };
 import rootSource from "./routes/__root.tsx?raw";
 import mainSource from "./main.tsx?raw";
 import platformSource from "./connection/platform.ts?raw";
+import sidebarSource from "./components/Sidebar.tsx?raw";
+import commandPaletteSource from "./components/CommandPalette.tsx?raw";
+import directConnectionsSettingsSource from "./components/settings/DirectConnectionsSettings.tsx?raw";
+import primaryHttpLayerSource from "./environments/primary/httpLayer.ts?raw";
 import runtimeSource from "./lib/runtime.ts?raw";
 import connectionsRouteSource from "./routes/settings.connections.tsx?raw";
 
@@ -11,6 +15,10 @@ const cocoaClientRoots = [
   mainSource,
   rootSource,
   platformSource,
+  sidebarSource,
+  commandPaletteSource,
+  directConnectionsSettingsSource,
+  primaryHttpLayerSource,
   runtimeSource,
   connectionsRouteSource,
 ].join("\n");
@@ -31,6 +39,9 @@ describe("Cocoa web client boundary", () => {
       "ConnectOnboardingDialog",
       "RelayClientInstallDialog",
       "ProviderUpdateLaunchNotification",
+      "desktopLocal",
+      "getLocalEnvironment",
+      "readDesktopPrimaryBearerToken",
       'from "../components/settings/ConnectionsSettings"',
     ]) {
       expect(cocoaClientRoots).not.toContain(forbidden);

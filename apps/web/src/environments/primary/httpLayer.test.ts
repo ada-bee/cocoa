@@ -1,14 +1,11 @@
-import type { DesktopBridge } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { HttpClient } from "effect/unstable/http";
 
-import { __resetDesktopPrimaryAuthForTests } from "./desktopAuth";
 import { makePrimaryEnvironmentHttpLayer } from "./httpLayer";
 
 describe.sequential("primary environment HTTP layer", () => {
   afterEach(() => {
-    __resetDesktopPrimaryAuthForTests();
     Reflect.deleteProperty(globalThis, "window");
     vi.unstubAllGlobals();
   });
@@ -35,22 +32,15 @@ describe.sequential("primary environment HTTP layer", () => {
     }).pipe(Effect.provide(makePrimaryEnvironmentHttpLayer()));
   });
 
-  it.effect("uses bearer auth without cookies for desktop-managed primaries", () => {
+  it.effect("omits cookies and implicit authorization for direct cross-origin requests", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
+    vi.stubEnv("VITE_HTTP_URL", "http://127.0.0.1:3773");
+    vi.stubEnv("VITE_WS_URL", "ws://127.0.0.1:3773");
     Object.defineProperty(globalThis, "window", {
       configurable: true,
       value: {
-        location: { origin: "t3code://app" },
-        desktopBridge: {
-          getLocalEnvironmentBootstrap: () => ({
-            label: "Local environment",
-            httpBaseUrl: "http://127.0.0.1:3773",
-            wsBaseUrl: "ws://127.0.0.1:3773",
-            bootstrapToken: "desktop-bootstrap-token",
-          }),
-          getLocalEnvironmentBearerToken: vi.fn().mockResolvedValue("desktop-bearer-token"),
-        } as unknown as DesktopBridge,
+        location: { origin: "https://cocoa.example.com" },
       },
     });
 
@@ -59,7 +49,7 @@ describe.sequential("primary environment HTTP layer", () => {
 
       const request = new Request(fetchMock.mock.calls[0]?.[0], fetchMock.mock.calls[0]?.[1]);
       expect(request.credentials).not.toBe("include");
-      expect(request.headers.get("authorization")).toBe("Bearer desktop-bearer-token");
+      expect(request.headers.get("authorization")).toBeNull();
     }).pipe(Effect.provide(makePrimaryEnvironmentHttpLayer()));
   });
 });

@@ -3,7 +3,6 @@ import {
   type AuthBrowserSessionResult,
   type AuthCreatePairingCredentialInput,
   type AuthSessionState,
-  type DesktopBridge,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -18,19 +17,11 @@ type TestWindow = {
   history: {
     replaceState: (_data: unknown, _unused: string, url: string) => void;
   };
-  desktopBridge?: DesktopBridge;
 };
 
 const LOOPBACK_AUTH = {
   policy: "loopback-browser",
   bootstrapMethods: ["one-time-token"],
-  sessionMethods: ["browser-session-cookie"],
-  sessionCookieName: "t3_session",
-} as const;
-
-const DESKTOP_AUTH = {
-  policy: "desktop-managed-local",
-  bootstrapMethods: ["desktop-bootstrap"],
   sessionMethods: ["browser-session-cookie"],
   sessionCookieName: "t3_session",
 } as const;
@@ -69,21 +60,6 @@ function installTestBrowser(url: string) {
   vi.stubGlobal("document", { title: "T3 Code" });
 
   return testWindow;
-}
-
-function installDesktopBootstrap() {
-  const testWindow = installTestBrowser("http://localhost/");
-  testWindow.desktopBridge = {
-    getLocalEnvironmentBootstraps: () => [
-      {
-        id: "primary",
-        label: "Local environment",
-        httpBaseUrl: "http://localhost:3773",
-        wsBaseUrl: "ws://localhost:3773",
-        bootstrapToken: "desktop-bootstrap-token",
-      },
-    ],
-  } as unknown as DesktopBridge;
 }
 
 function sequence<A>(...values: ReadonlyArray<A>) {
@@ -136,37 +112,6 @@ describe("resolveInitialServerAuthGateState", () => {
     vi.restoreAllMocks();
   });
 
-  it("reuses an in-flight silent bootstrap attempt", async () => {
-    const nextSession = sequence(
-      unauthenticatedSession(DESKTOP_AUTH),
-      authenticatedSession(DESKTOP_AUTH),
-    );
-    const testApi = await installAuthApi({
-      session: nextSession,
-      browserSession: () => Effect.succeed(browserSession(["orchestration:read", "access:write"])),
-    });
-
-    const testWindow = installTestBrowser("http://localhost/");
-    testWindow.desktopBridge = {
-      getLocalEnvironmentBootstraps: () => [
-        {
-          id: "primary",
-          label: "Windows",
-          httpBaseUrl: "http://localhost:3773",
-          wsBaseUrl: "ws://localhost:3773",
-          bootstrapToken: "desktop-bootstrap-token",
-        },
-      ],
-    } as unknown as DesktopBridge;
-
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
-
-    await Promise.all([resolveInitialServerAuthGateState(), resolveInitialServerAuthGateState()]);
-
-    expect(testApi.calls.session).toBe(2);
-    expect(testApi.calls.browserSession).toEqual([{ credential: "desktop-bootstrap-token" }]);
-  });
-
   it("uses https urls when the primary environment uses wss", async () => {
     await installAuthApi({ session: () => unauthenticatedSession(LOOPBACK_AUTH) });
     vi.stubEnv("VITE_HTTP_URL", "https://remote.example.com");
@@ -200,28 +145,18 @@ describe("resolveInitialServerAuthGateState", () => {
     );
   });
 
-  it("uses the vite proxy for desktop-managed loopback auth requests during local dev", async () => {
-    await installAuthApi({ session: () => unauthenticatedSession(DESKTOP_AUTH) });
+  it("uses the current origin for local development auth requests", async () => {
+    await installAuthApi({ session: () => unauthenticatedSession(LOOPBACK_AUTH) });
     vi.stubEnv("VITE_DEV_SERVER_URL", "http://127.0.0.1:5733");
 
-    const testWindow = installTestBrowser("http://127.0.0.1:5733/");
-    testWindow.desktopBridge = {
-      getLocalEnvironmentBootstraps: () => [
-        {
-          id: "primary",
-          label: "Windows",
-          httpBaseUrl: "http://127.0.0.1:3773",
-          wsBaseUrl: "ws://127.0.0.1:3773",
-        },
-      ],
-    } as unknown as DesktopBridge;
+    installTestBrowser("http://127.0.0.1:5733/");
 
     const { resolveInitialServerAuthGateState, resolvePrimaryEnvironmentHttpUrl } =
       await import("./environments/primary");
 
     await expect(resolveInitialServerAuthGateState()).resolves.toEqual({
       status: "requires-auth",
-      auth: DESKTOP_AUTH,
+      auth: LOOPBACK_AUTH,
     });
     expect(resolvePrimaryEnvironmentHttpUrl("/api/auth/session")).toBe(
       "http://127.0.0.1:5733/api/auth/session",
@@ -376,62 +311,6 @@ describe("resolveInitialServerAuthGateState", () => {
       "Primary environment request failed during list-pairing-links (HTTP 500).",
     );
     expect(error.message).not.toContain(cause.message);
-  });
-
-  it("waits for the authenticated session to become observable after silent desktop bootstrap", async () => {
-    vi.useFakeTimers();
-    const nextSession = sequence(
-      unauthenticatedSession(DESKTOP_AUTH),
-      unauthenticatedSession(DESKTOP_AUTH),
-      authenticatedSession(DESKTOP_AUTH),
-    );
-    const testApi = await installAuthApi({
-      session: nextSession,
-      browserSession: () => Effect.succeed(browserSession(["orchestration:read", "access:write"])),
-    });
-
-    const testWindow = installTestBrowser("http://localhost/");
-    testWindow.desktopBridge = {
-      getLocalEnvironmentBootstraps: () => [
-        {
-          id: "primary",
-          label: "Windows",
-          httpBaseUrl: "http://localhost:3773",
-          wsBaseUrl: "ws://localhost:3773",
-          bootstrapToken: "desktop-bootstrap-token",
-        },
-      ],
-    } as unknown as DesktopBridge;
-
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
-
-    const gateStatePromise = resolveInitialServerAuthGateState();
-    await vi.advanceTimersByTimeAsync(100);
-
-    await expect(gateStatePromise).resolves.toEqual({ status: "authenticated" });
-    expect(testApi.calls.session).toBe(3);
-  });
-
-  it("preserves the timeout message when a bootstrapped session never becomes observable", async () => {
-    vi.useFakeTimers();
-    const testApi = await installAuthApi({
-      session: () => unauthenticatedSession(DESKTOP_AUTH),
-      browserSession: () => Effect.succeed(browserSession(["orchestration:read", "access:write"])),
-    });
-
-    installDesktopBootstrap();
-
-    const { resolveInitialServerAuthGateState } = await import("./environments/primary");
-
-    const gateStatePromise = resolveInitialServerAuthGateState();
-    await vi.advanceTimersByTimeAsync(2_000);
-
-    await expect(gateStatePromise).resolves.toEqual({
-      status: "requires-auth",
-      auth: DESKTOP_AUTH,
-      errorMessage: "Timed out waiting for authenticated session after bootstrap.",
-    });
-    expect(testApi.calls.browserSession).toEqual([{ credential: "desktop-bootstrap-token" }]);
   });
 
   it("memoizes the authenticated gate state after the first successful read", async () => {

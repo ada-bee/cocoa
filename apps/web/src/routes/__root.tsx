@@ -49,7 +49,10 @@ import {
 
 export const Route = createRootRoute({
   beforeLoad: async () => {
-    const authGateState = await resolveInitialServerAuthGateState();
+    const authGateState =
+      window.desktopBridge === undefined
+        ? await resolveInitialServerAuthGateState()
+        : ({ status: "authenticated" } as const);
     return {
       authGateState,
     };
