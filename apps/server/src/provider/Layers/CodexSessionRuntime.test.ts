@@ -21,11 +21,34 @@ import {
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   makeCodexEndpointSessionRuntime,
+  normalizeCodexThreadTurnSnapshot,
   openCodexThread,
 } from "./CodexSessionRuntime.ts";
 import type { CodexEndpointConnection } from "../codexEndpoint/CodexEndpointConnection.ts";
 import type { CodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+
+it("normalizes authoritative Codex turn state and signals omitted nonrecoverable activity", () => {
+  const normalized = normalizeCodexThreadTurnSnapshot({
+    id: "turn-authoritative",
+    status: "completed",
+    completedAt: 1_767_225_600,
+    itemsView: "summary",
+    items: [
+      { id: "user-1", type: "userMessage", content: [] },
+      { id: "tool-1", type: "contextCompaction" },
+      { id: "assistant-commentary", type: "agentMessage", text: "working", phase: "commentary" },
+      { id: "assistant-final", type: "agentMessage", text: "done", phase: "final_answer" },
+    ],
+  });
+
+  NodeAssert.equal(normalized.id, "turn-authoritative");
+  NodeAssert.equal(normalized.status, "completed");
+  NodeAssert.equal(normalized.finalAssistantItemId, "assistant-final");
+  NodeAssert.equal(normalized.finalAssistantText, "done");
+  NodeAssert.equal(normalized.hasNonrecoverableActivityGap, true);
+  NodeAssert.equal(normalized.completedAt, "2026-01-01T00:00:00.000Z");
+});
 
 describe("CodexSessionRuntimeIdentifierGenerationError", () => {
   it("retains identifier purpose and the random source failure", () => {

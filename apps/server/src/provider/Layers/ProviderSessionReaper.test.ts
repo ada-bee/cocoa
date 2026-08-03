@@ -176,6 +176,7 @@ describe("ProviderSessionReaper", () => {
       },
       rollbackConversation: () => unsupported(),
       inspectConversation: () => unsupported(),
+      readAuthoritativeConversation: () => unsupported(),
       rollbackConversationChecked: () => unsupported(),
       streamEvents: Stream.empty,
     };

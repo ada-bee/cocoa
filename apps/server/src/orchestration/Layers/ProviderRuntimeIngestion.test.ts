@@ -123,6 +123,7 @@ function createProviderServiceHarness() {
     },
     rollbackConversation: () => unsupported(),
     inspectConversation: () => unsupported(),
+    readAuthoritativeConversation: () => unsupported(),
     rollbackConversationChecked: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub);

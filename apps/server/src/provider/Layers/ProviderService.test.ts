@@ -222,6 +222,7 @@ function makeFakeCodexAdapter(
         ? {
             conversationRead: "ordered-turn-ids-v1" as const,
             checkedConversationRollback: "ordered-turn-ids-v1" as const,
+            conversationReconciliation: "ordered-turn-state-v1" as const,
           }
         : {}),
     },
@@ -1007,6 +1008,60 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("reads a bounded provider-normal authoritative Codex snapshot on the exact route", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-authoritative-read");
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: "/tmp/project",
+        runtimeMode: "full-access",
+      });
+      routing.codex.readThread.mockImplementationOnce((requestedThreadId) =>
+        Effect.succeed({
+          threadId: requestedThreadId,
+          turns: [
+            {
+              id: asTurnId("turn-authoritative"),
+              items: [{ providerNative: "not exposed" }],
+              reconciliation: {
+                status: "completed",
+                completedAt: "2026-08-04T12:00:00.000Z",
+                finalAssistantItemId: "assistant-authoritative",
+                finalAssistantText: "Recovered final answer",
+                hasNonrecoverableActivityGap: true,
+              },
+            },
+          ],
+        }),
+      );
+
+      assert.deepEqual(
+        yield* provider.readAuthoritativeConversation({
+          threadId,
+          providerInstanceId: codexInstanceId,
+        }),
+        {
+          threadId,
+          providerInstanceId: codexInstanceId,
+          turns: [
+            {
+              id: asTurnId("turn-authoritative"),
+              status: "completed",
+              completedAt: "2026-08-04T12:00:00.000Z",
+              finalAssistantItemId: "assistant-authoritative",
+              finalAssistantText: "Recovered final answer",
+              hasNonrecoverableActivityGap: true,
+            },
+          ],
+        },
+      );
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
   it.effect("inspects and rolls back an exact Codex route with checked turn digests", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

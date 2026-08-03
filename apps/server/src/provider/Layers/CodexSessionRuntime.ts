@@ -24,6 +24,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -148,6 +149,11 @@ export interface CodexSessionRuntimeSendTurnInput {
 export interface CodexThreadTurnSnapshot {
   readonly id: TurnId;
   readonly items: ReadonlyArray<CodexThreadItem>;
+  readonly status: "running" | "completed" | "failed" | "interrupted";
+  readonly completedAt: string | null;
+  readonly finalAssistantItemId: string | null;
+  readonly finalAssistantText: string | null;
+  readonly hasNonrecoverableActivityGap: boolean;
 }
 
 export interface CodexThreadSnapshot {
@@ -760,15 +766,53 @@ function updateSession(
   });
 }
 
+function epochSecondsToIso(value: number | null | undefined): string | null {
+  if (value === null || value === undefined || !Number.isSafeInteger(value) || value < 0)
+    return null;
+  return Option.match(DateTime.make(value * 1_000), {
+    onNone: () => null,
+    onSome: DateTime.formatIso,
+  });
+}
+
+function normalizeCodexTurnStatus(
+  status: EffectCodexSchema.V2ThreadReadResponse__TurnStatus,
+): CodexThreadTurnSnapshot["status"] {
+  switch (status) {
+    case "inProgress":
+      return "running";
+    case "failed":
+      return "failed";
+    case "interrupted":
+      return "interrupted";
+    case "completed":
+      return "completed";
+  }
+}
+
+export function normalizeCodexThreadTurnSnapshot(
+  turn: EffectCodexSchema.V2ThreadReadResponse["thread"]["turns"][number],
+): CodexThreadTurnSnapshot {
+  const assistantItems = turn.items.filter((item) => item.type === "agentMessage");
+  const finalAssistant =
+    assistantItems.findLast((item) => item.phase === "final_answer") ?? assistantItems.at(-1);
+  return {
+    id: TurnId.make(turn.id),
+    items: turn.items,
+    status: normalizeCodexTurnStatus(turn.status),
+    completedAt: epochSecondsToIso(turn.completedAt),
+    finalAssistantItemId: finalAssistant?.id ?? null,
+    finalAssistantText: finalAssistant?.text ?? null,
+    hasNonrecoverableActivityGap: turn.itemsView !== "full",
+  };
+}
+
 function parseThreadSnapshot(
   response: EffectCodexSchema.V2ThreadReadResponse | EffectCodexSchema.V2ThreadRollbackResponse,
 ): CodexThreadSnapshot {
   return {
     threadId: response.thread.id,
-    turns: response.thread.turns.map((turn) => ({
-      id: TurnId.make(turn.id),
-      items: turn.items,
-    })),
+    turns: response.thread.turns.map(normalizeCodexThreadTurnSnapshot),
   };
 }
 

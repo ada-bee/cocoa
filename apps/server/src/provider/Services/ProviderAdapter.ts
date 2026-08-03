@@ -26,6 +26,7 @@ import type * as Stream from "effect/Stream";
 export type ProviderSessionModelSwitchMode = "in-session" | "unsupported";
 export type ProviderConversationReadMode = "ordered-turn-ids-v1" | "unsupported";
 export type ProviderCheckedConversationRollbackMode = "ordered-turn-ids-v1" | "unsupported";
+export type ProviderConversationReconciliationMode = "ordered-turn-state-v1" | "unsupported";
 
 export interface ProviderAdapterCapabilities {
   /**
@@ -36,6 +37,8 @@ export interface ProviderAdapterCapabilities {
   readonly conversationRead?: ProviderConversationReadMode;
   /** Defaults to unsupported for adapters that predate checked rollback. */
   readonly checkedConversationRollback?: ProviderCheckedConversationRollbackMode;
+  /** Defaults to unsupported; authoritative recovery never guesses legacy snapshots. */
+  readonly conversationReconciliation?: ProviderConversationReconciliationMode;
 }
 
 export const providerConversationReadMode = (
@@ -50,6 +53,13 @@ export const providerCheckedConversationRollbackMode = (
 export interface ProviderThreadTurnSnapshot {
   readonly id: TurnId;
   readonly items: ReadonlyArray<unknown>;
+  readonly reconciliation?: {
+    readonly status: "running" | "completed" | "failed" | "interrupted";
+    readonly completedAt: string | null;
+    readonly finalAssistantItemId: string | null;
+    readonly finalAssistantText: string | null;
+    readonly hasNonrecoverableActivityGap: boolean;
+  };
 }
 
 export interface ProviderThreadSnapshot {

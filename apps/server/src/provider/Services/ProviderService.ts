@@ -24,6 +24,7 @@ import type {
   ProviderStopSessionInput,
   ThreadId,
   ProviderTurnStartResult,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -45,6 +46,21 @@ export interface ProviderConversationInspection {
   readonly binding: ProviderConversationBinding;
   readonly preimage: ProviderTurnSequenceDigest;
   readonly target: ProviderTurnSequenceDigest;
+}
+
+export interface ProviderAuthoritativeTurnSnapshot {
+  readonly id: TurnId;
+  readonly status: "running" | "completed" | "failed" | "interrupted";
+  readonly completedAt: string | null;
+  readonly finalAssistantItemId: string | null;
+  readonly finalAssistantText: string | null;
+  readonly hasNonrecoverableActivityGap: boolean;
+}
+
+export interface ProviderAuthoritativeConversationSnapshot {
+  readonly threadId: ThreadId;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly turns: ReadonlyArray<ProviderAuthoritativeTurnSnapshot>;
 }
 
 /**
@@ -136,6 +152,12 @@ export interface ProviderServiceShape {
     readonly providerInstanceId: ProviderInstanceId;
     readonly targetTurnCount: number;
   }) => Effect.Effect<ProviderConversationInspection, ProviderServiceError>;
+
+  /** Read-only, exact-route snapshot used to converge missed provider notifications. */
+  readonly readAuthoritativeConversation: (input: {
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+  }) => Effect.Effect<ProviderAuthoritativeConversationSnapshot, ProviderServiceError>;
 
   readonly rollbackConversationChecked: (input: {
     readonly threadId: ThreadId;

@@ -115,6 +115,16 @@ const ProviderInspectConversationInput = Schema.Struct({
   targetTurnCount: NonNegativeInt,
 });
 
+const ProviderReadAuthoritativeConversationInput = Schema.Struct({
+  threadId: ThreadId,
+  providerInstanceId: ProviderInstanceId,
+});
+
+const MAX_AUTHORITATIVE_TURNS = 10_000;
+const MAX_AUTHORITATIVE_ITEMS = 50_000;
+const MAX_AUTHORITATIVE_FINAL_ASSISTANT_BYTES = 24_000;
+const MAX_AUTHORITATIVE_TOTAL_ASSISTANT_BYTES = 1_048_576;
+
 const ProviderRollbackConversationCheckedInput = Schema.Struct({
   threadId: ThreadId,
   providerInstanceId: ProviderInstanceId,
@@ -1569,6 +1579,100 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     ),
   );
 
+  const readAuthoritativeConversation: ProviderServiceMethod<"readAuthoritativeConversation"> =
+    Effect.fn("readAuthoritativeConversation")(function* (rawInput) {
+      const input = yield* decodeInputOrValidationError({
+        operation: "ProviderService.readAuthoritativeConversation",
+        schema: ProviderReadAuthoritativeConversationInput,
+        payload: rawInput,
+      });
+      return yield* withThreadMutationLock(
+        input.threadId,
+        Effect.gen(function* () {
+          const routed = yield* resolveRoutableSession({
+            threadId: input.threadId,
+            operation: "ProviderService.readAuthoritativeConversation",
+            allowRecovery: false,
+            expectedProviderInstanceId: input.providerInstanceId,
+          });
+          if (routed.adapter.capabilities.conversationReconciliation !== "ordered-turn-state-v1") {
+            return yield* toValidationError(
+              "ProviderService.readAuthoritativeConversation",
+              "The routed provider does not support authoritative conversation reconciliation.",
+            );
+          }
+          const snapshot = yield* routed.adapter.readThread(routed.threadId);
+          if (snapshot.threadId !== routed.threadId) {
+            return yield* toValidationError(
+              "ProviderService.readAuthoritativeConversation",
+              "Provider returned a snapshot for a different thread.",
+            );
+          }
+          if (snapshot.turns.length > MAX_AUTHORITATIVE_TURNS) {
+            return yield* toValidationError(
+              "ProviderService.readAuthoritativeConversation",
+              "Provider returned an oversized authoritative turn snapshot.",
+            );
+          }
+          const seen = new Set<string>();
+          let itemCount = 0;
+          let assistantBytes = 0;
+          let runningTurnIndex = -1;
+          const turns = yield* Effect.forEach(
+            snapshot.turns,
+            (turn, index) => {
+              const reconciliation = turn.reconciliation;
+              itemCount += turn.items.length;
+              assistantBytes +=
+                reconciliation?.finalAssistantText === null ||
+                reconciliation?.finalAssistantText === undefined
+                  ? 0
+                  : Buffer.byteLength(reconciliation.finalAssistantText, "utf8");
+              if (
+                reconciliation === undefined ||
+                seen.has(turn.id) ||
+                itemCount > MAX_AUTHORITATIVE_ITEMS ||
+                assistantBytes > MAX_AUTHORITATIVE_TOTAL_ASSISTANT_BYTES ||
+                (reconciliation.status === "running") !== (reconciliation.completedAt === null) ||
+                (reconciliation.completedAt !== null &&
+                  !Number.isFinite(Date.parse(reconciliation.completedAt))) ||
+                (reconciliation.finalAssistantText === null) !==
+                  (reconciliation.finalAssistantItemId === null) ||
+                (reconciliation.finalAssistantItemId !== null &&
+                  (reconciliation.finalAssistantItemId.length < 1 ||
+                    reconciliation.finalAssistantItemId.length > 256)) ||
+                (reconciliation.finalAssistantText !== null &&
+                  Buffer.byteLength(reconciliation.finalAssistantText, "utf8") >
+                    MAX_AUTHORITATIVE_FINAL_ASSISTANT_BYTES)
+              ) {
+                return toValidationError(
+                  "ProviderService.readAuthoritativeConversation",
+                  "Provider returned a malformed or oversized authoritative turn snapshot.",
+                );
+              }
+              seen.add(turn.id);
+              if (reconciliation.status === "running") {
+                if (runningTurnIndex !== -1 || index !== snapshot.turns.length - 1) {
+                  return toValidationError(
+                    "ProviderService.readAuthoritativeConversation",
+                    "Provider returned an ambiguous authoritative running turn snapshot.",
+                  );
+                }
+                runningTurnIndex = index;
+              }
+              return Effect.succeed({ id: turn.id, ...reconciliation });
+            },
+            { concurrency: 1 },
+          );
+          return {
+            threadId: routed.threadId,
+            providerInstanceId: routed.instanceId,
+            turns,
+          };
+        }),
+      );
+    });
+
   return {
     startSession,
     recoverSession,
@@ -1582,6 +1686,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getInstanceInfo,
     rollbackConversation,
     inspectConversation,
+    readAuthoritativeConversation,
     rollbackConversationChecked,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each

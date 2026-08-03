@@ -1606,7 +1606,17 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       ),
       Effect.map((snapshot) => ({
         threadId,
-        turns: snapshot.turns,
+        turns: snapshot.turns.map((turn) => ({
+          id: turn.id,
+          items: turn.items,
+          reconciliation: {
+            status: turn.status,
+            completedAt: turn.completedAt,
+            finalAssistantItemId: turn.finalAssistantItemId,
+            finalAssistantText: turn.finalAssistantText,
+            hasNonrecoverableActivityGap: turn.hasNonrecoverableActivityGap,
+          },
+        })),
       })),
     );
 
@@ -1718,6 +1728,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       sessionModelSwitch: "in-session",
       conversationRead: "ordered-turn-ids-v1",
       checkedConversationRollback: "ordered-turn-ids-v1",
+      conversationReconciliation: "ordered-turn-state-v1",
     },
     startSession,
     sendTurn,
