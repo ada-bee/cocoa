@@ -48,7 +48,7 @@ The gateway owns:
 - configured provider-instance metadata and connection health
 - authentication and the stable client-facing protocol
 - serving the reference web app
-- temporary ingress for client uploads
+- bounded ingress and managed blobs for client attachments
 
 The gateway must not require:
 
@@ -228,7 +228,8 @@ Move every project-scoped operation behind the provider instance:
 
 - directory listing, search, metadata, reads, writes, copies, and removal
 - repository discovery and project validation
-- attachment materialization and cleanup
+- provider-specific attachment staging and cleanup, only when a provider cannot
+  consume gateway-owned bytes directly
 - shell commands and long-lived terminals
 - Git status, diff, branches, commits, and checkpoint refs
 
@@ -263,16 +264,17 @@ path resolution for a remote workspace.
 
 ### Attachments
 
-Use an explicit staged flow:
+Keep bounded client uploads as gateway-owned attachment blobs. Codex accepts
+data URLs in `turn/start`, so the default path reads the managed gateway blob and
+sends bounded bytes through the selected provider endpoint; it does not write the
+attachment into the project workspace. Enforce both per-file and aggregate
+per-turn byte limits before the provider request is built.
 
-1. The client uploads bytes to a temporary gateway object.
-2. The gateway selects a managed attachment directory on the provider host.
-3. The workspace adapter creates the directory and writes the file remotely.
-4. The turn references the provider-host path.
-5. A reactor cleans up expired staged files.
-
-The remote attachment base directory must come from endpoint configuration or a
-reported capability. Never infer it from the gateway filesystem.
+If a future provider requires host paths, expose a dedicated optional
+`ProviderAttachmentTransport` that owns a configured staging location, upload,
+opaque provider reference, expiry, and cleanup. Do not add generic workspace
+writes merely to materialize attachments, and never infer a remote staging path
+from the gateway filesystem.
 
 ### Terminals and commands
 
@@ -295,11 +297,21 @@ host. SQLite stores logical checkpoint IDs plus the provider instance, workspace
 and provider-native ref metadata. Create, diff, restore, and delete operations go
 through `ProviderVcsAdapter`.
 
-Start with carefully constructed, non-interactive Git commands executed remotely
-behind the adapter. Before committing to this path, test whether the Codex daemon's
-sandbox permits the required `.git` mutations. If it does not, add the narrowest
-provider-host capability that can perform checkpoint operations; do not move Git
-back into the gateway.
+Begin with read-only repository detection, local status, refs, remotes, and
+bounded diffs. A Codex implementation may use fixed non-interactive Git argv via
+bounded `command/exec`, with a read-only sandbox, network disabled, hardened Git
+configuration, deterministic environment, and explicit timeout/output limits.
+Keep fetch and every ref, worktree, commit, push, and repository mutation behind
+separate optional capability groups; never transparently retry them after a
+disconnect.
+
+Checkpoint capture, restore, and deletion are multi-command mutations. Perform
+each as one versioned provider-host helper operation that accepts only validated
+Cocoa checkpoint refs, derives narrowly writable worktree and Git-common-dir
+roots, cleans temporary state, and returns an operation receipt or observed OID.
+Do not reconstruct a checkpoint from several gateway-issued commands or move Git
+back into the gateway. Prefer a future native app-server VCS capability while
+preserving the provider-normal contract.
 
 ## Recovery model
 
@@ -430,9 +442,11 @@ interruption; unrecoverable activity is marked as a gap.
 
 ### Phase 5: Attachments and provider utilities
 
-- Add temporary client-to-gateway uploads.
-- Materialize attachments through the remote workspace adapter.
-- Pass only provider-host paths to Codex and clean up safely.
+- Keep bounded client uploads as gateway-owned managed blobs and pass them to
+  data-URL-capable providers without touching the remote workspace.
+- Enforce aggregate turn attachment limits in addition to per-file limits.
+- Add a dedicated provider attachment transport, including expiry and cleanup,
+  only for providers that require host paths.
 - Replace `CodexTextGeneration`'s local `codex exec` path for thread titles,
   branch names, commit messages, and PR text with an endpoint-backed operation.
   Until that exists, return an explicit unsupported/error result; never fall back
@@ -453,8 +467,12 @@ the gateway runs on the Pi.
 
 ### Phase 7: Remote VCS and checkpoints
 
-- Implement status, diff, branches, and checkpoint operations through
-  `ProviderVcsAdapter`.
+- Implement provider-bound repository resolution plus read-only status, refs,
+  remotes, and bounded diffs through `ProviderVcsAdapter` first.
+- Add mutating VCS capability groups separately; do not enable automatic fetch,
+  worktree, ref, commit, push, or PR materialization through gateway-local tools.
+- Implement capture, restore, and deletion as versioned, receipt-bearing
+  provider-host checkpoint helper operations rather than command sequences.
 - Store logical checkpoint metadata in SQLite and native refs remotely.
 - Prove create/diff/restore across reconnects and gateway restarts.
 - Remove local Git assumptions from checkpoint reactors.
