@@ -314,6 +314,10 @@ describe("ProviderRuntimeIngestion", () => {
     return {
       engine,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      readEvents: () =>
+        Effect.runPromise(
+          Stream.runCollect(engine.readEvents(0)).pipe(Effect.map((chunk) => Array.from(chunk))),
+        ),
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
@@ -360,6 +364,146 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+  });
+
+  it("persists one deterministic exact completion after assistant and plan flushing", async () => {
+    const harness = await createHarness();
+    const startedAt = "2026-01-01T00:00:00.000Z";
+    const completedAt = "2026-01-01T00:00:01.000Z";
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-authoritative-complete"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: startedAt,
+      turnId: asTurnId("turn-authoritative-complete"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.latestTurn?.turnId === "turn-authoritative-complete",
+    );
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-delta-authoritative-complete"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: startedAt,
+      turnId: asTurnId("turn-authoritative-complete"),
+      itemId: asItemId("item-authoritative-complete"),
+      payload: { streamKind: "assistant_text", delta: "Finished." },
+    });
+    harness.emit({
+      type: "turn.proposed.delta",
+      eventId: asEventId("evt-plan-authoritative-complete"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: startedAt,
+      turnId: asTurnId("turn-authoritative-complete"),
+      payload: { delta: "## Finished plan" },
+    });
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-authoritative-complete"),
+      provider: ProviderDriverKind.make("codex"),
+      providerRefs: { providerTurnId: "native-turn-authoritative-complete" },
+      threadId: asThreadId("thread-1"),
+      createdAt: completedAt,
+      turnId: asTurnId("turn-authoritative-complete"),
+      payload: { state: "cancelled" },
+    });
+
+    await harness.drain();
+    const events = await harness.readEvents();
+    const completionEvents = events.filter((event) => event.type === "thread.turn-completed");
+    expect(completionEvents).toHaveLength(1);
+    const completion = completionEvents[0];
+    expect(completion?.commandId).toBe("provider:evt-authoritative-complete:thread-turn-complete");
+    if (completion?.type === "thread.turn-completed") {
+      expect(completion.payload).toEqual({
+        threadId: "thread-1",
+        turnId: "turn-authoritative-complete",
+        providerTurnId: "native-turn-authoritative-complete",
+        outcome: "interrupted",
+        completedAt,
+      });
+    }
+
+    const assistantCompleteIndex = events.findIndex(
+      (event) =>
+        event.type === "thread.message-sent" &&
+        event.payload.turnId === "turn-authoritative-complete" &&
+        event.payload.streaming === false,
+    );
+    const planIndex = events.findIndex(
+      (event) =>
+        event.type === "thread.proposed-plan-upserted" &&
+        event.payload.proposedPlan.turnId === "turn-authoritative-complete",
+    );
+    const completionIndex = events.findIndex((event) => event === completion);
+    expect(assistantCompleteIndex).toBeGreaterThan(-1);
+    expect(planIndex).toBeGreaterThan(-1);
+    expect(completionIndex).toBeGreaterThan(assistantCompleteIndex);
+    expect(completionIndex).toBeGreaterThan(planIndex);
+
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.latestTurn?.state === "interrupted",
+    );
+    expect(thread.latestTurn?.completedAt).toBe(completedAt);
+
+    // A provider replay with the same event identity is restart-safe: the
+    // deterministic receipt and terminal lifecycle guard emit no second event.
+    const beforeReplayCount = events.length;
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-authoritative-complete"),
+      provider: ProviderDriverKind.make("codex"),
+      providerRefs: { providerTurnId: "native-turn-authoritative-complete" },
+      threadId: asThreadId("thread-1"),
+      createdAt: completedAt,
+      turnId: asTurnId("turn-authoritative-complete"),
+      payload: { state: "cancelled" },
+    });
+    await harness.drain();
+    const afterReplayEvents = await harness.readEvents();
+    expect(afterReplayEvents).toHaveLength(beforeReplayCount);
+    expect(
+      afterReplayEvents.filter((event) => event.type === "thread.turn-completed"),
+    ).toHaveLength(1);
+  });
+
+  it("emits nothing for stale or conflicting provider completions", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-stale-complete"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-live"),
+    });
+    await waitForThread(
+      harness.readModel,
+      (thread) => thread.session?.activeTurnId === "turn-live",
+    );
+    await harness.drain();
+    const before = (await harness.readEvents()).length;
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-stale-complete"),
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-stale"),
+      payload: { state: "failed", errorMessage: "stale" },
+    });
+    await harness.drain();
+
+    expect((await harness.readEvents()).length).toBe(before);
   });
 
   it("applies provider session.state.changed transitions directly", async () => {

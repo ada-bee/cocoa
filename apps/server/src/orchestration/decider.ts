@@ -1156,6 +1156,58 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.turn.complete": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const turn = thread.latestTurn;
+      if (turn === null || turn.turnId !== command.turnId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Turn '${command.turnId}' does not exist on thread '${command.threadId}'.`,
+        });
+      }
+
+      const terminalState =
+        command.outcome === "failed"
+          ? "error"
+          : command.outcome === "interrupted"
+            ? "interrupted"
+            : "completed";
+      if (
+        turn.state !== "running" &&
+        (turn.state !== terminalState || turn.completedAt !== command.completedAt)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Turn '${command.turnId}' is already terminal with a conflicting outcome or completion time.`,
+        });
+      }
+
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.completedAt,
+          commandId: command.commandId,
+          metadata:
+            command.providerTurnId === undefined ? {} : { providerTurnId: command.providerTurnId },
+        })),
+        type: "thread.turn-completed",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          ...(command.providerTurnId === undefined
+            ? {}
+            : { providerTurnId: command.providerTurnId }),
+          outcome: command.outcome,
+          completedAt: command.completedAt,
+        },
+      };
+    }
+
     case "thread.turn.diff.complete": {
       yield* requireThread({
         readModel,

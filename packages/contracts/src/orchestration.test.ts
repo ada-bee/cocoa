@@ -54,6 +54,66 @@ const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationComma
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 
+it.effect("decodes provider-normal turn completion commands", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.turn.complete",
+      commandId: "provider:event-1:thread-turn-complete",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      providerTurnId: "native-turn-1",
+      outcome: "interrupted",
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+    assert.strictEqual(parsed.type, "thread.turn.complete");
+    if (parsed.type === "thread.turn.complete") {
+      assert.strictEqual(parsed.providerTurnId, "native-turn-1");
+      assert.strictEqual(parsed.outcome, "interrupted");
+    }
+  }),
+);
+
+it.effect("decodes durable turn completion events and rejects provider-only outcomes", () =>
+  Effect.gen(function* () {
+    const base = {
+      sequence: 1,
+      eventId: "event-1",
+      type: "thread.turn-completed",
+      aggregateKind: "thread",
+      aggregateId: "thread-1",
+      occurredAt: "2026-01-01T00:00:01.000Z",
+      commandId: "provider:event-1:thread-turn-complete",
+      causationEventId: null,
+      correlationId: "provider:event-1:thread-turn-complete",
+      metadata: { providerTurnId: "native-turn-1" },
+    } as const;
+    const parsed = yield* decodeOrchestrationEvent({
+      ...base,
+      payload: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        providerTurnId: "native-turn-1",
+        outcome: "failed",
+        completedAt: "2026-01-01T00:00:01.000Z",
+      },
+    });
+    assert.strictEqual(parsed.type, "thread.turn-completed");
+
+    const cancelled = yield* Effect.exit(
+      decodeOrchestrationEvent({
+        ...base,
+        payload: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          outcome: "cancelled",
+          completedAt: "2026-01-01T00:00:01.000Z",
+        },
+      }),
+    );
+    assert.strictEqual(cancelled._tag, "Failure");
+  }),
+);
+
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeTurnDiffInput({

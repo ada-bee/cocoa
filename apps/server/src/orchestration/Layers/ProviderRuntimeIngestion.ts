@@ -236,6 +236,13 @@ function normalizeRuntimeTurnState(
   }
 }
 
+function normalizeTurnCompletionOutcome(
+  value: string | undefined,
+): "completed" | "failed" | "interrupted" {
+  const state = normalizeRuntimeTurnState(value);
+  return state === "cancelled" ? "interrupted" : state;
+}
+
 function orchestrationSessionStatusFromRuntimeState(
   state: "starting" | "running" | "waiting" | "ready" | "interrupted" | "stopped" | "error",
 ): "starting" | "running" | "ready" | "interrupted" | "stopped" | "error" {
@@ -1323,8 +1330,14 @@ const make = Effect.gen(function* () {
             if (activeTurnId !== null && eventTurnId !== undefined) {
               return sameId(activeTurnId, eventTurnId);
             }
-            // If no active turn is tracked, accept completion scoped to this thread.
-            return true;
+            // With no active session turn, accept only a still-running exact
+            // Cocoa turn. Replayed/stale terminal events must not emit fresh
+            // lifecycle or completion events.
+            return (
+              eventTurnId !== undefined &&
+              thread.latestTurn?.turnId === eventTurnId &&
+              thread.latestTurn.state === "running"
+            );
           default:
             return true;
         }
@@ -1353,9 +1366,11 @@ const make = Effect.gen(function* () {
             case "session.exited":
               return "stopped";
             case "turn.completed":
-              return normalizeRuntimeTurnState(event.payload.state) === "failed"
+              return normalizeTurnCompletionOutcome(event.payload.state) === "failed"
                 ? "error"
-                : "ready";
+                : normalizeTurnCompletionOutcome(event.payload.state) === "interrupted"
+                  ? "interrupted"
+                  : "ready";
             case "session.started":
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
@@ -1607,7 +1622,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      if (event.type === "turn.completed") {
+      if (event.type === "turn.completed" && shouldApplyThreadLifecycle) {
         const detailedThread = yield* getLoadedThreadDetail();
         const messages = detailedThread?.messages ?? [];
         const proposedPlans = detailedThread?.proposedPlans ?? [];
@@ -1639,6 +1654,18 @@ const make = Effect.gen(function* () {
             planId: proposedPlanIdForTurn(thread.id, turnId),
             turnId,
             updatedAt: now,
+          });
+
+          yield* orchestrationEngine.dispatch({
+            type: "thread.turn.complete",
+            commandId: CommandId.make(`provider:${event.eventId}:thread-turn-complete`),
+            threadId: thread.id,
+            turnId,
+            ...(event.providerRefs?.providerTurnId !== undefined
+              ? { providerTurnId: event.providerRefs.providerTurnId }
+              : {}),
+            outcome: normalizeTurnCompletionOutcome(event.payload.state),
+            completedAt: now,
           });
         }
       }
