@@ -114,7 +114,21 @@ const optionOnNotFound = <A, R>(
     }),
   );
 
-export const make = Effect.gen(function* () {
+/**
+ * Gateway-safe resolver used in production.
+ *
+ * Project roots belong to provider instances, so the gateway cannot discover
+ * their favicons by inspecting its own filesystem. Returning no match lets the
+ * asset endpoint provide its stable fallback without touching the supplied cwd.
+ */
+export const make = Effect.succeed(
+  ProjectFaviconResolver.of({
+    resolvePath: () => Effect.succeed(null),
+  }),
+);
+
+/** Local-only discovery retained for focused tests and upstream parity. */
+export const makeLocal = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;

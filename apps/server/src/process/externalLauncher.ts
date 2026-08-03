@@ -430,7 +430,29 @@ const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(fu
   );
 });
 
+/**
+ * Gateway-safe launcher used in production.
+ *
+ * Browser targets are gateway-owned URLs and remain launchable. Editor targets
+ * are provider workspace paths, so they must not be discovered or launched by
+ * a process on the gateway host.
+ */
 export const make = Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
+  return ExternalLauncher.of({
+    resolveAvailableEditors: () => Effect.succeed([]),
+    launchBrowser: (target) =>
+      launchBrowser(target).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      ),
+    launchEditor: (input) =>
+      Effect.fail(new ExternalLauncherUnsupportedEditorError({ editor: input.editor })),
+  });
+});
+
+/** Local-only editor integration retained for focused tests and upstream parity. */
+export const makeLocal = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

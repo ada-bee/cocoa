@@ -12,9 +12,14 @@ import * as T3ProjectFileLoader from "./T3ProjectFileLoader.ts";
 
 const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(
-    ProjectFaviconResolver.layer.pipe(
+    Layer.effect(
+      ProjectFaviconResolver.ProjectFaviconResolver,
+      ProjectFaviconResolver.makeLocal,
+    ).pipe(
       Layer.provide(WorkspacePaths.layer),
-      Layer.provide(T3ProjectFileLoader.layer),
+      Layer.provide(
+        Layer.effect(T3ProjectFileLoader.T3ProjectFileLoader, T3ProjectFileLoader.makeLocal),
+      ),
     ),
   ),
   Layer.provideMerge(NodeServices.layer),
@@ -42,12 +47,23 @@ const writeTextFile = Effect.fn("writeTextFile")(function* (
 });
 
 const makeResolverWithFileSystem = (fileSystem: FileSystem.FileSystem) =>
-  ProjectFaviconResolver.make.pipe(
-    Effect.provide([WorkspacePaths.layer, T3ProjectFileLoader.layer]),
+  ProjectFaviconResolver.makeLocal.pipe(
+    Effect.provide([
+      WorkspacePaths.layer,
+      Layer.effect(T3ProjectFileLoader.T3ProjectFileLoader, T3ProjectFileLoader.makeLocal),
+    ]),
     Effect.provideService(FileSystem.FileSystem, fileSystem),
   );
 
-it.layer(TestLayer)("ProjectFaviconResolverLive", (it) => {
+it.effect("uses a provider-safe production fallback without inspecting cwd", () =>
+  Effect.gen(function* () {
+    const resolver = yield* ProjectFaviconResolver.make;
+
+    expect(yield* resolver.resolvePath("/provider-owned/workspace")).toBeNull();
+  }),
+);
+
+it.layer(TestLayer)("ProjectFaviconResolverLocal", (it) => {
   describe("resolvePath", () => {
     it.effect("prefers well-known favicon files", () =>
       Effect.gen(function* () {

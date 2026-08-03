@@ -54,7 +54,9 @@ const testLayer = (input: {
   );
 
   return Layer.mergeAll(
-    ExternalLauncher.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, spawnerLayer))),
+    Layer.effect(ExternalLauncher.ExternalLauncher, ExternalLauncher.makeLocal).pipe(
+      Layer.provide(Layer.merge(NodeServices.layer, spawnerLayer)),
+    ),
     Layer.succeed(HostProcessPlatform, input.platform),
     Layer.succeed(
       SpawnExecutableResolution,
@@ -63,6 +65,25 @@ const testLayer = (input: {
     ConfigProvider.layer(ConfigProvider.fromEnv({ env: input.env ?? {} })),
   );
 };
+
+it.effect("fails provider editor operations closed without filesystem or process access", () => {
+  let spawnCalls = 0;
+  const spawner = ChildProcessSpawner.make(() => {
+    spawnCalls += 1;
+    return Effect.die("gateway must not spawn an editor for a provider workspace");
+  });
+
+  return Effect.gen(function* () {
+    const launcher = yield* ExternalLauncher.make;
+
+    assert.deepEqual(yield* launcher.resolveAvailableEditors(), []);
+    const error = yield* launcher
+      .launchEditor({ editor: "vscode", cwd: "/provider-owned/workspace" })
+      .pipe(Effect.flip);
+    assert.instanceOf(error, ExternalLauncher.ExternalLauncherUnsupportedEditorError);
+    assert.equal(spawnCalls, 0);
+  }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+});
 
 it.effect("launches the default browser through the platform command", () => {
   let spawned: ChildProcess.StandardCommand | undefined;

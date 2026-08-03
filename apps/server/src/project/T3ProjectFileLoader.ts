@@ -59,7 +59,21 @@ const logT3ProjectFileLoadError = (error: T3ProjectFileLoadError) =>
     }),
   );
 
-export const make = Effect.gen(function* () {
+/**
+ * Gateway-safe loader used in production.
+ *
+ * Project roots belong to provider instances and must never be interpreted on
+ * the gateway host. Provider-backed project metadata can replace this fallback
+ * once it is part of the provider protocol.
+ */
+export const make = Effect.succeed(
+  T3ProjectFileLoader.of({
+    load: () => Effect.succeed(Option.none()),
+  }),
+);
+
+/** Local-only implementation retained for focused tests and upstream parity. */
+export const makeLocal = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 

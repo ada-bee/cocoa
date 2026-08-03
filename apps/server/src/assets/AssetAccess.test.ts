@@ -2,19 +2,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ThreadId } from "@t3tools/contracts";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import { describe, expect, it } from "@effect/vitest";
-import * as Crypto from "effect/Crypto";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
-import * as TestClock from "effect/testing/TestClock";
+import * as Schema from "effect/Schema";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import { base64UrlEncode, signPayload } from "../auth/utils.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
-import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
-import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { ASSET_ROUTE_PREFIX, issueAssetUrl, resolveAsset } from "./AssetAccess.ts";
 
 const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
@@ -22,169 +20,162 @@ const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
 });
 const testLayer = Layer.mergeAll(
   configLayer,
-  WorkspacePaths.layer,
-  ProjectFaviconResolver.layer.pipe(
-    Layer.provide(WorkspacePaths.layer),
-    Layer.provide(T3ProjectFileLoader.layer),
-  ),
   ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
 ).pipe(Layer.provideMerge(NodeServices.layer));
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+
+const parseAssetUrl = (relativeUrl: string) => {
+  const suffix = relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+  const separatorIndex = suffix.indexOf("/");
+  return {
+    token: suffix.slice(0, separatorIndex),
+    fileName: suffix.slice(separatorIndex + 1),
+  };
+};
+
+const makeLegacyToken = Effect.fn("AssetAccessTest.makeLegacyToken")(function* (
+  claims: Record<string, unknown>,
+) {
+  const secretStore = yield* ServerSecretStore.ServerSecretStore;
+  const signingSecret = yield* secretStore.getOrCreateRandom("asset-access-signing-key", 32);
+  const encodedPayload = base64UrlEncode(encodeUnknownJson(claims));
+  return `${encodedPayload}.${signPayload(encodedPayload, signingSecret)}`;
+});
+
+const makeExplodingFileSystem = (fileSystem: FileSystem.FileSystem, onCall: () => void) =>
+  FileSystem.FileSystem.of(
+    new Proxy(fileSystem, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return () => {
+          onCall();
+          throw new Error("gateway filesystem must not inspect a provider workspace");
+        };
+      },
+    }),
+  );
+
+const makeExplodingPath = (path: Path.Path, onCall: () => void) =>
+  Path.Path.of(
+    new Proxy(path, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return () => {
+          onCall();
+          throw new Error("gateway path service must not interpret a provider workspace");
+        };
+      },
+    }),
+  );
 
 describe("AssetAccess", () => {
-  it.effect("issues workspace URLs that resolve the entry file and sibling assets", () =>
+  it.effect("fails workspace asset issuance closed without inspecting gateway paths", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const root = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-asset-workspace-",
-      });
-      const htmlPath = path.join(root, "report.html");
-      const cssPath = path.join(root, "report.css");
-      yield* fileSystem.writeFileString(htmlPath, '<link rel="stylesheet" href="report.css">');
-      yield* fileSystem.writeFileString(cssPath, "body { color: red; }");
-      yield* fileSystem.writeFileString(path.join(root, ".env"), "SECRET=value");
-      const canonicalHtmlPath = yield* fileSystem.realPath(htmlPath);
-      const canonicalCssPath = yield* fileSystem.realPath(cssPath);
-
-      const result = yield* issueAssetUrl({
-        resource: {
-          _tag: "workspace-file",
-          threadId: ThreadId.make("thread-1"),
-          path: htmlPath,
+      let fileSystemCalls = 0;
+      let pathCalls = 0;
+      let resolverCalls = 0;
+      const resolver = ProjectFaviconResolver.ProjectFaviconResolver.of({
+        resolvePath: () => {
+          resolverCalls += 1;
+          return Effect.die("project favicon resolver must not be called");
         },
-        workspaceRoot: root,
-      });
-      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-      const separatorIndex = suffix.indexOf("/");
-      const token = suffix.slice(0, separatorIndex);
-
-      expect(yield* resolveAsset(token, "report.html")).toEqual({
-        kind: "file",
-        path: canonicalHtmlPath,
-      });
-      expect(yield* resolveAsset(token, "report.css")).toEqual({
-        kind: "file",
-        path: canonicalCssPath,
-      });
-      expect(yield* resolveAsset(token, "../secret.txt")).toBeNull();
-      expect(yield* resolveAsset(token, ".env")).toBeNull();
-      expect(yield* resolveAsset(`${token}tampered`, "report.html")).toBeNull();
-    }).pipe(Effect.provide(testLayer)),
-  );
-
-  it.effect("rejects workspace files outside the authorized root", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-asset-root-",
-      });
-      const outside = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-asset-outside-",
-      });
-      const htmlPath = path.join(outside, "report.html");
-      yield* fileSystem.writeFileString(htmlPath, "<p>outside</p>");
-
-      const error = yield* issueAssetUrl({
-        resource: {
-          _tag: "workspace-file",
-          threadId: ThreadId.make("thread-1"),
-          path: htmlPath,
-        },
-        workspaceRoot: root,
-      }).pipe(Effect.flip);
-      expect(error.message).toBe("Workspace file path must be relative to the project root.");
-      expect(error).toMatchObject({
-        _tag: "AssetWorkspacePathValidationError",
-        resource: {
-          _tag: "workspace-file",
-          threadId: "thread-1",
-          path: htmlPath,
-        },
-      });
-      expect(error.cause).toBeInstanceOf(WorkspacePaths.WorkspacePathOutsideRootError);
-    }).pipe(Effect.provide(testLayer)),
-  );
-
-  it.effect("preserves non-missing canonical path failures when issuing asset URLs", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-asset-permission-root-",
-      });
-      const htmlPath = path.join(root, "report.html");
-      yield* fileSystem.writeFileString(htmlPath, "<p>report</p>");
-      const cause = PlatformError.systemError({
-        _tag: "PermissionDenied",
-        module: "FileSystem",
-        method: "realPath",
-        pathOrDescriptor: htmlPath,
-      });
-      const failingFileSystem = FileSystem.FileSystem.of({
-        ...fileSystem,
-        realPath: () => Effect.fail(cause),
       });
 
       const error = yield* issueAssetUrl({
         resource: {
           _tag: "workspace-file",
           threadId: ThreadId.make("thread-1"),
-          path: htmlPath,
+          path: "/provider/workspace/report.html",
         },
-        workspaceRoot: root,
-      }).pipe(Effect.provideService(FileSystem.FileSystem, failingFileSystem), Effect.flip);
+        workspaceRoot: "/provider/workspace",
+      }).pipe(
+        Effect.provideService(
+          FileSystem.FileSystem,
+          makeExplodingFileSystem(fileSystem, () => {
+            fileSystemCalls += 1;
+          }),
+        ),
+        Effect.provideService(
+          Path.Path,
+          makeExplodingPath(path, () => {
+            pathCalls += 1;
+          }),
+        ),
+        Effect.provideService(ProjectFaviconResolver.ProjectFaviconResolver, resolver),
+        Effect.flip,
+      );
 
-      expect(error.message).toBe("Failed to inspect the workspace asset.");
       expect(error).toMatchObject({
-        _tag: "AssetWorkspaceAssetInspectionError",
-        resource: {
-          _tag: "workspace-file",
-          threadId: "thread-1",
-          path: htmlPath,
-        },
+        _tag: "AssetWorkspaceAssetNotFoundError",
+        resource: { _tag: "workspace-file", path: "/provider/workspace/report.html" },
       });
-      expect(error.cause).toBe(cause);
+      expect(fileSystemCalls).toBe(0);
+      expect(pathCalls).toBe(0);
+      expect(resolverCalls).toBe(0);
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("issues exact workspace URLs for image previews", () =>
+  it.effect("fails legacy provider-owned claims closed without inspecting gateway paths", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const root = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-asset-image-workspace-",
-      });
-      const assetsDirectory = path.join(root, "assets");
-      const imagePath = path.join(assetsDirectory, "icon.png");
-      const siblingPath = path.join(assetsDirectory, "other.png");
-      yield* fileSystem.makeDirectory(assetsDirectory, { recursive: true });
-      yield* fileSystem.writeFile(imagePath, new Uint8Array([137, 80, 78, 71]));
-      yield* fileSystem.writeFile(siblingPath, new Uint8Array([137, 80, 78, 71]));
-      const canonicalImagePath = yield* fileSystem.realPath(imagePath);
-
-      const result = yield* issueAssetUrl({
-        resource: {
-          _tag: "workspace-file",
-          threadId: ThreadId.make("thread-1"),
-          path: imagePath,
+      const expiresAt = (yield* Clock.currentTimeMillis) + 60_000;
+      let fileSystemCalls = 0;
+      let pathCalls = 0;
+      const legacyClaims = [
+        {
+          version: 1,
+          kind: "workspace-file",
+          workspaceRoot: "/provider/workspace",
+          baseRelativePath: ".",
+          expiresAt,
         },
-        workspaceRoot: root,
-      });
-      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-      const separatorIndex = suffix.indexOf("/");
-      const token = suffix.slice(0, separatorIndex);
+        {
+          version: 1,
+          kind: "workspace-file-exact",
+          workspaceRoot: "/provider/workspace",
+          relativePath: "favicon.png",
+          expiresAt,
+        },
+        {
+          version: 1,
+          kind: "project-favicon",
+          workspaceRoot: "/provider/workspace",
+          relativePath: "favicon.svg",
+          expiresAt,
+        },
+      ];
 
-      expect(yield* resolveAsset(token, "icon.png")).toEqual({
-        kind: "file",
-        path: canonicalImagePath,
-      });
-      expect(yield* resolveAsset(token, "other.png")).toBeNull();
-      expect(yield* resolveAsset(token, "../icon.png")).toBeNull();
+      for (const claims of legacyClaims) {
+        const token = yield* makeLegacyToken(claims);
+        expect(
+          yield* resolveAsset(token, "favicon.svg").pipe(
+            Effect.provideService(
+              FileSystem.FileSystem,
+              makeExplodingFileSystem(fileSystem, () => {
+                fileSystemCalls += 1;
+              }),
+            ),
+            Effect.provideService(
+              Path.Path,
+              makeExplodingPath(path, () => {
+                pathCalls += 1;
+              }),
+            ),
+          ),
+        ).toBeNull();
+      }
+
+      expect(fileSystemCalls).toBe(0);
+      expect(pathCalls).toBe(0);
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("issues exact attachment capabilities by attachment id", () =>
+  it.effect("keeps gateway-managed attachment assets enabled", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -197,9 +188,7 @@ describe("AssetAccess", () => {
       const result = yield* issueAssetUrl({
         resource: { _tag: "attachment", attachmentId },
       });
-      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-      const separatorIndex = suffix.indexOf("/");
-      const token = suffix.slice(0, separatorIndex);
+      const { token } = parseAssetUrl(result.relativeUrl);
 
       expect(yield* resolveAsset(token, "ignored.png")).toEqual({
         kind: "file",
@@ -208,118 +197,55 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
-  it.effect("issues project favicon capabilities with a signed fallback", () =>
+  it.effect("issues a stable project favicon fallback without inspecting cwd", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const root = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-asset-favicon-",
-      });
-      const faviconPath = path.join(root, "favicon.svg");
-      const initialFavicon = "<svg>a</svg>";
-      const updatedFavicon = "<svg>b</svg>";
-      expect(updatedFavicon).toHaveLength(initialFavicon.length);
-      yield* fileSystem.writeFileString(faviconPath, initialFavicon);
-      const canonicalFaviconPath = yield* fileSystem.realPath(faviconPath);
-
-      const faviconResult = yield* issueAssetUrl({
-        resource: { _tag: "project-favicon", cwd: root },
-      });
-      expect(faviconResult.relativeUrl).toMatch(/\/v[0-9a-f]{64}-favicon\.svg$/);
-      expect(
-        yield* issueAssetUrl({
-          resource: { _tag: "project-favicon", cwd: root },
-        }),
-      ).toEqual(faviconResult);
-      const faviconSuffix = faviconResult.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-      const faviconSeparatorIndex = faviconSuffix.indexOf("/");
-      expect(
-        yield* resolveAsset(
-          faviconSuffix.slice(0, faviconSeparatorIndex),
-          faviconSuffix.slice(faviconSeparatorIndex + 1),
-        ),
-      ).toEqual({ kind: "file", path: canonicalFaviconPath });
-
-      yield* fileSystem.writeFileString(faviconPath, updatedFavicon);
-      const updatedFaviconResult = yield* issueAssetUrl({
-        resource: { _tag: "project-favicon", cwd: root },
-      });
-      expect(
-        updatedFaviconResult.relativeUrl.slice(updatedFaviconResult.relativeUrl.lastIndexOf("/")),
-      ).not.toBe(faviconResult.relativeUrl.slice(faviconResult.relativeUrl.lastIndexOf("/")));
-
-      yield* fileSystem.remove(faviconPath);
-      const fallbackResult = yield* issueAssetUrl({
-        resource: { _tag: "project-favicon", cwd: root },
-      });
-      expect(fallbackResult.relativeUrl.endsWith(`/${PROJECT_FAVICON_FALLBACK_MARKER}`)).toBe(true);
-      const fallbackSuffix = fallbackResult.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
-      const fallbackSeparatorIndex = fallbackSuffix.indexOf("/");
-      expect(
-        yield* resolveAsset(
-          fallbackSuffix.slice(0, fallbackSeparatorIndex),
-          fallbackSuffix.slice(fallbackSeparatorIndex + 1),
-        ),
-      ).toBeNull();
-    }).pipe(Effect.provide(testLayer)),
-  );
-
-  it.effect("buckets project favicon expiry after content hashing", () =>
-    Effect.gen(function* () {
-      const crypto = yield* Crypto.Crypto;
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-asset-favicon-expiry-",
-      });
-      yield* fileSystem.writeFileString(path.join(root, "favicon.svg"), "<svg />");
-
-      const bucketMs = 30 * 60 * 1000;
-      yield* TestClock.setTime(bucketMs - 1);
-      const crossingCrypto = Crypto.make({
-        randomBytes: (size) => new Uint8Array(size),
-        digest: (algorithm, data) =>
-          TestClock.adjust("2 millis").pipe(Effect.andThen(crypto.digest(algorithm, data))),
-      });
-      const result = yield* issueAssetUrl({
-        resource: { _tag: "project-favicon", cwd: root },
-      }).pipe(Effect.provideService(Crypto.Crypto, crossingCrypto));
-
-      expect(result.expiresAt).toBe(3 * bucketMs);
-    }).pipe(Effect.provide(testLayer)),
-  );
-
-  it.effect("preserves structured project favicon resolution causes", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const root = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-asset-favicon-error-",
-      });
-      const platformCause = PlatformError.systemError({
-        _tag: "PermissionDenied",
-        module: "FileSystem",
-        method: "stat",
-      });
-      const resolutionCause = new ProjectFaviconResolver.ProjectFaviconResolutionError({
-        operation: "stat-candidate",
-        workspaceRoot: root,
-        relativePath: "favicon.svg",
-        cause: platformCause,
-      });
+      let fileSystemCalls = 0;
+      let pathCalls = 0;
+      let resolverCalls = 0;
       const resolver = ProjectFaviconResolver.ProjectFaviconResolver.of({
-        resolvePath: () => Effect.fail(resolutionCause),
+        resolvePath: () => {
+          resolverCalls += 1;
+          return Effect.die("project favicon resolver must not be called");
+        },
       });
+      const provideExplodingServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provideService(
+            FileSystem.FileSystem,
+            makeExplodingFileSystem(fileSystem, () => {
+              fileSystemCalls += 1;
+            }),
+          ),
+          Effect.provideService(
+            Path.Path,
+            makeExplodingPath(path, () => {
+              pathCalls += 1;
+            }),
+          ),
+          Effect.provideService(ProjectFaviconResolver.ProjectFaviconResolver, resolver),
+        );
 
-      const error = yield* issueAssetUrl({
-        resource: { _tag: "project-favicon", cwd: root },
-      }).pipe(
-        Effect.provideService(ProjectFaviconResolver.ProjectFaviconResolver, resolver),
-        Effect.flip,
+      const result = yield* provideExplodingServices(
+        issueAssetUrl({
+          resource: { _tag: "project-favicon", cwd: "/provider/workspace" },
+        }),
       );
+      expect(result.relativeUrl.endsWith(`/${PROJECT_FAVICON_FALLBACK_MARKER}`)).toBe(true);
+      expect(
+        yield* provideExplodingServices(
+          issueAssetUrl({
+            resource: { _tag: "project-favicon", cwd: "/another/provider/workspace" },
+          }),
+        ),
+      ).toEqual(result);
 
-      expect(error.message).toBe("Failed to resolve project favicon.");
-      expect(error._tag).toBe("AssetProjectFaviconResolutionError");
-      expect(error.cause).toBe(resolutionCause);
+      const { token, fileName } = parseAssetUrl(result.relativeUrl);
+      expect(yield* provideExplodingServices(resolveAsset(token, fileName))).toBeNull();
+      expect(fileSystemCalls).toBe(0);
+      expect(pathCalls).toBe(0);
+      expect(resolverCalls).toBe(0);
     }).pipe(Effect.provide(testLayer)),
   );
 });
