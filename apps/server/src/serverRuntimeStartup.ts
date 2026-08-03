@@ -61,6 +61,8 @@ export class ServerRuntimeStartup extends Context.Service<
   ServerRuntimeStartup,
   {
     readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
+    /** Non-blocking readiness snapshot for health endpoints. */
+    readonly getCommandReadinessState?: Effect.Effect<"pending" | "ready" | "failed">;
     readonly markHttpListening: Effect.Effect<void>;
     readonly enqueueCommand: <A, E>(
       effect: Effect.Effect<A, E>,
@@ -76,6 +78,7 @@ type CommandReadinessState = "pending" | "ready" | ServerRuntimeStartupError;
 
 interface CommandGate {
   readonly awaitCommandReady: Effect.Effect<void, ServerRuntimeStartupError>;
+  readonly getCommandReadinessState: Effect.Effect<"pending" | "ready" | "failed">;
   readonly signalCommandReady: Effect.Effect<void>;
   readonly failCommandReady: (error: ServerRuntimeStartupError) => Effect.Effect<void>;
   readonly enqueueCommand: <A, E>(
@@ -100,6 +103,11 @@ export const makeCommandGate = Effect.gen(function* () {
 
   return {
     awaitCommandReady: Deferred.await(commandReady),
+    getCommandReadinessState: Ref.get(commandReadinessState).pipe(
+      Effect.map((state) =>
+        state === "pending" || state === "ready" ? state : ("failed" as const),
+      ),
+    ),
     signalCommandReady: Effect.gen(function* () {
       yield* Ref.set(commandReadinessState, "ready");
       yield* Deferred.succeed(commandReady, undefined).pipe(Effect.orDie);
@@ -491,6 +499,7 @@ export const make = (options?: StartupOptions) =>
 
     return {
       awaitCommandReady: commandGate.awaitCommandReady,
+      getCommandReadinessState: commandGate.getCommandReadinessState,
       markHttpListening: Deferred.succeed(httpListening, undefined),
       enqueueCommand: commandGate.enqueueCommand,
     } satisfies ServerRuntimeStartup["Service"];

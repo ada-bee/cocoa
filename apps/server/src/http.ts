@@ -40,11 +40,50 @@ import {
 } from "./auth/http.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./httpCors.ts";
+import * as GatewayHealth from "./health/GatewayHealth.ts";
 
 const OTLP_TRACES_PROXY_PATH = "/api/observability/v1/traces";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 const DESKTOP_RENDERER_ORIGINS = ["t3code://app", "t3code-dev://app"];
 const GZIP_MIN_BYTES = 1024;
+
+const HEALTH_RESPONSE_HEADERS = {
+  "cache-control": "no-store",
+  "content-type": "application/json; charset=utf-8",
+} as const;
+
+/** Process liveness is intentionally dependency-free and available during startup. */
+export const gatewayLivenessRouteLayer = HttpRouter.add(
+  "GET",
+  "/healthz",
+  HttpServerResponse.jsonUnsafe(
+    { status: "ok" },
+    { status: 200, headers: HEALTH_RESPONSE_HEADERS },
+  ),
+);
+
+export const gatewayReadinessRouteLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const health = yield* GatewayHealth.GatewayHealth;
+    return HttpRouter.add(
+      "GET",
+      "/readyz",
+      health.getReadiness.pipe(
+        Effect.map((report) =>
+          HttpServerResponse.jsonUnsafe(report, {
+            status: report.status === "unready" ? 503 : 200,
+            headers: HEALTH_RESPONSE_HEADERS,
+          }),
+        ),
+      ),
+    );
+  }),
+);
+
+export const gatewayHealthRouteLayer = Layer.mergeAll(
+  gatewayLivenessRouteLayer,
+  gatewayReadinessRouteLayer,
+);
 
 function acceptsGzip(value: string | undefined): boolean {
   if (!value) return false;

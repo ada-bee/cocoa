@@ -4,7 +4,8 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
-import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
+import type * as Types from "effect/Types";
+import { FetchHttpClient, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -17,8 +18,10 @@ import {
   serverEnvironmentHttpApiLayer,
   staticAndDevRouteLayer,
   browserApiCorsLayer,
+  gatewayHealthRouteLayer,
   httpCompressionLayer,
 } from "./http.ts";
+import * as GatewayHealth from "./health/GatewayHealth.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
@@ -425,15 +428,15 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provide(NetService.layer),
 );
 
-const commandReadinessLayer = HttpRouter.middleware(
-  (httpEffect) =>
-    Effect.flatMap(ServerRuntimeStartup.ServerRuntimeStartup, (startup) =>
-      startup.awaitCommandReady.pipe(Effect.orDie, Effect.andThen(httpEffect)),
-    ),
-  { global: true },
-);
+const commandReadinessLayer = HttpRouter.middleware()(
+  Effect.gen(function* () {
+    const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
+    return (httpEffect: Effect.Effect<HttpServerResponse.HttpServerResponse, Types.unhandled>) =>
+      startup.awaitCommandReady.pipe(Effect.orDie, Effect.andThen(httpEffect));
+  }),
+).layer;
 
-export const makeRoutesLayer = Layer.mergeAll(
+const commandReadyRoutesLayer = Layer.mergeAll(
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
       Layer.provide(authHttpApiLayer),
@@ -452,9 +455,12 @@ export const makeRoutesLayer = Layer.mergeAll(
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer),
   Layer.provide(commandReadinessLayer),
-  Layer.provide(browserApiCorsLayer),
-  Layer.provide(httpCompressionLayer),
 );
+
+export const makeRoutesLayer = Layer.mergeAll(
+  commandReadyRoutesLayer,
+  gatewayHealthRouteLayer.pipe(Layer.provide(GatewayHealth.layer)),
+).pipe(Layer.provide(browserApiCorsLayer), Layer.provide(httpCompressionLayer));
 
 export const makeServerLayer = Layer.unwrap(
   Effect.gen(function* () {
