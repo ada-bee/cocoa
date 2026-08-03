@@ -6,6 +6,7 @@ import {
   type OrchestrationEvent,
   type OrchestrationMessage,
   type OrchestrationProposedPlanId,
+  type OrchestrationSession,
   isToolLifecycleItemType,
   ThreadId,
   type ThreadTokenUsageSnapshot,
@@ -1346,6 +1347,7 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
+      let deferredTurnCompletionSession: OrchestrationSession | undefined;
 
       if (
         event.type === "session.started" ||
@@ -1420,24 +1422,33 @@ const make = Effect.gen(function* () {
             );
           }
 
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: yield* providerCommandId(event, "thread-session-set"),
+          const nextSession = {
             threadId: thread.id,
-            session: {
+            status,
+            providerName: event.provider,
+            ...(event.providerInstanceId !== undefined
+              ? { providerInstanceId: event.providerInstanceId }
+              : {}),
+            runtimeMode: thread.session?.runtimeMode ?? "full-access",
+            activeTurnId: nextActiveTurnId,
+            lastError,
+            updatedAt: now,
+          } satisfies OrchestrationSession;
+          if (event.type === "turn.completed") {
+            // Keep the active turn authoritative until its buffered output and
+            // durable exact completion are committed. If the worker restarts
+            // between those writes and the lifecycle update, replay still sees
+            // the active turn and reaches the deterministic completion receipt.
+            deferredTurnCompletionSession = nextSession;
+          } else {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: yield* providerCommandId(event, "thread-session-set"),
               threadId: thread.id,
-              status,
-              providerName: event.provider,
-              ...(event.providerInstanceId !== undefined
-                ? { providerInstanceId: event.providerInstanceId }
-                : {}),
-              runtimeMode: thread.session?.runtimeMode ?? "full-access",
-              activeTurnId: nextActiveTurnId,
-              lastError,
-              updatedAt: now,
-            },
-            createdAt: now,
-          });
+              session: nextSession,
+              createdAt: now,
+            });
+          }
         }
       }
 
@@ -1666,6 +1677,16 @@ const make = Effect.gen(function* () {
               : {}),
             outcome: normalizeTurnCompletionOutcome(event.payload.state),
             completedAt: now,
+          });
+        }
+
+        if (deferredTurnCompletionSession !== undefined) {
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: yield* providerCommandId(event, "thread-session-set"),
+            threadId: thread.id,
+            session: deferredTurnCompletionSession,
+            createdAt: now,
           });
         }
       }
