@@ -5,5 +5,26 @@
     "types": ["node", "electron"],
     "lib": ["ESNext", "DOM", "esnext.disposable"]
   },
-  "include": ["src", "vite.config.ts", "../../scripts/lib"]
+  "include": ["src", "vite.config.ts", "../../scripts/lib"],
+  "exclude": [
+    "src/app/DesktopAppErrors.test.ts",
+    "src/app/DesktopClerk.test.ts",
+    "src/app/DesktopClerk.ts",
+    "src/app/DesktopLinuxUrlHandler.test.ts",
+    "src/app/DesktopLinuxUrlHandler.ts",
+    "src/app/DesktopObservability.test.ts",
+    "src/app/DesktopObservability.ts",
+    "src/backend",
+    "src/ipc/methods/serverExposure.ts",
+    "src/ipc/methods/sshEnvironment.test.ts",
+    "src/ipc/methods/sshEnvironment.ts",
+    "src/ipc/methods/wsl.test.ts",
+    "src/ipc/methods/wsl.ts",
+    "src/settings/DesktopSavedEnvironments.test.ts",
+    "src/settings/DesktopSavedEnvironments.ts",
+    "src/ssh",
+    "src/telemetry/DesktopTelemetryPublisher.test.ts",
+    "src/telemetry/DesktopTelemetryPublisher.ts",
+    "src/wsl"
+  ]
 }

@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts/base-schemas";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 

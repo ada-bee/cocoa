@@ -15,6 +15,18 @@
       "types": "./src/settings.ts",
       "import": "./src/settings.ts"
     },
+    "./ipc": {
+      "types": "./src/ipc.ts",
+      "import": "./src/ipc.ts"
+    },
+    "./base-schemas": {
+      "types": "./src/baseSchemas.ts",
+      "import": "./src/baseSchemas.ts"
+    },
+    "./preview-automation": {
+      "types": "./src/previewAutomation.ts",
+      "import": "./src/previewAutomation.ts"
+    },
     "./relay": {
       "types": "./src/relay.ts",
       "import": "./src/relay.ts"

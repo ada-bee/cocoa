@@ -1,17 +1,5 @@
-import {
-  BearerConnectionCredential,
-  BearerConnectionProfile,
-  BearerConnectionTarget,
-  RelayConnectionTarget,
-  SshConnectionProfile,
-  SshConnectionTarget,
-} from "@t3tools/client-runtime/connection";
-import {
-  ConnectionCatalogDocument as RuntimeConnectionCatalogDocument,
-  type ConnectionCatalogDocument as RuntimeConnectionCatalogDocumentType,
-} from "@t3tools/client-runtime/platform";
-import type { PersistedSavedEnvironmentRecord } from "@t3tools/contracts";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import { ConnectionCatalogDocument } from "@t3tools/client-runtime/platform/storage-document";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -23,7 +11,6 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
-import * as DesktopSavedEnvironments from "../settings/DesktopSavedEnvironments.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
 const EncryptedConnectionCatalogDocument = Schema.Struct({
@@ -39,11 +26,8 @@ const decodeEncryptedConnectionCatalogDocumentJson = Schema.decodeEffect(
 const encodeEncryptedConnectionCatalogDocumentJson = Schema.encodeEffect(
   EncryptedConnectionCatalogDocumentJson,
 );
-const RuntimeConnectionCatalogDocumentJson = Schema.fromJsonString(
-  RuntimeConnectionCatalogDocument,
-);
-const encodeRuntimeConnectionCatalogDocumentJson = Schema.encodeEffect(
-  RuntimeConnectionCatalogDocumentJson,
+const decodeConnectionCatalogDocumentJson = Schema.decodeEffect(
+  Schema.fromJsonString(ConnectionCatalogDocument),
 );
 
 const DesktopConnectionCatalogStoreWriteOperation = Schema.Literals([
@@ -52,13 +36,6 @@ const DesktopConnectionCatalogStoreWriteOperation = Schema.Literals([
   "create-directory",
   "write-temporary-file",
   "replace-catalog-file",
-]);
-
-const DesktopConnectionCatalogStoreMigrationOperation = Schema.Literals([
-  "read-legacy-registry",
-  "read-legacy-secret",
-  "encode-catalog",
-  "persist-catalog",
 ]);
 
 const DesktopConnectionCatalogStoreProtectionOperation = Schema.Literals([
@@ -117,22 +94,6 @@ export class DesktopConnectionCatalogStoreDocumentDecodeError extends Schema.Tag
   }
 }
 
-export class DesktopConnectionCatalogStoreMigrationError extends Schema.TaggedErrorClass<DesktopConnectionCatalogStoreMigrationError>()(
-  "DesktopConnectionCatalogStoreMigrationError",
-  {
-    operation: DesktopConnectionCatalogStoreMigrationOperation,
-    catalogPath: Schema.String,
-    environmentId: Schema.optionalKey(Schema.String),
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    const environment =
-      this.environmentId === undefined ? "" : ` for environment ${this.environmentId}`;
-    return `Legacy desktop saved-environment migration failed during ${this.operation}${environment} into ${this.catalogPath}.`;
-  }
-}
-
 export class DesktopConnectionCatalogStoreProtectionError extends Schema.TaggedErrorClass<DesktopConnectionCatalogStoreProtectionError>()(
   "DesktopConnectionCatalogStoreProtectionError",
   {
@@ -146,6 +107,21 @@ export class DesktopConnectionCatalogStoreProtectionError extends Schema.TaggedE
   }
 }
 
+export class DesktopConnectionCatalogStoreValidationError extends Schema.TaggedErrorClass<DesktopConnectionCatalogStoreValidationError>()(
+  "DesktopConnectionCatalogStoreValidationError",
+  {
+    reason: Schema.String,
+    cause: Schema.optionalKey(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Desktop connection catalog is not a direct Cocoa gateway catalog: ${this.reason}.`;
+  }
+}
+const isDesktopConnectionCatalogStoreValidationError = Schema.is(
+  DesktopConnectionCatalogStoreValidationError,
+);
+
 export class DesktopConnectionCatalogStore extends Context.Service<
   DesktopConnectionCatalogStore,
   {
@@ -154,14 +130,15 @@ export class DesktopConnectionCatalogStore extends Context.Service<
       | DesktopConnectionCatalogStoreReadError
       | DesktopConnectionCatalogStoreDocumentDecodeError
       | DesktopConnectionCatalogStoreDecodeError
-      | DesktopConnectionCatalogStoreMigrationError
       | DesktopConnectionCatalogStoreProtectionError
     >;
     readonly set: (
       catalog: string,
     ) => Effect.Effect<
       boolean,
-      DesktopConnectionCatalogStoreWriteError | DesktopConnectionCatalogStoreProtectionError
+      | DesktopConnectionCatalogStoreWriteError
+      | DesktopConnectionCatalogStoreProtectionError
+      | DesktopConnectionCatalogStoreValidationError
     >;
     readonly clear: Effect.Effect<void>;
   }
@@ -182,6 +159,86 @@ function decodeSecretBytes(
     ),
   );
 }
+
+function parseGatewayUrl(
+  raw: string,
+  protocols: readonly string[],
+  field: string,
+): URL | DesktopConnectionCatalogStoreValidationError {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch (cause) {
+    return new DesktopConnectionCatalogStoreValidationError({
+      reason: `${field} must be an absolute URL`,
+      cause,
+    });
+  }
+  if (!protocols.includes(url.protocol)) {
+    return new DesktopConnectionCatalogStoreValidationError({
+      reason: `${field} uses unsupported protocol ${url.protocol}`,
+    });
+  }
+  if (
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    url.pathname !== "/" ||
+    url.search.length > 0 ||
+    url.hash.length > 0
+  ) {
+    return new DesktopConnectionCatalogStoreValidationError({
+      reason: `${field} must identify a gateway origin without credentials, path, query, or fragment`,
+    });
+  }
+  return url;
+}
+
+const validateDirectConnectionCatalog = Effect.fn(
+  "desktop.connectionCatalogStore.validateDirectCatalog",
+)(function* (catalog: string) {
+  const document = yield* decodeConnectionCatalogDocumentJson(catalog).pipe(
+    Effect.mapError(
+      (cause) =>
+        new DesktopConnectionCatalogStoreValidationError({
+          reason: "document does not match the Primary/Bearer catalog schema",
+          cause,
+        }),
+    ),
+  );
+  const targetsByConnectionId = new Map(
+    document.targets.map((target) => [target.connectionId, target] as const),
+  );
+  for (const profile of document.profiles) {
+    const target = targetsByConnectionId.get(profile.connectionId);
+    if (target === undefined || target.environmentId !== profile.environmentId) {
+      return yield* new DesktopConnectionCatalogStoreValidationError({
+        reason: `profile ${profile.connectionId} is not paired with its bearer target`,
+      });
+    }
+    const httpUrl = parseGatewayUrl(profile.httpBaseUrl, ["http:", "https:"], "httpBaseUrl");
+    if (isDesktopConnectionCatalogStoreValidationError(httpUrl)) return yield* httpUrl;
+    const wsUrl = parseGatewayUrl(profile.wsBaseUrl, ["ws:", "wss:"], "wsBaseUrl");
+    if (isDesktopConnectionCatalogStoreValidationError(wsUrl)) return yield* wsUrl;
+    const expectedWsProtocol = httpUrl.protocol === "https:" ? "wss:" : "ws:";
+    if (wsUrl.protocol !== expectedWsProtocol || wsUrl.host !== httpUrl.host) {
+      return yield* new DesktopConnectionCatalogStoreValidationError({
+        reason: "httpBaseUrl and wsBaseUrl must describe the same gateway origin",
+      });
+    }
+  }
+  for (const credential of document.credentials) {
+    if (!targetsByConnectionId.has(credential.connectionId)) {
+      return yield* new DesktopConnectionCatalogStoreValidationError({
+        reason: `credential ${credential.connectionId} has no bearer target`,
+      });
+    }
+    if (credential.credential.token.trim().length === 0) {
+      return yield* new DesktopConnectionCatalogStoreValidationError({
+        reason: `credential ${credential.connectionId} has an empty bearer token`,
+      });
+    }
+  }
+});
 
 const readDocument = (
   fileSystem: FileSystem.FileSystem,
@@ -281,108 +338,13 @@ const writeDocument = Effect.fn("desktop.connectionCatalogStore.writeDocument")(
   );
 });
 
-function connectionId(prefix: "bearer" | "ssh", environmentId: string): string {
-  return `${prefix}:${environmentId}`;
-}
-
-const migrateSavedEnvironmentRecords = Effect.fn(
-  "desktop.connectionCatalogStore.migrateSavedEnvironmentRecords",
-)(function* (
-  records: readonly PersistedSavedEnvironmentRecord[],
-  savedEnvironments: DesktopSavedEnvironments.DesktopSavedEnvironments["Service"],
-  catalogPath: string,
-): Effect.fn.Return<
-  RuntimeConnectionCatalogDocumentType,
-  DesktopConnectionCatalogStoreMigrationError
-> {
-  const targets: Array<RuntimeConnectionCatalogDocumentType["targets"][number]> = [];
-  const profiles: Array<RuntimeConnectionCatalogDocumentType["profiles"][number]> = [];
-  const credentials: Array<RuntimeConnectionCatalogDocumentType["credentials"][number]> = [];
-
-  for (const record of records) {
-    if (record.relayManaged !== undefined) {
-      targets.push(
-        new RelayConnectionTarget({
-          environmentId: record.environmentId,
-          label: record.label,
-        }),
-      );
-      continue;
-    }
-
-    if (record.desktopSsh !== undefined) {
-      const id = connectionId("ssh", record.environmentId);
-      targets.push(
-        new SshConnectionTarget({
-          environmentId: record.environmentId,
-          label: record.label,
-          connectionId: id,
-        }),
-      );
-      profiles.push(
-        new SshConnectionProfile({
-          connectionId: id,
-          environmentId: record.environmentId,
-          label: record.label,
-          target: record.desktopSsh,
-        }),
-      );
-      continue;
-    }
-
-    const id = connectionId("bearer", record.environmentId);
-    targets.push(
-      new BearerConnectionTarget({
-        environmentId: record.environmentId,
-        label: record.label,
-        connectionId: id,
-      }),
-    );
-    profiles.push(
-      new BearerConnectionProfile({
-        connectionId: id,
-        environmentId: record.environmentId,
-        label: record.label,
-        httpBaseUrl: record.httpBaseUrl,
-        wsBaseUrl: record.wsBaseUrl,
-      }),
-    );
-    const token = yield* savedEnvironments.getSecret(record.environmentId).pipe(
-      Effect.mapError(
-        (cause) =>
-          new DesktopConnectionCatalogStoreMigrationError({
-            operation: "read-legacy-secret",
-            catalogPath,
-            environmentId: record.environmentId,
-            cause,
-          }),
-      ),
-    );
-    if (Option.isSome(token)) {
-      credentials.push({
-        connectionId: id,
-        credential: new BearerConnectionCredential({ token: token.value }),
-      });
-    }
-  }
-
-  return {
-    schemaVersion: 1,
-    targets,
-    profiles,
-    credentials,
-    remoteDpopTokens: [],
-  };
-});
-
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const safeStorage = yield* ElectronSafeStorage.ElectronSafeStorage;
   const crypto = yield* Crypto.Crypto;
-  const savedEnvironments = yield* DesktopSavedEnvironments.DesktopSavedEnvironments;
-  const catalogPath = path.join(environment.stateDir, "connection-catalog.json");
+  const catalogPath = environment.connectionCatalogPath;
   const encryptionAvailable = safeStorage.isEncryptionAvailable.pipe(
     Effect.mapError(
       (cause) =>
@@ -428,52 +390,11 @@ export const make = Effect.gen(function* () {
     });
   });
 
-  const migrateLegacyCatalog = Effect.gen(function* () {
-    if (!(yield* encryptionAvailable)) {
-      return Option.none<string>();
-    }
-    const records = yield* savedEnvironments.getRegistry.pipe(
-      Effect.mapError(
-        (cause) =>
-          new DesktopConnectionCatalogStoreMigrationError({
-            operation: "read-legacy-registry",
-            catalogPath,
-            cause,
-          }),
-      ),
-    );
-    if (records.length === 0) {
-      return Option.none<string>();
-    }
-    const catalog = yield* migrateSavedEnvironmentRecords(records, savedEnvironments, catalogPath);
-    const encoded = yield* encodeRuntimeConnectionCatalogDocumentJson(catalog).pipe(
-      Effect.mapError(
-        (cause) =>
-          new DesktopConnectionCatalogStoreMigrationError({
-            operation: "encode-catalog",
-            catalogPath,
-            cause,
-          }),
-      ),
-    );
-    yield* writeCatalog(encoded).pipe(
-      Effect.mapError(
-        (cause) =>
-          new DesktopConnectionCatalogStoreMigrationError({
-            operation: "persist-catalog",
-            catalogPath,
-            cause,
-          }),
-      ),
-    );
-    return Option.some(encoded);
-  });
-
   return DesktopConnectionCatalogStore.of({
     get: Effect.gen(function* () {
       const document = yield* readDocument(fileSystem, catalogPath);
       if (Option.isNone(document)) {
-        return yield* migrateLegacyCatalog;
+        return Option.none<string>();
       }
       if (!(yield* encryptionAvailable)) {
         return Option.none<string>();
@@ -495,6 +416,7 @@ export const make = Effect.gen(function* () {
       return Option.some(decrypted);
     }).pipe(Effect.withSpan("desktop.connectionCatalogStore.get")),
     set: Effect.fn("desktop.connectionCatalogStore.set")(function* (catalog) {
+      yield* validateDirectConnectionCatalog(catalog);
       if (!(yield* encryptionAvailable)) {
         return false;
       }

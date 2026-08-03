@@ -1,5 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
+import { vi } from "vite-plus/test";
+
+vi.mock("electron", () => ({}));
+vi.mock("electron-updater", () => ({ autoUpdater: {} }));
 
 import { DesktopLifecycleRelaunchError } from "./DesktopLifecycle.ts";
 import { DesktopApplicationMenuActionError } from "../window/DesktopApplicationMenu.ts";

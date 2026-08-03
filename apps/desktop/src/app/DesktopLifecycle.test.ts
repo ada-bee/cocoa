@@ -2,6 +2,9 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import { vi } from "vite-plus/test";
+
+vi.mock("electron", () => ({}));
 
 import type * as Electron from "electron";
 
@@ -71,10 +74,6 @@ describe("DesktopLifecycle", () => {
         ensureMain: Effect.die("unexpected window creation"),
         revealOrCreateMain: Effect.die("unexpected window creation"),
         activate: Effect.void,
-        createMainIfBackendReady: Effect.void,
-        showConnectingSplash: Effect.void,
-        handleBackendReady: () => Effect.void,
-        handleBackendNotReady: Effect.void,
         flushMainWindowBounds: Effect.void,
         dispatchMenuAction: () => Effect.void,
         syncAppearance: Effect.void,

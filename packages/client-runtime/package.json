@@ -35,6 +35,10 @@
       "types": "./src/platform/index.ts",
       "default": "./src/platform/index.ts"
     },
+    "./platform/storage-document": {
+      "types": "./src/platform/storageDocument.ts",
+      "default": "./src/platform/storageDocument.ts"
+    },
     "./state/auth": {
       "types": "./src/state/auth.ts",
       "default": "./src/state/auth.ts"

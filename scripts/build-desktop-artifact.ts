@@ -248,6 +248,50 @@ export class ForbiddenDesktopStageContentError extends Schema.TaggedErrorClass<F
   }
 }
 
+export const FORBIDDEN_DESKTOP_MAIN_BUNDLE_SYMBOLS = [
+  "DesktopBackendOutputLogFactory",
+  "DesktopSshEnvironmentTargetSchema",
+  "DesktopWslStateSchema",
+  "DesktopServerExposureStateSchema",
+  "AdvertisedEndpointProviderKind",
+  "PRIMARY_LOCAL_ENVIRONMENT_ID",
+  "@clerk/electron",
+  "@t3tools/ssh",
+  "@t3tools/tailscale",
+  "node-pty",
+  "server-child",
+] as const;
+
+export class ForbiddenDesktopMainBundleSymbolError extends Schema.TaggedErrorClass<ForbiddenDesktopMainBundleSymbolError>()(
+  "ForbiddenDesktopMainBundleSymbolError",
+  {
+    bundlePath: Schema.String,
+    forbiddenSymbols: Schema.Array(Schema.String),
+  },
+) {
+  override get message(): string {
+    return `Desktop main bundle contains retired local or hosted runtime symbols: ${this.forbiddenSymbols.join(", ")}`;
+  }
+}
+
+export function findForbiddenDesktopMainBundleSymbols(bundle: string): readonly string[] {
+  return FORBIDDEN_DESKTOP_MAIN_BUNDLE_SYMBOLS.filter((symbol) => bundle.includes(symbol));
+}
+
+export const assertDesktopMainBundleIsolation = Effect.fn("assertDesktopMainBundleIsolation")(
+  function* (bundlePath: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const bundle = yield* fs.readFileString(bundlePath);
+    const forbiddenSymbols = findForbiddenDesktopMainBundleSymbols(bundle);
+    if (forbiddenSymbols.length > 0) {
+      return yield* new ForbiddenDesktopMainBundleSymbolError({
+        bundlePath,
+        forbiddenSymbols: [...forbiddenSymbols],
+      });
+    }
+  },
+);
+
 export class UnsupportedDesktopBuildPlatformError extends Schema.TaggedErrorClass<UnsupportedDesktopBuildPlatformError>()(
   "UnsupportedDesktopBuildPlatformError",
   {
@@ -1274,6 +1318,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(distDirs.desktopDist, path.join(stageAppDir, "apps/desktop/dist-electron"));
   yield* fs.copy(distDirs.desktopResources, stageResourcesDir);
   yield* fs.copy(distDirs.webDist, path.join(stageAppDir, "apps/web/dist"));
+  yield* assertDesktopMainBundleIsolation(
+    path.join(stageAppDir, "apps/desktop/dist-electron/main.cjs"),
+  );
 
   yield* assertPlatformBuildResources(
     options.platform,

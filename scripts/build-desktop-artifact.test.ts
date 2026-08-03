@@ -13,6 +13,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import {
   BuildCommandFailedError,
   assertDesktopStageIsolation,
+  findForbiddenDesktopMainBundleSymbols,
   createStageWorkspaceConfig,
   createStagePatchedDependencies,
   createBuildConfig,
@@ -173,6 +174,19 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         "@effect/platform-node": "4.0.0-beta.59",
         effect: "4.0.0-beta.59",
       },
+    );
+  });
+
+  it("rejects retired local and hosted runtime roots in the desktop main bundle", () => {
+    assert.deepStrictEqual(
+      findForbiddenDesktopMainBundleSymbols(
+        'class DesktopBackendOutputLogFactory {}\nrequire("@clerk/electron")\nnode-pty',
+      ),
+      ["DesktopBackendOutputLogFactory", "@clerk/electron", "node-pty"],
+    );
+    assert.deepStrictEqual(
+      findForbiddenDesktopMainBundleSymbols("Electron protocol connection catalog thin shell"),
+      [],
     );
   });
 

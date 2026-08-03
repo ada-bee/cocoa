@@ -63,9 +63,26 @@ export class ElectronSafeStorage extends Context.Service<
   }
 >()("@t3tools/desktop/electron/ElectronSafeStorage") {}
 
+export function isSafeStorageBackendSecure(input: {
+  readonly platform: NodeJS.Platform;
+  readonly encryptionAvailable: boolean;
+  readonly selectedBackend: string | undefined;
+}): boolean {
+  if (!input.encryptionAvailable) return false;
+  return input.platform !== "linux" || input.selectedBackend !== "basic_text";
+}
+
 export const make = ElectronSafeStorage.of({
   isEncryptionAvailable: Effect.try({
-    try: () => Electron.safeStorage.isEncryptionAvailable(),
+    try: () =>
+      isSafeStorageBackendSecure({
+        platform: process.platform,
+        encryptionAvailable: Electron.safeStorage.isEncryptionAvailable(),
+        selectedBackend:
+          process.platform === "linux"
+            ? Electron.safeStorage.getSelectedStorageBackend()
+            : undefined,
+      }),
     catch: (cause) => new ElectronSafeStorageAvailabilityError({ cause }),
   }),
   encryptString: (value) =>

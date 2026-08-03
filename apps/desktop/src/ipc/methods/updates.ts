@@ -3,7 +3,7 @@ import {
   DesktopUpdateChannelSchema,
   DesktopUpdateCheckResultSchema,
   DesktopUpdateStateSchema,
-} from "@t3tools/contracts";
+} from "@t3tools/contracts/ipc";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 

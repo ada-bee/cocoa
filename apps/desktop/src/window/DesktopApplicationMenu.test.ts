@@ -4,6 +4,10 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import { vi } from "vite-plus/test";
+
+vi.mock("electron", () => ({}));
+vi.mock("electron-updater", () => ({ autoUpdater: {} }));
 
 import type * as Electron from "electron";
 
@@ -73,10 +77,6 @@ const makeDesktopWindowLayer = (selectedAction: Deferred.Deferred<string>) =>
     ensureMain: Effect.die("unexpected ensureMain"),
     revealOrCreateMain: Effect.die("unexpected revealOrCreateMain"),
     activate: Effect.void,
-    createMainIfBackendReady: Effect.void,
-    showConnectingSplash: Effect.void,
-    handleBackendReady: () => Effect.void,
-    handleBackendNotReady: Effect.void,
     flushMainWindowBounds: Effect.void,
     dispatchMenuAction: (action) => Deferred.succeed(selectedAction, action).pipe(Effect.asVoid),
     syncAppearance: Effect.void,

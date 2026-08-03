@@ -6,7 +6,7 @@ import * as Schema from "effect/Schema";
 
 import type * as Electron from "electron";
 
-import { makeComponentLogger } from "../app/DesktopObservability.ts";
+import { makeComponentLogger } from "../app/DesktopClientObservability.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../electron/ElectronMenu.ts";

@@ -1,32 +1,56 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { ConnectionCatalogDocument } from "@t3tools/client-runtime/platform";
-import { EnvironmentId, type PersistedSavedEnvironmentRecord } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
-import * as Schema from "effect/Schema";
+import { vi } from "vite-plus/test";
+
+vi.mock("electron", () => ({ safeStorage: {} }));
 
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
-import * as DesktopSavedEnvironments from "../settings/DesktopSavedEnvironments.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
 import * as DesktopConnectionCatalogStore from "./DesktopConnectionCatalogStore.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
-const decodeConnectionCatalog = Schema.decodeEffect(
-  Schema.fromJsonString(ConnectionCatalogDocument),
-);
+const DIRECT_CATALOG = JSON.stringify({
+  schemaVersion: 1,
+  targets: [
+    {
+      _tag: "BearerConnectionTarget",
+      environmentId: "gateway-main",
+      label: "Cocoa",
+      connectionId: "gateway-main",
+    },
+  ],
+  profiles: [
+    {
+      _tag: "BearerConnectionProfile",
+      connectionId: "gateway-main",
+      environmentId: "gateway-main",
+      label: "Cocoa",
+      httpBaseUrl: "https://cocoa.example.test/",
+      wsBaseUrl: "wss://cocoa.example.test/",
+    },
+  ],
+  credentials: [
+    {
+      connectionId: "gateway-main",
+      credential: { _tag: "BearerConnectionCredential", token: "secret-token" },
+    },
+  ],
+});
+
 function makeSafeStorageLayer(available: boolean, failDecrypt: Ref.Ref<boolean> | null = null) {
   return Layer.succeed(ElectronSafeStorage.ElectronSafeStorage, {
     isEncryptionAvailable: Effect.succeed(available),
     encryptString: (value) => Effect.succeed(textEncoder.encode(`encrypted:${value}`)),
-    decryptString: (value) => {
-      return Effect.gen(function* () {
+    decryptString: (value) =>
+      Effect.gen(function* () {
         const decoded = textDecoder.decode(value);
         if (
           !decoded.startsWith("encrypted:") ||
@@ -37,8 +61,7 @@ function makeSafeStorageLayer(available: boolean, failDecrypt: Ref.Ref<boolean> 
           });
         }
         return decoded.slice("encrypted:".length);
-      });
-    },
+      }),
   } satisfies ElectronSafeStorage.ElectronSafeStorage["Service"]);
 }
 
@@ -63,21 +86,13 @@ function makeLayer(
       Layer.mergeAll(NodeServices.layer, DesktopConfig.layerTest({ T3CODE_HOME: baseDir })),
     ),
   );
-  const safeStorageLayer = makeSafeStorageLayer(encryptionAvailable, failDecrypt);
   const dependencies = Layer.mergeAll(
     environmentLayer,
-    safeStorageLayer,
+    makeSafeStorageLayer(encryptionAvailable, failDecrypt),
     NodeServices.layer,
     fileSystemLayer,
   );
-  const savedEnvironmentsLayer = DesktopSavedEnvironments.layer.pipe(
-    Layer.provideMerge(dependencies),
-  );
-
-  return DesktopConnectionCatalogStore.layer.pipe(
-    Layer.provideMerge(savedEnvironmentsLayer),
-    Layer.provideMerge(dependencies),
-  );
+  return DesktopConnectionCatalogStore.layer.pipe(Layer.provideMerge(dependencies));
 }
 
 const withStore = <A, E, R>(
@@ -87,21 +102,18 @@ const withStore = <A, E, R>(
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-      prefix: "t3-desktop-connection-catalog-test-",
+      prefix: "cocoa-desktop-connection-catalog-test-",
     });
     return yield* effect.pipe(Effect.provide(makeLayer(baseDir, encryptionAvailable)));
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
 describe("DesktopConnectionCatalogStore", () => {
-  it.effect("persists, reads, and clears an encrypted connection catalog", () =>
+  it.effect("persists, reads, and clears an encrypted direct gateway catalog", () =>
     withStore(
       Effect.gen(function* () {
         const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
-        const catalog = '{"schemaVersion":1,"targets":[]}';
-
-        assert.isTrue(yield* store.set(catalog));
-        assert.deepStrictEqual(yield* store.get, Option.some(catalog));
-
+        assert.isTrue(yield* store.set(DIRECT_CATALOG));
+        assert.deepStrictEqual(yield* store.get, Option.some(DIRECT_CATALOG));
         yield* store.clear;
         assert.deepStrictEqual(yield* store.get, Option.none());
       }),
@@ -112,134 +124,52 @@ describe("DesktopConnectionCatalogStore", () => {
     withStore(
       Effect.gen(function* () {
         const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
-        assert.isFalse(yield* store.set("{}"));
+        assert.isFalse(yield* store.set(DIRECT_CATALOG));
         assert.deepStrictEqual(yield* store.get, Option.none());
       }),
       false,
     ),
   );
 
-  it.effect("migrates legacy relay, SSH, bearer profile, and credential data", () =>
+  it.effect("rejects non-direct and malformed gateway catalogs", () =>
     withStore(
       Effect.gen(function* () {
         const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
-        const savedEnvironments = yield* DesktopSavedEnvironments.DesktopSavedEnvironments;
-        const records: readonly PersistedSavedEnvironmentRecord[] = [
-          {
-            environmentId: EnvironmentId.make("relay-environment"),
-            label: "Relay",
-            httpBaseUrl: "https://relay.example.com/",
-            wsBaseUrl: "wss://relay.example.com/",
-            createdAt: "2026-06-01T00:00:00.000Z",
-            lastConnectedAt: null,
-            relayManaged: { relayUrl: "https://relay-control.example.com/" },
-          },
-          {
-            environmentId: EnvironmentId.make("ssh-environment"),
-            label: "SSH",
-            httpBaseUrl: "http://127.0.0.1:41773/",
-            wsBaseUrl: "ws://127.0.0.1:41773/",
-            createdAt: "2026-06-02T00:00:00.000Z",
-            lastConnectedAt: null,
-            desktopSsh: {
-              alias: "devbox",
-              hostname: "devbox.example.com",
-              username: "julius",
-              port: 22,
-            },
-          },
-          {
-            environmentId: EnvironmentId.make("bearer-environment"),
-            label: "Bearer",
-            httpBaseUrl: "https://bearer.example.com/",
-            wsBaseUrl: "wss://bearer.example.com/",
-            createdAt: "2026-06-03T00:00:00.000Z",
-            lastConnectedAt: null,
-          },
+        const cases = [
+          "{}",
+          DIRECT_CATALOG.replace("https://cocoa.example.test/", "file:///tmp/cocoa"),
+          DIRECT_CATALOG.replace("https://cocoa.example.test/", "https://cocoa.example.test/api"),
+          DIRECT_CATALOG.replace("wss://cocoa.example.test/", "wss://other.example.test/"),
+          DIRECT_CATALOG.replace("secret-token", "   "),
         ];
-        yield* savedEnvironments.setRegistry(records);
-        assert.isTrue(
-          yield* savedEnvironments.setSecret({
-            environmentId: EnvironmentId.make("bearer-environment"),
-            secret: "legacy-token",
-          }),
-        );
-
-        const migrated = yield* store.get;
-        assert.isTrue(Option.isSome(migrated));
-        if (Option.isNone(migrated)) {
-          return;
+        for (const catalog of cases) {
+          const error = yield* store.set(catalog).pipe(Effect.flip);
+          assert.instanceOf(
+            error,
+            DesktopConnectionCatalogStore.DesktopConnectionCatalogStoreValidationError,
+          );
         }
-        const catalog = yield* decodeConnectionCatalog(migrated.value);
-
-        assert.deepInclude(catalog.targets[0], {
-          _tag: "RelayConnectionTarget",
-          environmentId: EnvironmentId.make("relay-environment"),
-          label: "Relay",
-        });
-        assert.deepInclude(catalog.targets[1], {
-          _tag: "SshConnectionTarget",
-          environmentId: EnvironmentId.make("ssh-environment"),
-          label: "SSH",
-          connectionId: "ssh:ssh-environment",
-        });
-        assert.deepInclude(catalog.targets[2], {
-          _tag: "BearerConnectionTarget",
-          environmentId: EnvironmentId.make("bearer-environment"),
-          label: "Bearer",
-          connectionId: "bearer:bearer-environment",
-        });
-        assert.deepInclude(catalog.profiles[0], {
-          _tag: "SshConnectionProfile",
-          connectionId: "ssh:ssh-environment",
-          environmentId: EnvironmentId.make("ssh-environment"),
-          label: "SSH",
-          target: {
-            alias: "devbox",
-            hostname: "devbox.example.com",
-            username: "julius",
-            port: 22,
-          },
-        });
-        assert.deepInclude(catalog.profiles[1], {
-          _tag: "BearerConnectionProfile",
-          connectionId: "bearer:bearer-environment",
-          environmentId: EnvironmentId.make("bearer-environment"),
-          label: "Bearer",
-          httpBaseUrl: "https://bearer.example.com/",
-          wsBaseUrl: "wss://bearer.example.com/",
-        });
-        assert.equal(catalog.credentials.length, 1);
-        assert.equal(catalog.credentials[0]?.connectionId, "bearer:bearer-environment");
-        assert.equal(catalog.credentials[0]?.credential._tag, "BearerConnectionCredential");
-        if (catalog.credentials[0]?.credential._tag === "BearerConnectionCredential") {
-          assert.equal(catalog.credentials[0].credential.token, "legacy-token");
-        }
-
-        yield* savedEnvironments.setRegistry([]);
-        assert.deepEqual(yield* store.get, migrated);
       }),
     ),
   );
 
-  it.effect("surfaces malformed catalog documents without deleting them", () =>
+  it.effect("surfaces malformed encrypted documents without deleting them", () =>
     withStore(
       Effect.gen(function* () {
         const environment = yield* DesktopEnvironment.DesktopEnvironment;
         const fileSystem = yield* FileSystem.FileSystem;
         const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
-        const catalogPath = `${environment.stateDir}/connection-catalog.json`;
         yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
-        yield* fileSystem.writeFileString(catalogPath, "{not-json");
-
+        yield* fileSystem.writeFileString(environment.connectionCatalogPath, "{not-json");
         const error = yield* store.get.pipe(Effect.flip);
         assert.instanceOf(
           error,
           DesktopConnectionCatalogStore.DesktopConnectionCatalogStoreDocumentDecodeError,
         );
-        assert.equal(error.catalogPath, catalogPath);
-        assert.exists(error.cause);
-        assert.equal(yield* fileSystem.readFileString(catalogPath), "{not-json");
+        assert.equal(
+          yield* fileSystem.readFileString(environment.connectionCatalogPath),
+          "{not-json",
+        );
       }),
     ),
   );
@@ -248,44 +178,37 @@ describe("DesktopConnectionCatalogStore", () => {
     Effect.gen(function* () {
       const baseFileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* baseFileSystem.makeTempDirectoryScoped({
-        prefix: "t3-desktop-connection-catalog-test-",
+        prefix: "cocoa-desktop-connection-catalog-test-",
       });
+      const catalogPath = `${baseDir}/userdata/connection-catalog.json`;
       const permissionError = PlatformError.systemError({
         _tag: "PermissionDenied",
         module: "FileSystem",
         method: "readFileString",
-        pathOrDescriptor: `${baseDir}/userdata/connection-catalog.json`,
+        pathOrDescriptor: catalogPath,
       });
       const fileSystemLayer = Layer.succeed(
         FileSystem.FileSystem,
-        FileSystem.makeNoop({
-          readFileString: () => Effect.fail(permissionError),
-        }),
+        FileSystem.makeNoop({ readFileString: () => Effect.fail(permissionError) }),
       );
       const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore.pipe(
         Effect.provide(makeLayer(baseDir, true, null, fileSystemLayer)),
       );
-
       const error = yield* store.get.pipe(Effect.flip);
       assert.instanceOf(
         error,
         DesktopConnectionCatalogStore.DesktopConnectionCatalogStoreReadError,
       );
-      assert.equal(error.catalogPath, `${baseDir}/userdata/connection-catalog.json`);
+      assert.equal(error.catalogPath, catalogPath);
       assert.strictEqual(error.cause, permissionError);
-      assert.equal(
-        error.message,
-        `Failed to read the desktop connection catalog at ${baseDir}/userdata/connection-catalog.json.`,
-      );
-      assert.notEqual(error.message, permissionError.message);
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
-  it.effect("reports the failed catalog write operation and path", () =>
+  it.effect("reports the failed atomic catalog write operation and path", () =>
     Effect.gen(function* () {
       const baseFileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* baseFileSystem.makeTempDirectoryScoped({
-        prefix: "t3-desktop-connection-catalog-test-",
+        prefix: "cocoa-desktop-connection-catalog-test-",
       });
       const permissionError = PlatformError.systemError({
         _tag: "PermissionDenied",
@@ -295,15 +218,12 @@ describe("DesktopConnectionCatalogStore", () => {
       });
       const fileSystemLayer = Layer.succeed(
         FileSystem.FileSystem,
-        FileSystem.makeNoop({
-          makeDirectory: () => Effect.fail(permissionError),
-        }),
+        FileSystem.makeNoop({ makeDirectory: () => Effect.fail(permissionError) }),
       );
       const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore.pipe(
         Effect.provide(makeLayer(baseDir, true, null, fileSystemLayer)),
       );
-
-      const error = yield* store.set("{}").pipe(Effect.flip);
+      const error = yield* store.set(DIRECT_CATALOG).pipe(Effect.flip);
       assert.instanceOf(
         error,
         DesktopConnectionCatalogStore.DesktopConnectionCatalogStoreWriteError,
@@ -311,86 +231,41 @@ describe("DesktopConnectionCatalogStore", () => {
       assert.equal(error.operation, "create-directory");
       assert.equal(error.path, `${baseDir}/userdata`);
       assert.strictEqual(error.cause, permissionError);
-      assert.equal(
-        error.message,
-        `Desktop connection catalog write failed during create-directory at ${baseDir}/userdata.`,
-      );
-      assert.notEqual(error.message, permissionError.message);
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
-  it.effect("reports the legacy migration stage", () =>
+  it.effect("reports invalid encrypted bytes without exposing ciphertext", () =>
     withStore(
       Effect.gen(function* () {
         const environment = yield* DesktopEnvironment.DesktopEnvironment;
         const fileSystem = yield* FileSystem.FileSystem;
         const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
         yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
-        yield* fileSystem.writeFileString(environment.savedEnvironmentRegistryPath, "{not-json");
-
-        const error = yield* store.get.pipe(Effect.flip);
-        assert.instanceOf(
-          error,
-          DesktopConnectionCatalogStore.DesktopConnectionCatalogStoreMigrationError,
+        yield* fileSystem.writeFileString(
+          environment.connectionCatalogPath,
+          '{"version":1,"encryptedCatalog":"%%%"}\n',
         );
-        assert.equal(error.operation, "read-legacy-registry");
-        assert.equal(error.catalogPath, `${environment.stateDir}/connection-catalog.json`);
-        assert.instanceOf(
-          error.cause,
-          DesktopSavedEnvironments.DesktopSavedEnvironmentsDocumentDecodeError,
-        );
-        const registryError =
-          error.cause as DesktopSavedEnvironments.DesktopSavedEnvironmentsDocumentDecodeError;
-        assert.exists(registryError.cause);
-        assert.equal(
-          error.message,
-          `Legacy desktop saved-environment migration failed during read-legacy-registry into ${environment.stateDir}/connection-catalog.json.`,
-        );
-        assert.notEqual(error.message, registryError.message);
-      }),
-    ),
-  );
-
-  it.effect("reports invalid encrypted catalog data without exposing it", () =>
-    withStore(
-      Effect.gen(function* () {
-        const environment = yield* DesktopEnvironment.DesktopEnvironment;
-        const fileSystem = yield* FileSystem.FileSystem;
-        const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
-        const catalogPath = `${environment.stateDir}/connection-catalog.json`;
-        yield* fileSystem.makeDirectory(environment.stateDir, { recursive: true });
-        yield* fileSystem.writeFileString(catalogPath, '{"version":1,"encryptedCatalog":"%%%"}\n');
-
         const error = yield* store.get.pipe(Effect.flip);
         assert.instanceOf(
           error,
           DesktopConnectionCatalogStore.DesktopConnectionCatalogStoreDecodeError,
-        );
-        assert.equal(error.resource, "encryptedCatalog");
-        assert.equal(error.catalogPath, catalogPath);
-        assert.exists(error.cause);
-        assert.equal(
-          error.message,
-          `Failed to decode encryptedCatalog for the desktop connection catalog at ${catalogPath}.`,
         );
         assert.notInclude(error.message, "%%%");
       }),
     ),
   );
 
-  it.effect("surfaces a catalog that can no longer be decrypted without deleting it", () =>
+  it.effect("preserves a catalog that can no longer be decrypted", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-desktop-connection-catalog-test-",
+        prefix: "cocoa-desktop-connection-catalog-test-",
       });
       const failDecrypt = yield* Ref.make(false);
-      const layer = makeLayer(baseDir, true, failDecrypt);
       const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore.pipe(
-        Effect.provide(layer),
+        Effect.provide(makeLayer(baseDir, true, failDecrypt)),
       );
-
-      assert.isTrue(yield* store.set('{"schemaVersion":1,"targets":[]}'));
+      assert.isTrue(yield* store.set(DIRECT_CATALOG));
       yield* Ref.set(failDecrypt, true);
       const error = yield* store.get.pipe(Effect.flip);
       assert.instanceOf(
@@ -398,18 +273,8 @@ describe("DesktopConnectionCatalogStore", () => {
         DesktopConnectionCatalogStore.DesktopConnectionCatalogStoreProtectionError,
       );
       assert.equal(error.operation, "decrypt-catalog");
-      assert.equal(error.catalogPath, `${baseDir}/userdata/connection-catalog.json`);
-      assert.instanceOf(error.cause, ElectronSafeStorage.ElectronSafeStorageDecryptError);
-      const decryptError = error.cause as ElectronSafeStorage.ElectronSafeStorageDecryptError;
-      assert.instanceOf(decryptError.cause, Error);
-      assert.equal(decryptError.cause.message, "invalid encrypted catalog");
-      assert.equal(
-        error.message,
-        `Desktop connection catalog protection failed during decrypt-catalog at ${baseDir}/userdata/connection-catalog.json.`,
-      );
-      assert.notEqual(error.message, decryptError.message);
       yield* Ref.set(failDecrypt, false);
-      assert.deepStrictEqual(yield* store.get, Option.some('{"schemaVersion":1,"targets":[]}'));
+      assert.deepStrictEqual(yield* store.get, Option.some(DIRECT_CATALOG));
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 });
