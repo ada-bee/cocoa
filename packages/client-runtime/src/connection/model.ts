@@ -38,7 +38,6 @@ export const ConnectionTransientReason = Schema.Literals([
   "timeout",
   "transport",
   "endpoint-unavailable",
-  "relay-unavailable",
   "remote-unavailable",
 ]);
 export type ConnectionTransientReason = typeof ConnectionTransientReason.Type;

@@ -7,6 +7,7 @@ import * as RemoteEnvironmentAuthorization from "../authorization/service.ts";
 import * as ClientCapabilities from "../platform/capabilities.ts";
 import * as ConnectionCredentialStore from "./credentialStore.ts";
 import layerSource from "./layer.ts?raw";
+import modelSource from "./model.ts?raw";
 import onboardingSource from "./onboarding.ts?raw";
 import resolverSource from "./resolver.ts?raw";
 import {
@@ -21,7 +22,7 @@ const environmentId = EnvironmentId.make("cocoa-gateway");
 
 describe("Cocoa direct connection boundary", () => {
   it("keeps hosted and machine-management modules out of Cocoa roots", () => {
-    const roots = `${layerSource}\n${onboardingSource}\n${resolverSource}`;
+    const roots = `${layerSource}\n${modelSource}\n${onboardingSource}\n${resolverSource}`;
     for (const forbidden of [
       "../relay/",
       "ManagedRelay",
@@ -31,6 +32,7 @@ describe("Cocoa direct connection boundary", () => {
       "authorizeDpop",
       "RelayConnectionTarget",
       "SshConnectionTarget",
+      "relay-unavailable",
     ]) {
       expect(roots).not.toContain(forbidden);
     }
