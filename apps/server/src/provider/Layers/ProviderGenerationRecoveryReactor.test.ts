@@ -33,6 +33,10 @@ import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
 } from "../../orchestration/Services/ProviderCommandReactor.ts";
+import {
+  PostTurnCheckpointReactor,
+  type PostTurnCheckpointReactorShape,
+} from "../../orchestration/Services/PostTurnCheckpointReactor.ts";
 
 const INSTANCE_ID = ProviderInstanceId.make("codex_remote");
 const OTHER_INSTANCE_ID = ProviderInstanceId.make("codex_other");
@@ -133,6 +137,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
   readonly instances: ReadonlyArray<ProviderInstance>;
   readonly bindings: ReadonlyArray<ProviderRuntimeBindingWithMetadata>;
   readonly recover?: (input: RecoveryInput) => Effect.Effect<ProviderSession, ProviderServiceError>;
+  readonly recoverCommands?: (providerInstanceId: ProviderInstanceId) => Effect.Effect<void>;
   readonly onListBindings?: () => void;
 }) {
   const instances = yield* Ref.make(input.instances);
@@ -140,6 +145,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
   const registryChanges = yield* PubSub.unbounded<void>();
   const recoveries = yield* Queue.unbounded<RecoveryInput>();
   const dispatchRecoveries = yield* Queue.unbounded<ProviderInstanceId | undefined>();
+  const checkpointRecoveries = yield* Queue.unbounded<ProviderInstanceId | undefined>();
   const registryReleased = yield* Deferred.make<void>();
 
   const registry: ProviderInstanceRegistryShape = {
@@ -171,7 +177,20 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
   const providerCommandReactor: ProviderCommandReactorShape = {
     start: () => Effect.die("unused"),
     recover: (providerInstanceId) =>
-      Queue.offer(dispatchRecoveries, providerInstanceId).pipe(Effect.asVoid),
+      Queue.offer(dispatchRecoveries, providerInstanceId).pipe(
+        Effect.andThen(
+          providerInstanceId === undefined || input.recoverCommands === undefined
+            ? Effect.void
+            : input.recoverCommands(providerInstanceId),
+        ),
+      ),
+    drain: Effect.void,
+  };
+  const postTurnCheckpointReactor: PostTurnCheckpointReactorShape = {
+    processTurnCompleted: () => Effect.die("unused"),
+    recover: (providerInstanceId) =>
+      Queue.offer(checkpointRecoveries, providerInstanceId).pipe(Effect.as([])),
+    start: () => Effect.die("unused"),
     drain: Effect.void,
   };
   const reactor = yield* makeProviderGenerationRecoveryReactor.pipe(
@@ -179,6 +198,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
     Effect.provideService(ProviderSessionDirectory, directory),
     Effect.provideService(ProviderService, providerService),
     Effect.provideService(ProviderCommandReactor, providerCommandReactor),
+    Effect.provideService(PostTurnCheckpointReactor, postTurnCheckpointReactor),
   );
   const ownerScope = yield* Scope.make("sequential");
 
@@ -187,6 +207,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
     ownerScope,
     recoveries,
     dispatchRecoveries,
+    checkpointRecoveries,
     registryReleased,
     setBindings: (next: ReadonlyArray<ProviderRuntimeBindingWithMetadata>) =>
       Ref.set(bindings, next),
@@ -214,6 +235,7 @@ it("recovers an initially ready generation", () =>
         providerInstanceId: INSTANCE_ID,
       });
       assert.equal(yield* Queue.take(harness.dispatchRecoveries), INSTANCE_ID);
+      assert.equal(yield* Queue.take(harness.checkpointRecoveries), INSTANCE_ID);
       yield* Scope.close(harness.ownerScope, Exit.void);
     }),
   ));
@@ -251,6 +273,13 @@ it("recovers later ready generations and survives an individual typed failure", 
       yield* lifecycle.publish(ready(2));
       yield* Queue.take(harness.recoveries);
       yield* Queue.take(harness.recoveries);
+      assert.deepStrictEqual(
+        [
+          yield* Queue.take(harness.checkpointRecoveries),
+          yield* Queue.take(harness.checkpointRecoveries),
+        ],
+        [INSTANCE_ID, INSTANCE_ID],
+      );
       assert.equal(attempts, 2);
       yield* Scope.close(harness.ownerScope, Exit.void);
     }),
@@ -273,6 +302,40 @@ it("deduplicates repeated notifications for the same lifecycle-local generation"
       yield* lifecycle.publish(ready(2));
       yield* Queue.take(harness.recoveries);
       assert.equal(listCalls, 2);
+      yield* Scope.close(harness.ownerScope, Exit.void);
+    }),
+  ));
+
+it("does not run checkpoint recovery after the ready generation changes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const lifecycle = yield* makeLifecycle(ready(1));
+      const generationChanged = yield* Deferred.make<void>();
+      const generationRechecked = yield* Deferred.make<void>();
+      const observedLifecycle: ProviderInstanceGenerationLifecycle = {
+        ...lifecycle.lifecycle,
+        getCurrent: lifecycle.lifecycle.getCurrent.pipe(
+          Effect.tap((state) =>
+            state._tag === "Unavailable"
+              ? Deferred.succeed(generationRechecked, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+          ),
+        ),
+      };
+      const harness = yield* makeHarness({
+        instances: [makeInstance(observedLifecycle, "checkpoint-currentness")],
+        bindings: [],
+        recoverCommands: () =>
+          lifecycle
+            .publish(unavailable())
+            .pipe(Effect.andThen(Deferred.succeed(generationChanged, undefined)), Effect.asVoid),
+      });
+      yield* harness.reactor.start().pipe(Effect.provideService(Scope.Scope, harness.ownerScope));
+
+      assert.equal(yield* Queue.take(harness.dispatchRecoveries), INSTANCE_ID);
+      yield* Deferred.await(generationChanged);
+      yield* Deferred.await(generationRechecked);
+      assert.equal(yield* Queue.size(harness.checkpointRecoveries), 0);
       yield* Scope.close(harness.ownerScope, Exit.void);
     }),
   ));

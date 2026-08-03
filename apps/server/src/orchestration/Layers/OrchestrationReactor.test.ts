@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
+import { PostTurnCheckpointReactor } from "../Services/PostTurnCheckpointReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
@@ -24,7 +25,7 @@ describe("OrchestrationReactor", () => {
     runtime = null;
   });
 
-  it("starts provider ingestion, provider command, checkpoint, and thread deletion reactors", async () => {
+  it("starts provider ingestion and every durable command/checkpoint reactor once", async () => {
     const started: string[] = [];
 
     runtime = ManagedRuntime.make(
@@ -33,6 +34,17 @@ describe("OrchestrationReactor", () => {
           Layer.succeed(ProviderRuntimeIngestionService, {
             start: () => {
               started.push("provider-runtime-ingestion");
+              return Effect.void;
+            },
+            drain: Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(PostTurnCheckpointReactor, {
+            processTurnCompleted: () => Effect.die("unused"),
+            recover: () => Effect.succeed([]),
+            start: () => {
+              started.push("post-turn-checkpoint-reactor");
               return Effect.void;
             },
             drain: Effect.void,
@@ -92,6 +104,7 @@ describe("OrchestrationReactor", () => {
 
     expect(started).toEqual([
       "provider-runtime-ingestion",
+      "post-turn-checkpoint-reactor",
       "provider-generation-recovery",
       "provider-command-reactor",
       "checkpoint-reactor",

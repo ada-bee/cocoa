@@ -64,6 +64,7 @@ import {
 } from "../src/orchestration/Services/OrchestrationEngine.ts";
 import { ThreadDeletionReactor } from "../src/orchestration/Services/ThreadDeletionReactor.ts";
 import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
+import { PostTurnCheckpointReactor } from "../src/orchestration/Services/PostTurnCheckpointReactor.ts";
 import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   RuntimeReceiptBus,
@@ -379,6 +380,14 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(runtimeIngestionLayer),
       Layer.provideMerge(providerCommandReactorLayer),
       Layer.provideMerge(checkpointReactorLayer),
+      Layer.provideMerge(
+        Layer.succeed(PostTurnCheckpointReactor, {
+          processTurnCompleted: () => Effect.die("unused"),
+          recover: () => Effect.succeed([]),
+          start: () => Effect.void,
+          drain: Effect.void,
+        }),
+      ),
       Layer.provideMerge(
         Layer.succeed(ProviderGenerationRecoveryReactor, {
           start: () => Effect.void,

@@ -27,6 +27,7 @@ import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.t
 import { ProviderService } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import { ProviderCommandReactor } from "../../orchestration/Services/ProviderCommandReactor.ts";
+import { PostTurnCheckpointReactor } from "../../orchestration/Services/PostTurnCheckpointReactor.ts";
 
 const RECOVERY_CONCURRENCY = 4;
 
@@ -56,6 +57,7 @@ export const makeProviderGenerationRecoveryReactor = Effect.gen(function* () {
   const directory = yield* ProviderSessionDirectory;
   const providerService = yield* ProviderService;
   const providerCommandReactor = yield* ProviderCommandReactor;
+  const postTurnCheckpointReactor = yield* PostTurnCheckpointReactor;
   const startedRef = yield* Ref.make(false);
 
   const recoverGeneration = Effect.fn("ProviderGenerationRecoveryReactor.recoverGeneration")(
@@ -114,6 +116,19 @@ export const makeProviderGenerationRecoveryReactor = Effect.gen(function* () {
       const current = yield* lifecycle.getCurrent;
       if (isExactReadyGeneration(current, instance.instanceId, generationId)) {
         yield* providerCommandReactor.recover(instance.instanceId);
+      }
+      const afterCommandRecovery = yield* lifecycle.getCurrent;
+      if (isExactReadyGeneration(afterCommandRecovery, instance.instanceId, generationId)) {
+        yield* postTurnCheckpointReactor.recover(instance.instanceId).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Failed to recover post-turn checkpoints on ready generation", {
+              providerInstanceId: instance.instanceId,
+              generationId,
+              code: error.code,
+            }),
+          ),
+          Effect.asVoid,
+        );
       }
     },
   );

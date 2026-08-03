@@ -7,6 +7,7 @@ import {
 } from "../Services/OrchestrationReactor.ts";
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
+import { PostTurnCheckpointReactor } from "../Services/PostTurnCheckpointReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
@@ -16,12 +17,14 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const providerRuntimeIngestion = yield* ProviderRuntimeIngestionService;
   const providerGenerationRecoveryReactor = yield* ProviderGenerationRecoveryReactor;
   const providerCommandReactor = yield* ProviderCommandReactor;
+  const postTurnCheckpointReactor = yield* PostTurnCheckpointReactor;
   const checkpointReactor = yield* CheckpointReactor;
   const threadDeletionReactor = yield* ThreadDeletionReactor;
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
     yield* providerRuntimeIngestion.start();
+    yield* postTurnCheckpointReactor.start();
     yield* providerGenerationRecoveryReactor.start();
     yield* providerCommandReactor.start();
     yield* checkpointReactor.start();
@@ -38,11 +41,13 @@ export const makeCoreOrchestrationReactor = Effect.gen(function* () {
   const providerRuntimeIngestion = yield* ProviderRuntimeIngestionService;
   const providerGenerationRecoveryReactor = yield* ProviderGenerationRecoveryReactor;
   const providerCommandReactor = yield* ProviderCommandReactor;
+  const postTurnCheckpointReactor = yield* PostTurnCheckpointReactor;
   const checkpointReactor = yield* CheckpointReactor;
   const threadDeletionReactor = yield* ThreadDeletionReactor;
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
     yield* providerRuntimeIngestion.start();
+    yield* postTurnCheckpointReactor.start();
     yield* providerGenerationRecoveryReactor.start();
     yield* providerCommandReactor.start();
     yield* checkpointReactor.start();
