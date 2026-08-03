@@ -911,7 +911,6 @@ fn checkpoint_diff(
             "Invalid diff byte limit.",
         ));
     }
-    let _lock = RepositoryLock::acquire(&repository.common_dir)?;
     validate_read_metadata(
         repository,
         &[&base_checkpoint_id, &target_checkpoint_id],
@@ -949,7 +948,6 @@ fn checkpoint_diff(
 fn observe(repository: &Repository, operation_id: String, request_digest: String) -> Result<Value> {
     validate_uuid(&operation_id)?;
     validate_hex_digest(&request_digest)?;
-    let _lock = RepositoryLock::acquire(&repository.common_dir)?;
     validate_read_metadata(repository, &[], Some(&operation_id))?;
     let Some(receipt_oid) = try_resolve_ref(repository, &receipt_ref(&operation_id))? else {
         return Ok(serde_json::json!({"operation": "observe", "status": "not_found"}));

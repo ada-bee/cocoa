@@ -647,6 +647,53 @@ fn receipt_and_checkpoint_refs_cannot_redirect_authority() {
     assert_eq!(symlinked["error"]["code"], "operation_failed");
 }
 
+#[test]
+fn diff_and_observe_are_read_only_and_do_not_create_the_repository_lock() {
+    let (_temp, root, git_path) = repository();
+    let binding = open(&root, &git_path);
+    let (first, first_request) = capture(&root, &git_path, &binding, OP1, CHECKPOINT1);
+    assert_eq!(first["ok"], true, "{first:#}");
+    fs::write(root.join("tracked.txt"), "second state\n").unwrap();
+    let (second, _) = capture(&root, &git_path, &binding, OP2, CHECKPOINT2);
+    assert_eq!(second["ok"], true, "{second:#}");
+
+    let common = PathBuf::from(
+        binding["gitCommonDirectoryRoot"]["canonicalPath"]
+            .as_str()
+            .unwrap(),
+    );
+    let lock = common.join("cocoa-checkpoint-v1.lock");
+    fs::remove_file(&lock).unwrap();
+    let original_mode = fs::metadata(&common).unwrap().permissions().mode();
+    fs::set_permissions(&common, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let reopened = open(&root, &git_path);
+    let (diff, _) = invoke(json!({
+        "protocol": PROTOCOL,
+        "operation": "diff",
+        "gitExecutablePath": git_path.to_str().unwrap(),
+        "expectedBinding": reopened,
+        "baseCheckpointId": CHECKPOINT1,
+        "targetCheckpointId": CHECKPOINT2,
+        "ignoreWhitespace": false,
+        "limits": {"maxPatchBytes": 4096},
+    }));
+    let (observed, _) = invoke(json!({
+        "protocol": PROTOCOL,
+        "operation": "observe",
+        "gitExecutablePath": git_path.to_str().unwrap(),
+        "expectedBinding": reopened,
+        "operationId": OP1,
+        "expectedRequestSha256": format!("{:x}", Sha256::digest(first_request)),
+    }));
+    let lock_was_created = lock.exists();
+    fs::set_permissions(&common, fs::Permissions::from_mode(original_mode)).unwrap();
+
+    assert_eq!(diff["ok"], true, "{diff:#}");
+    assert_eq!(observed["result"]["status"], "found", "{observed:#}");
+    assert!(!lock_was_created);
+}
+
 fn marker_script(path: &Path, marker: &Path) {
     fs::write(
         path,
