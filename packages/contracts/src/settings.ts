@@ -3,6 +3,7 @@ import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { CodexEndpointTransport } from "./codexEndpoint.ts";
 import { DEFAULT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
@@ -199,6 +200,14 @@ export const CodexSettings = makeProviderSettingsSchema(
     enabled: Schema.Boolean.pipe(
       Schema.withDecodingDefault(Effect.succeed(true)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    endpointTransport: Schema.optionalKey(CodexEndpointTransport).pipe(
+      Schema.annotateKey({
+        title: "Endpoint transport",
+        description:
+          "Internal Cocoa transition field for an externally managed Codex app-server endpoint. When present, the gateway runtime will prefer it over the legacy local-process fields after remote transport integration lands.",
+        providerSettingsForm: { hidden: true },
+      }),
     ),
     binaryPath: makeBinaryPathSetting("codex").pipe(
       Schema.annotateKey({
