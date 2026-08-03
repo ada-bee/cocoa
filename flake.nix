@@ -64,6 +64,7 @@
       composeText = builtins.readFile ./deploy/raspberry-pi/compose.yaml;
       settings = builtins.fromJSON (builtins.readFile ./deploy/raspberry-pi/settings.example.json);
       imageConfig = cocoaGatewayImage.passthru.ociConfig;
+      targetArchitecture = cocoaGatewayImage.passthru.targetArchitecture;
       runtimeNames = cocoaGatewayImage.passthru.runtimePackageNames;
       providerInstances = settings.providerInstances or { };
       selectedInstanceId = settings.textGenerationModelSelection.instanceId or null;
@@ -71,6 +72,10 @@
         {
           assertion = system == "aarch64-linux";
           message = "gateway artifacts must target aarch64-linux";
+        }
+        {
+          assertion = targetArchitecture == "arm64";
+          message = "gateway image must declare the OCI arm64 architecture";
         }
         {
           assertion = imageConfig.User == "10001:10001";
@@ -87,6 +92,16 @@
         {
           assertion = builtins.elem "T3CODE_HOST=0.0.0.0" imageConfig.Env;
           message = "gateway image must listen on every container interface";
+        }
+        {
+          assertion =
+            imageConfig.Healthcheck.Test == [
+              "CMD"
+              "${lib.getExe pkgs.bun}"
+              "-e"
+              "const r=await fetch('http://127.0.0.1:7331/readyz');if(!r.ok)process.exit(1)"
+            ];
+          message = "gateway image healthcheck must use core readiness";
         }
         {
           assertion = builtins.all (name: builtins.elem name runtimeNames) [
@@ -113,6 +128,8 @@
         {
           assertion = builtins.all (needle: lib.hasInfix needle composeText) [
             "read_only: true"
+            "- bun"
+            "/readyz"
             "/tmp:rw,nosuid,nodev,noexec"
             "/data/userdata/logs:rw,nosuid,nodev,noexec"
             "/data/worktrees:rw,nosuid,nodev,noexec"
@@ -160,10 +177,23 @@
         nativeBuildInputs = [
           pkgs.gnutar
           pkgs.gzip
+          pkgs.jq
         ];
       } ''
         mkdir unpacked
         tar -xzf ${cocoaGatewayImage} -C unpacked
+
+        config_file="$(${lib.getExe pkgs.jq} -er \
+          'if length == 1 then .[0].Config else error("expected one image manifest") end' \
+          unpacked/manifest.json)"
+        if [[ ! "$config_file" =~ ^[0-9a-f]+\.json$ || ! -f "unpacked/$config_file" ]]; then
+          echo "image config is missing or escapes the archive root" >&2
+          exit 1
+        fi
+        ${lib.getExe pkgs.jq} -e \
+          '.architecture == "arm64" and .os == "linux"' \
+          "unpacked/$config_file" >/dev/null
+
         find unpacked -type f -name layer.tar -print0 \
           | while IFS= read -r -d $'\0' layer; do
               tar -tf "$layer"
@@ -171,6 +201,11 @@
 
         if grep -E '/(codex|git|python[0-9.]*|cocoa-workspace-helper)$' image-files.txt; then
           echo "forbidden provider-host executable found in gateway image" >&2
+          exit 1
+        fi
+
+        if grep -E '(^|/)(auth\.json|credentials\.json|cocoa_ssh_identity|id_(rsa|ed25519)(\.pub)?|known_hosts)$' image-files.txt; then
+          echo "runtime credential material found in gateway image" >&2
           exit 1
         fi
 

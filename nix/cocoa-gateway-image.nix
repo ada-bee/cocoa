@@ -56,7 +56,7 @@ let
         "CMD"
         "${lib.getExe bun}"
         "-e"
-        "const r=await fetch('http://127.0.0.1:7331/healthz');if(!r.ok)process.exit(1)"
+        "const r=await fetch('http://127.0.0.1:7331/readyz');if(!r.ok)process.exit(1)"
       ];
       Interval = 30000000000;
       Timeout = 5000000000;
@@ -68,6 +68,9 @@ in
 dockerTools.buildLayeredImage {
   name = "cocoa-gateway";
   tag = "latest";
+  # Keep the target explicit so a future flake refactor cannot silently emit a
+  # host-architecture image under the Raspberry Pi package name.
+  architecture = "arm64";
   contents = runtimePackages ++ [
     cocoaGateway
     userFiles
@@ -86,6 +89,7 @@ dockerTools.buildLayeredImage {
 
   passthru = {
     inherit ociConfig runtimePackageNames;
+    targetArchitecture = "arm64";
     providerHostHelperIncluded = false;
   };
 }

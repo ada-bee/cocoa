@@ -38,9 +38,9 @@ services:
     healthcheck:
       test:
         - CMD
-        - /bin/bun
+        - bun
         - -e
-        - const r=await fetch('http://127.0.0.1:7331/healthz');if(!r.ok)process.exit(1)
+        - const r=await fetch('http://127.0.0.1:7331/readyz');if(!r.ok)process.exit(1)
       interval: 30s
       timeout: 5s
       retries: 3
