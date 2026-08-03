@@ -10,11 +10,17 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import {
+  PersistenceSqlError,
+  toPersistenceSqlError,
+  type ProjectionRepositoryError,
+} from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { PostTurnCheckpointIntentRepository } from "../../persistence/Services/PostTurnCheckpointIntents.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
@@ -37,6 +43,7 @@ import { ProjectionThreadRepository } from "../../persistence/Services/Projectio
 import {
   TurnDispatchId,
   TurnDispatchJournalRepository,
+  TurnDispatchProviderTurnId,
 } from "../../persistence/Services/TurnDispatchJournal.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
@@ -47,6 +54,7 @@ import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/La
 import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/ProjectionThreadSessions.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
+import { PostTurnCheckpointIntentRepositoryLive } from "../../persistence/Layers/PostTurnCheckpointIntents.ts";
 import {
   TurnDispatchJournalRepositoryLive,
   turnDispatchTitleSeedSha256,
@@ -488,6 +496,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
     const projectionTurnRepository = yield* ProjectionTurnRepository;
     const projectionPendingApprovalRepository = yield* ProjectionPendingApprovalRepository;
+    const postTurnCheckpointIntents = yield* PostTurnCheckpointIntentRepository;
     const turnDispatchJournal = yield* TurnDispatchJournalRepository;
 
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1474,7 +1483,35 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       }
     });
 
-    const applyCheckpointsProjection: ProjectorDefinition["apply"] = () => Effect.void;
+    const isProviderTurnId = Schema.is(TurnDispatchProviderTurnId);
+    const applyCheckpointsProjection: ProjectorDefinition["apply"] = Effect.fn(
+      "applyCheckpointsProjection",
+    )(function* (event, _attachmentSideEffects) {
+      if (event.type !== "thread.turn-completed") return;
+      yield* postTurnCheckpointIntents
+        .projectInTransaction({
+          sourceEventId: event.eventId,
+          sourceSequence: event.sequence,
+          threadId: event.payload.threadId,
+          turnId: event.payload.turnId,
+          providerTurnId:
+            event.payload.providerTurnId !== undefined &&
+            isProviderTurnId(event.payload.providerTurnId)
+              ? event.payload.providerTurnId
+              : null,
+          outcome: event.payload.outcome,
+          completedAt: event.payload.completedAt,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new PersistenceSqlError({
+                operation: "ProjectionPipeline.checkpoints",
+                cause,
+              }),
+          ),
+        );
+    });
 
     const applyPendingApprovalsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyPendingApprovalsProjection",
@@ -1741,4 +1778,5 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   Layer.provideMerge(ProjectionPendingApprovalRepositoryLive),
   Layer.provideMerge(ProjectionStateRepositoryLive),
   Layer.provideMerge(TurnDispatchJournalRepositoryLive),
+  Layer.provideMerge(PostTurnCheckpointIntentRepositoryLive),
 );
