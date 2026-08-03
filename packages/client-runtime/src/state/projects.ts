@@ -77,17 +77,8 @@ function splitAbsolutePath(value: string): {
   return null;
 }
 
-export function isFilesystemBrowseQuery(value: string, platform = ""): boolean {
-  const allowWindowsPaths = isWindowsPlatform(platform);
-  return (
-    value.startsWith("./") ||
-    value.startsWith("../") ||
-    value.startsWith(".\\") ||
-    value.startsWith("..\\") ||
-    value.startsWith("/") ||
-    value.startsWith("~/") ||
-    (allowWindowsPaths && isWindowsAbsolutePath(value))
-  );
+export function isFilesystemBrowseQuery(value: string): boolean {
+  return value.startsWith("/") || value.startsWith("~/");
 }
 
 export function isUnsupportedWindowsProjectPath(value: string, platform: string): boolean {

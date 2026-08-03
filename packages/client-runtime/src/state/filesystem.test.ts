@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
+import { ProviderInstanceId } from "@t3tools/contracts";
 
 import {
+  appendFilesystemBrowseLeaf,
   canPreloadBrowsePath,
   createBrowseNavigationCoordinator,
   filterFilesystemBrowseEntries,
   getFilesystemBrowsePath,
+  getFilesystemBrowseLocator,
+  getFilesystemBrowseInput,
 } from "./filesystem.ts";
 
 describe("filesystem browse model", () => {
@@ -15,17 +19,55 @@ describe("filesystem browse model", () => {
       filterQuery: "t3",
       parentPath: "~/",
       canBrowseUp: true,
+      locator: { kind: "home", relativePath: "projects" },
     });
-    expect(getFilesystemBrowsePath("C:\\Users\\test", "MacIntel").isBrowsing).toBe(false);
-    expect(getFilesystemBrowsePath("~/projects/", "", false).isBrowsing).toBe(false);
+    expect(getFilesystemBrowsePath("/srv/work/").locator).toEqual({
+      kind: "absolute",
+      path: "/srv/work",
+    });
+    expect(getFilesystemBrowsePath("C:\\Users\\test").isBrowsing).toBe(false);
+    expect(getFilesystemBrowsePath("./projects").isBrowsing).toBe(false);
+    expect(getFilesystemBrowsePath("../projects").isBrowsing).toBe(false);
+    expect(getFilesystemBrowsePath("projects").isBrowsing).toBe(false);
+    expect(getFilesystemBrowsePath("~/projects/", false).isBrowsing).toBe(false);
+  });
+
+  it("accepts only normalized provider locators", () => {
+    expect(getFilesystemBrowseLocator("~/code/")).toEqual({
+      kind: "home",
+      relativePath: "code",
+    });
+    expect(getFilesystemBrowseLocator("~/work/../code/")).toBeNull();
+    expect(getFilesystemBrowseLocator("~/../etc/")).toBeNull();
+    expect(getFilesystemBrowseLocator("/srv/../work/")).toBeNull();
+    expect(getFilesystemBrowseLocator("/srv//work/")).toBeNull();
+    expect(getFilesystemBrowseLocator("/srv\\work/")).toBeNull();
+  });
+
+  it("composes a typed leaf only under a provider-resolved absolute directory", () => {
+    expect(appendFilesystemBrowseLeaf("/Users/ada/Code", "cocoa")).toBe("/Users/ada/Code/cocoa");
+    expect(appendFilesystemBrowseLeaf("/", "srv")).toBe("/srv");
+    expect(appendFilesystemBrowseLeaf("~/Code", "cocoa")).toBeNull();
+    expect(appendFilesystemBrowseLeaf("/Users/ada", "../etc")).toBeNull();
+  });
+
+  it("keys every browse request to the selected provider", () => {
+    const mac = getFilesystemBrowseInput(ProviderInstanceId.make("macbook"), "~/Code/");
+    const linux = getFilesystemBrowseInput(ProviderInstanceId.make("rigatoni"), "~/Code/");
+
+    expect(mac).toEqual({
+      providerInstanceId: "macbook",
+      locator: { kind: "home", relativePath: "Code" },
+    });
+    expect(linux).toEqual({
+      providerInstanceId: "rigatoni",
+      locator: { kind: "home", relativePath: "Code" },
+    });
+    expect(mac).not.toEqual(linux);
   });
 
   it("filters names, hidden directories, and exact matches consistently", () => {
-    const entries = [
-      { name: ".config", fullPath: "/Users/test/.config" },
-      { name: "Code", fullPath: "/Users/test/Code" },
-      { name: "codething", fullPath: "/Users/test/codething" },
-    ];
+    const entries = [{ name: ".config" }, { name: "Code" }, { name: "codething" }];
 
     expect(filterFilesystemBrowseEntries(entries, "co")).toEqual({
       visibleEntries: entries.slice(1, 3),

@@ -368,8 +368,8 @@ export function buildBrowseGroups(input: {
   for (const entry of input.browseEntries) {
     items.push({
       kind: "action",
-      value: `browse:${entry.fullPath}`,
-      searchTerms: [input.browseQuery, entry.fullPath, entry.name],
+      value: `browse:${entry.name}`,
+      searchTerms: [input.browseQuery, entry.name],
       title: entry.name,
       icon: input.directoryIcon,
       keepOpen: true,

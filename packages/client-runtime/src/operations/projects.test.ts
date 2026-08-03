@@ -93,30 +93,32 @@ describe("add project shared logic", () => {
   it("resolves initial browse paths from settings", () => {
     expect(getAddProjectInitialQuery("")).toBe("~/");
     expect(getAddProjectInitialQuery("/work")).toBe("/work/");
-    expect(getAddProjectInitialQuery("C:\\work")).toBe("C:\\work\\");
+    expect(getAddProjectInitialQuery("C:\\work")).toBe("~/");
   });
 
-  it("rejects unsupported windows paths on non-windows environments", () => {
+  it("accepts only provider-resolved absolute paths", () => {
     expect(
       resolveAddProjectPath({
         rawPath: "C:\\repo",
-        platform: "MacIntel",
-        currentProjectCwd: null,
       }),
     ).toEqual({
       ok: false,
-      error: "Windows-style paths are only supported on Windows environments.",
+      error: "Choose or enter an absolute folder path on the selected Codex endpoint.",
     });
-  });
-
-  it("resolves relative paths from the active project cwd", () => {
     expect(
       resolveAddProjectPath({
         rawPath: "../next",
-        platform: "Linux",
-        currentProjectCwd: "/work/current",
       }),
-    ).toEqual({ ok: true, path: "/work/next" });
+    ).toEqual({
+      ok: false,
+      error: "Choose or enter an absolute folder path on the selected Codex endpoint.",
+    });
+    expect(resolveAddProjectPath({ rawPath: "/work/next" })).toEqual({
+      ok: true,
+      path: "/work/next",
+    });
+    expect(resolveAddProjectPath({ rawPath: "/work/../next" }).ok).toBe(false);
+    expect(resolveAddProjectPath({ rawPath: "/work\\next" }).ok).toBe(false);
   });
 
   it("marks authenticated source control providers as ready", () => {
@@ -213,7 +215,7 @@ describe("add project shared logic", () => {
       providerInstanceId: "codex",
       title: "repo",
       workspaceRoot: "/work/repo",
-      createWorkspaceRootIfMissing: true,
+      createWorkspaceRootIfMissing: false,
       defaultModelSelection: null,
     });
   });

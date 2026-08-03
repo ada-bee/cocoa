@@ -314,7 +314,7 @@ describe("buildBrowseGroups", () => {
         }),
     );
     const groups = buildBrowseGroups({
-      browseEntries: [{ name: "Downloads", fullPath: "/Users/test/Downloads" }],
+      browseEntries: [{ name: "Downloads" }],
       browseQuery: "~/",
       canBrowseUp: false,
       upIcon: null,

@@ -1,8 +1,4 @@
 import {
-  addProjectRemoteSourceLabel,
-  addProjectRemoteSourcePathHint,
-  addProjectRemoteSourceProvider,
-  buildAddProjectRemoteSourceReadiness,
   buildProjectCreateCommand,
   canCreateProjectInEnvironment,
   findExistingAddProject,
@@ -11,22 +7,22 @@ import {
   resolveProjectCreationProviderInstanceId,
   resolveAddProjectPath,
   resolveProjectCreationModelSelection,
-  sortAddProjectProviderSources,
-  type AddProjectRemoteSource,
 } from "@t3tools/client-runtime/operations/projects";
 import {
   connectionStatusText,
   type EnvironmentConnectionPhase,
 } from "@t3tools/client-runtime/connection";
 import {
+  appendFilesystemBrowseLeaf,
   canPreloadBrowsePath,
   createBrowseNavigationCoordinator,
   filterFilesystemBrowseEntries,
+  getFilesystemBrowseInput,
   getFilesystemBrowsePath,
 } from "@t3tools/client-runtime/state/filesystem";
 import {
-  appendBrowsePathSegment,
   ensureBrowseDirectoryPath,
+  hasTrailingPathSeparator,
   inferProjectTitleFromPath,
 } from "@t3tools/client-runtime/state/projects";
 import {
@@ -51,10 +47,8 @@ import { useProjects, useServerConfigs } from "../../state/entities";
 import { filesystemEnvironment } from "../../state/filesystem";
 import { projectEnvironment } from "../../state/projects";
 import { useEnvironmentQuery } from "../../state/query";
-import { sourceControlEnvironment } from "../../state/sourceControl";
 import { AppText as Text, AppTextInput as TextInput } from "../../components/AppText";
 import { ErrorBanner } from "../../components/ErrorBanner";
-import { SourceControlIcon } from "../../components/SourceControlIcon";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { uuidv4 } from "../../lib/uuid";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -72,8 +66,6 @@ import {
 interface EnvironmentOption {
   readonly environmentId: EnvironmentId;
   readonly label: string;
-  readonly platform: string;
-  readonly baseDirectory: string | null;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
@@ -86,13 +78,6 @@ const environmentOptionOrder = Order.mapInput(
   }),
   (environment: EnvironmentOption) => ({ label: environment.label }),
 );
-
-function platformFromOs(os: string | null | undefined): string {
-  if (os === "windows") return "Win32";
-  if (os === "darwin") return "MacIntel";
-  if (os === "linux") return "Linux";
-  return "";
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message.trim().length > 0
@@ -108,20 +93,6 @@ function stringParam(value: string | string[] | undefined): string | null {
 function providerInstanceParam(value: string | string[] | undefined): ProviderInstanceId | null {
   const instanceId = stringParam(value);
   return instanceId ? ProviderInstanceId.make(instanceId) : null;
-}
-
-function sourceFromParam(value: string | string[] | undefined): AddProjectRemoteSource {
-  const source = stringParam(value);
-  if (
-    source === "url" ||
-    source === "github" ||
-    source === "gitlab" ||
-    source === "bitbucket" ||
-    source === "azure-devops"
-  ) {
-    return source;
-  }
-  return "url";
 }
 
 function SectionTitle(props: { readonly children: string }) {
@@ -254,13 +225,15 @@ function ProjectPathInput(props: {
   );
 }
 
-function useBrowsePathInput(environment: EnvironmentOption | null) {
+function useBrowsePathInput(
+  environment: EnvironmentOption | null,
+  providerInstanceId: ProviderInstanceId | null,
+) {
   const environmentId = environment?.environmentId ?? null;
-  const environmentBaseDirectory = environment?.baseDirectory ?? null;
-  const [pathInput, commitPathInput] = useState(() =>
-    getAddProjectInitialQuery(environmentBaseDirectory),
-  );
-  const previousEnvironmentIdRef = useRef(environmentId);
+  const [pathInput, commitPathInput] = useState(() => getAddProjectInitialQuery(null));
+  const providerTargetKey =
+    environmentId && providerInstanceId ? `${environmentId}:${providerInstanceId}` : null;
+  const previousProviderTargetKeyRef = useRef(providerTargetKey);
   const environmentRuntime = useRemoteEnvironmentRuntime(environmentId);
   const loadBrowsePath = useAtomQueryRunner(filesystemEnvironment.browse, {
     reportFailure: false,
@@ -278,13 +251,15 @@ function useBrowsePathInput(environment: EnvironmentOption | null) {
   );
   const navigateToBrowsePath = useCallback(
     async (path: string) => {
+      const input = providerInstanceId ? getFilesystemBrowseInput(providerInstanceId, path) : null;
+      if (!input) return false;
       setIsBrowseNavigating(true);
       const committed = await browseNavigation.run(
         async () => {
           if (environment && canPreloadBrowsePath(environmentRuntime?.connectionState)) {
             await loadBrowsePath({
               environmentId: environment.environmentId,
-              input: { partialPath: path },
+              input,
             });
           }
         },
@@ -295,15 +270,21 @@ function useBrowsePathInput(environment: EnvironmentOption | null) {
       }
       return committed;
     },
-    [browseNavigation, environment, environmentRuntime?.connectionState, loadBrowsePath],
+    [
+      browseNavigation,
+      environment,
+      environmentRuntime?.connectionState,
+      loadBrowsePath,
+      providerInstanceId,
+    ],
   );
 
   useEffect(() => {
-    if (environmentId !== null && environmentId !== previousEnvironmentIdRef.current) {
-      previousEnvironmentIdRef.current = environmentId;
-      setPathInput(getAddProjectInitialQuery(environmentBaseDirectory));
+    if (providerTargetKey !== previousProviderTargetKeyRef.current) {
+      previousProviderTargetKeyRef.current = providerTargetKey;
+      setPathInput(getAddProjectInitialQuery(null));
     }
-  }, [environmentBaseDirectory, environmentId, setPathInput]);
+  }, [providerTargetKey, setPathInput]);
 
   useEffect(
     () => () => {
@@ -313,6 +294,38 @@ function useBrowsePathInput(environment: EnvironmentOption | null) {
   );
 
   return { isBrowseNavigating, pathInput, setPathInput, navigateToBrowsePath };
+}
+
+function useProviderBrowse(
+  environment: EnvironmentOption | null,
+  providerInstanceId: ProviderInstanceId | null,
+  pathInput: string,
+) {
+  const browsePath = useMemo(() => getFilesystemBrowsePath(pathInput), [pathInput]);
+  const browseInput = useMemo(
+    () =>
+      providerInstanceId
+        ? getFilesystemBrowseInput(providerInstanceId, browsePath.directoryPath)
+        : null,
+    [browsePath.directoryPath, providerInstanceId],
+  );
+  const browseState = useEnvironmentQuery(
+    environment && browseInput
+      ? filesystemEnvironment.browse({
+          environmentId: environment.environmentId,
+          input: browseInput,
+        })
+      : null,
+  );
+  const resolvedPath = useMemo(() => {
+    const result = browseState.data;
+    if (!result || !browsePath.locator) return null;
+    if (hasTrailingPathSeparator(pathInput)) return result.directoryPath;
+    const { exactEntry } = filterFilesystemBrowseEntries(result.entries, browsePath.filterQuery);
+    return exactEntry ? appendFilesystemBrowseLeaf(result.directoryPath, exactEntry.name) : null;
+  }, [browsePath.filterQuery, browsePath.locator, browseState.data, pathInput]);
+
+  return { browsePath, browseState, resolvedPath };
 }
 
 function useEnvironmentOptions(): ReadonlyArray<EnvironmentOption> {
@@ -331,8 +344,6 @@ function useEnvironmentOptions(): ReadonlyArray<EnvironmentOption> {
       return {
         environmentId: connection.environmentId,
         label: connection.environmentLabel,
-        platform: platformFromOs(config?.environment.platform.os ?? null),
-        baseDirectory: config?.settings.addProjectBaseDirectory ?? null,
         providers: availableProviders,
         connectionState: runtime?.connectionState ?? "available",
         connectionError: runtime?.connectionError ?? null,
@@ -387,58 +398,8 @@ function EmptyEnvironmentState() {
   );
 }
 
-function SourceControlRow(props: {
-  readonly source: AddProjectRemoteSource;
-  readonly selectedEnvironmentId: EnvironmentId;
-  readonly providerInstanceId: ProviderInstanceId;
-  readonly ready: boolean;
-  readonly hint: string;
-  readonly isFirst: boolean;
-}) {
-  const navigation = useNavigation();
-  const iconColor = useThemeColor("--color-icon");
-  const title =
-    props.source === "url" ? "Git URL" : `${addProjectRemoteSourceLabel(props.source)} repository`;
-  const subtitle =
-    props.source === "url"
-      ? "Clone from a remote URL"
-      : `Clone ${addProjectRemoteSourceLabel(props.source)} ${props.hint}`;
-  const icon =
-    props.source === "url" ? (
-      <SymbolView name="link" size={17} tintColor={iconColor} type="monochrome" />
-    ) : (
-      <SourceControlIcon kind={props.source} size={18} color={String(iconColor)} />
-    );
-
-  if (!props.ready) {
-    return (
-      <ListRow title={title} subtitle={props.hint} icon={icon} disabled isFirst={props.isFirst} />
-    );
-  }
-
-  return (
-    <ListRow
-      title={title}
-      subtitle={subtitle}
-      icon={icon}
-      isFirst={props.isFirst}
-      onPress={() =>
-        navigation.navigate("NewTaskSheet", {
-          screen: "AddProjectRepository",
-          params: {
-            environmentId: props.selectedEnvironmentId,
-            providerInstanceId: props.providerInstanceId,
-            source: props.source,
-          },
-        })
-      }
-    />
-  );
-}
-
 export function AddProjectSourceScreen() {
   const navigation = useNavigation();
-  const accentColor = useThemeColor("--color-icon-muted");
   const iconColor = useThemeColor("--color-icon");
   const { environmentOptions, selectedEnvironment, setSelectedEnvironmentId } =
     useSelectedEnvironment();
@@ -466,18 +427,6 @@ export function AddProjectSourceScreen() {
       setSelectedProviderTarget(null);
     }
   }, [selectedEnvironment, selectedProviderTarget]);
-  const discoveryState = useEnvironmentQuery(
-    selectedEnvironment === null
-      ? null
-      : sourceControlEnvironment.discovery({
-          environmentId: selectedEnvironment.environmentId,
-          input: {},
-        }),
-  );
-  const readiness = useMemo(
-    () => buildAddProjectRemoteSourceReadiness(discoveryState.data),
-    [discoveryState.data],
-  );
 
   return (
     <AddProjectShell>
@@ -595,30 +544,12 @@ export function AddProjectSourceScreen() {
                   })
                 }
               />
-              {(
-                ["url", ...sortAddProjectProviderSources(readiness)] as AddProjectRemoteSource[]
-              ).map((candidate) => (
-                <SourceControlRow
-                  key={candidate}
-                  source={candidate}
-                  selectedEnvironmentId={selectedEnvironment.environmentId}
-                  providerInstanceId={selectedProviderInstanceId}
-                  ready={readiness[candidate].ready}
-                  hint={
-                    readiness[candidate].ready
-                      ? addProjectRemoteSourcePathHint(candidate)
-                      : (readiness[candidate].hint ?? "")
-                  }
-                  isFirst={false}
-                />
-              ))}
             </ListSection>
           ) : (
             <Text className="px-1 text-sm text-foreground-muted">
               Choose the Codex endpoint that owns this workspace.
             </Text>
           )}
-          {discoveryState.isPending ? <ActivityIndicator color={accentColor} /> : null}
         </>
       ) : null}
     </AddProjectShell>
@@ -636,6 +567,15 @@ function useCreateProject(
   return useCallback(
     async (workspaceRoot: string) => {
       if (!environment || !canCreateProjectInEnvironment(environment.connectionState)) return;
+      if (
+        !preferredProviderInstanceId ||
+        !environment.providers.some(
+          (provider) => provider.instanceId === preferredProviderInstanceId,
+        )
+      ) {
+        Alert.alert("Endpoint unavailable", "Choose an available Codex endpoint and try again.");
+        return;
+      }
       const providerInstanceId = resolveProjectCreationProviderInstanceId(
         environment.providers,
         preferredProviderInstanceId,
@@ -716,126 +656,21 @@ export function AddProjectRepositoryScreen(props: {
   readonly providerInstanceId?: string | string[];
   readonly source?: string | string[];
 }) {
-  const lookupRepositoryQuery = useAtomQueryRunner(sourceControlEnvironment.repository, {
-    reportFailure: false,
-  });
-  const navigation = useNavigation();
-  const environment = useEnvironmentFromParam(props.environmentId);
-  const source = sourceFromParam(props.source);
-  const [repositoryInput, setRepositoryInput] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const lookupRepository = useCallback(async () => {
-    if (!environment || repositoryInput.trim().length === 0 || isSubmitting) return;
-    setError(null);
-    setIsSubmitting(true);
-    const provider = addProjectRemoteSourceProvider(source);
-    if (!provider) {
-      const remoteUrl = repositoryInput.trim();
-      navigation.navigate("NewTaskSheet", {
-        screen: "AddProjectDestination",
-        params: {
-          environmentId: environment.environmentId,
-          providerInstanceId: props.providerInstanceId,
-          source,
-          remoteUrl,
-          repositoryTitle: remoteUrl,
-        },
-      });
-      setIsSubmitting(false);
-      return;
-    }
-
-    const result = await lookupRepositoryQuery({
-      environmentId: environment.environmentId,
-      input: {
-        provider,
-        repository: repositoryInput.trim(),
-      },
-    });
-    if (AsyncResult.isFailure(result)) {
-      setError(errorMessage(Cause.squash(result.cause)));
-    } else {
-      const repository = result.value;
-      navigation.navigate("NewTaskSheet", {
-        screen: "AddProjectDestination",
-        params: {
-          environmentId: environment.environmentId,
-          providerInstanceId: props.providerInstanceId,
-          source,
-          remoteUrl: repository.sshUrl,
-          repositoryTitle: repository.nameWithOwner,
-        },
-      });
-    }
-    setIsSubmitting(false);
-  }, [
-    environment,
-    isSubmitting,
-    lookupRepositoryQuery,
-    navigation,
-    props.providerInstanceId,
-    repositoryInput,
-    source,
-  ]);
-
+  void props;
   return (
     <AddProjectShell>
-      {error ? <ErrorBanner message={error} /> : null}
-      {environment ? (
-        <>
-          <TextInput
-            className="h-12 min-h-12 rounded-[24px] px-4 py-0 text-base leading-snug"
-            value={repositoryInput}
-            onChangeText={setRepositoryInput}
-            autoCapitalize="none"
-            autoCorrect={false}
-            placeholder={
-              source === "url"
-                ? "https://github.com/org/repo.git"
-                : addProjectRemoteSourcePathHint(source)
-            }
-            returnKeyType="next"
-            onSubmitEditing={() => void lookupRepository()}
-          />
-          <PrimaryActionButton
-            label={source === "url" ? "Continue" : "Lookup repository"}
-            disabled={isSubmitting || repositoryInput.trim().length === 0}
-            onPress={() => void lookupRepository()}
-            loading={isSubmitting}
-          />
-        </>
-      ) : (
-        <EmptyEnvironmentState />
-      )}
+      <ErrorBanner message="Remote cloning is unavailable until source control runs on the selected Codex endpoint." />
     </AddProjectShell>
   );
 }
 
 function FolderBrowser(props: {
-  readonly environment: EnvironmentOption;
+  readonly browser: ReturnType<typeof useProviderBrowse>;
   readonly pathInput: string;
-  readonly setPathInput: (path: string) => void;
   readonly navigateToBrowsePath: (path: string) => Promise<boolean>;
 }) {
   const accentColor = useThemeColor("--color-icon-muted");
-  const browsePath = useMemo(
-    () => getFilesystemBrowsePath(props.pathInput, props.environment.platform),
-    [props.environment.platform, props.pathInput],
-  );
-  const browseInput = useMemo(
-    () => (browsePath.directoryPath.length > 0 ? { partialPath: browsePath.directoryPath } : null),
-    [browsePath.directoryPath],
-  );
-  const browseState = useEnvironmentQuery(
-    browseInput === null
-      ? null
-      : filesystemEnvironment.browse({
-          environmentId: props.environment.environmentId,
-          input: browseInput,
-        }),
-  );
+  const { browsePath, browseState } = props.browser;
   const { visibleEntries: visibleBrowseEntries } = useMemo(
     () => filterFilesystemBrowseEntries(browseState.data?.entries ?? [], browsePath.filterQuery),
     [browsePath.filterQuery, browseState.data?.entries],
@@ -851,7 +686,7 @@ function FolderBrowser(props: {
             <ActivityIndicator color={accentColor} />
           </View>
         ) : null}
-        {browsePath.canBrowseUp ? (
+        {browseState.data?.parentPath ? (
           <ListRow
             title=".."
             icon={
@@ -865,25 +700,26 @@ function FolderBrowser(props: {
             isFirst
             right={null}
             onPress={() => {
-              if (browsePath.parentPath) {
-                void props.navigateToBrowsePath(browsePath.parentPath);
+              if (browseState.data?.parentPath) {
+                void props.navigateToBrowsePath(
+                  ensureBrowseDirectoryPath(browseState.data.parentPath),
+                );
               }
             }}
           />
         ) : null}
         {visibleBrowseEntries.map((entry, index) => (
           <ListRow
-            key={entry.fullPath}
+            key={entry.name}
             title={entry.name}
             icon={<SymbolView name="folder" size={17} tintColor={accentColor} type="monochrome" />}
-            isFirst={index === 0 && !browsePath.canBrowseUp}
+            isFirst={index === 0 && !browseState.data?.parentPath}
             right={null}
             onPress={() => {
-              const nextPath =
-                browsePath.directoryPath.length > 0
-                  ? appendBrowsePathSegment(browsePath.directoryPath, entry.name)
-                  : ensureBrowseDirectoryPath(entry.fullPath);
-              void props.navigateToBrowsePath(nextPath);
+              const nextPath = browseState.data
+                ? appendFilesystemBrowseLeaf(browseState.data.directoryPath, entry.name)
+                : null;
+              if (nextPath) void props.navigateToBrowsePath(ensureBrowseDirectoryPath(nextPath));
             }}
           />
         ))}
@@ -897,23 +733,20 @@ export function AddProjectLocalFolderScreen(props: {
   readonly providerInstanceId?: string | string[];
 }) {
   const environment = useEnvironmentFromParam(props.environmentId);
-  const createProject = useCreateProject(
+  const providerInstanceId = providerInstanceParam(props.providerInstanceId);
+  const createProject = useCreateProject(environment, providerInstanceId);
+  const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } = useBrowsePathInput(
     environment,
-    providerInstanceParam(props.providerInstanceId),
+    providerInstanceId,
   );
-  const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } =
-    useBrowsePathInput(environment);
+  const browser = useProviderBrowse(environment, providerInstanceId, pathInput);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const submitPath = useCallback(async () => {
     if (!environment || isBrowseNavigating || isSubmitting) return;
     setError(null);
-    const resolved = resolveAddProjectPath({
-      rawPath: pathInput,
-      currentProjectCwd: null,
-      platform: environment.platform,
-    });
+    const resolved = resolveAddProjectPath({ rawPath: browser.resolvedPath ?? "" });
     if (!resolved.ok) {
       setError(resolved.error);
       return;
@@ -925,7 +758,7 @@ export function AddProjectLocalFolderScreen(props: {
       setError(errorMessage(Cause.squash(result.cause)));
     }
     setIsSubmitting(false);
-  }, [createProject, environment, isBrowseNavigating, isSubmitting, pathInput]);
+  }, [browser.resolvedPath, createProject, environment, isBrowseNavigating, isSubmitting]);
 
   return (
     <AddProjectShell>
@@ -944,10 +777,9 @@ export function AddProjectLocalFolderScreen(props: {
             loading={isSubmitting}
           />
           <FolderBrowser
-            environment={environment}
+            browser={browser}
             navigateToBrowsePath={navigateToBrowsePath}
             pathInput={pathInput}
-            setPathInput={setPathInput}
           />
         </>
       ) : (
@@ -963,95 +795,10 @@ export function AddProjectDestinationScreen(props: {
   readonly remoteUrl?: string | string[];
   readonly repositoryTitle?: string | string[];
 }) {
-  const cloneRepository = useAtomCommand(sourceControlEnvironment.cloneRepository, {
-    reportFailure: false,
-  });
-  const environment = useEnvironmentFromParam(props.environmentId);
-  const createProject = useCreateProject(
-    environment,
-    providerInstanceParam(props.providerInstanceId),
-  );
-  const remoteUrl = stringParam(props.remoteUrl);
-  const repositoryTitle = stringParam(props.repositoryTitle);
-  const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } =
-    useBrowsePathInput(environment);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submitPath = useCallback(async () => {
-    if (!environment || !remoteUrl || isBrowseNavigating || isSubmitting) return;
-    setError(null);
-    const resolved = resolveAddProjectPath({
-      rawPath: pathInput,
-      currentProjectCwd: null,
-      platform: environment.platform,
-    });
-    if (!resolved.ok) {
-      setError(resolved.error);
-      return;
-    }
-
-    setIsSubmitting(true);
-    const cloneResult = await cloneRepository({
-      environmentId: environment.environmentId,
-      input: {
-        remoteUrl,
-        destinationPath: resolved.path,
-      },
-    });
-    if (AsyncResult.isFailure(cloneResult)) {
-      setError(errorMessage(Cause.squash(cloneResult.cause)));
-    } else {
-      const createResult = await createProject(cloneResult.value.cwd);
-      if (createResult && AsyncResult.isFailure(createResult)) {
-        setError(errorMessage(Cause.squash(createResult.cause)));
-      }
-    }
-    setIsSubmitting(false);
-  }, [
-    cloneRepository,
-    createProject,
-    environment,
-    isBrowseNavigating,
-    isSubmitting,
-    pathInput,
-    remoteUrl,
-  ]);
-
+  void props;
   return (
     <AddProjectShell>
-      {error ? <ErrorBanner message={error} /> : null}
-      {repositoryTitle ? (
-        <View className="rounded-[24px] bg-card px-4 py-3">
-          <Text className="text-base font-t3-bold">{repositoryTitle}</Text>
-          <Text className="mt-0.5 text-xs text-foreground-muted" numberOfLines={2}>
-            {remoteUrl}
-          </Text>
-        </View>
-      ) : null}
-      {environment ? (
-        <>
-          <ProjectPathInput
-            value={pathInput}
-            onChangeText={setPathInput}
-            onSubmit={() => void submitPath()}
-          />
-          <PrimaryActionButton
-            label="Clone project"
-            disabled={isBrowseNavigating || isSubmitting || !remoteUrl}
-            onPress={() => void submitPath()}
-            loading={isSubmitting}
-          />
-          <FolderBrowser
-            environment={environment}
-            navigateToBrowsePath={navigateToBrowsePath}
-            pathInput={pathInput}
-            setPathInput={setPathInput}
-          />
-        </>
-      ) : (
-        <EmptyEnvironmentState />
-      )}
+      <ErrorBanner message="Remote cloning is unavailable until source control runs on the selected Codex endpoint." />
     </AddProjectShell>
   );
 }

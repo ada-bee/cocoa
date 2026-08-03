@@ -1,67 +1,160 @@
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
-const FILESYSTEM_PATH_MAX_LENGTH = 512;
+import { ProviderInstanceId } from "./providerInstance.ts";
 
-export const FilesystemBrowseInput = Schema.Struct({
-  partialPath: TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH)),
-  cwd: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH))),
-});
+export const FILESYSTEM_BROWSE_PATH_MAX_LENGTH = 4096;
+export const FILESYSTEM_BROWSE_MAX_ENTRIES = 1_000;
+
+const strict = <S extends Schema.Top>(schema: S): S =>
+  schema.annotate({ parseOptions: { onExcessProperty: "error" } }) as S;
+
+const FilesystemBrowseAbsolutePath = Schema.String.check(
+  Schema.isNonEmpty(),
+  Schema.isMaxLength(FILESYSTEM_BROWSE_PATH_MAX_LENGTH),
+  Schema.makeFilter((value) => {
+    if (value.includes("\0")) return "Filesystem paths must not contain NUL bytes.";
+    if (value.includes("\\")) return "Filesystem paths must use POSIX '/' separators.";
+    if (!value.startsWith("/")) return "Filesystem paths must be absolute POSIX paths.";
+    if (value === "/") return true;
+    const components = value.slice(1).split("/");
+    return (
+      components.every(
+        (component) => component !== "" && component !== "." && component !== "..",
+      ) || "Filesystem paths must be normalized POSIX paths."
+    );
+  }),
+);
+
+const FilesystemBrowseHomeRelativePath = Schema.String.check(
+  Schema.isMaxLength(FILESYSTEM_BROWSE_PATH_MAX_LENGTH),
+  Schema.makeFilter((value) => {
+    if (value.includes("\0")) return "Filesystem paths must not contain NUL bytes.";
+    if (value.includes("\\")) return "Filesystem paths must use POSIX '/' separators.";
+    if (value.startsWith("/")) return "Home-relative paths must not be absolute.";
+    if (value === "") return true;
+    const components = value.split("/");
+    return (
+      components.every(
+        (component) => component !== "" && component !== "." && component !== "..",
+      ) || "Home-relative paths must be normalized descendants."
+    );
+  }),
+);
+
+export const FilesystemBrowseLocator = Schema.Union([
+  strict(
+    Schema.Struct({
+      kind: Schema.Literal("absolute"),
+      path: FilesystemBrowseAbsolutePath,
+    }),
+  ),
+  strict(
+    Schema.Struct({
+      kind: Schema.Literal("home"),
+      relativePath: FilesystemBrowseHomeRelativePath,
+    }),
+  ),
+]);
+export type FilesystemBrowseLocator = typeof FilesystemBrowseLocator.Type;
+
+export const FilesystemBrowseInput = strict(
+  Schema.Struct({
+    providerInstanceId: ProviderInstanceId,
+    locator: FilesystemBrowseLocator,
+  }),
+);
 export type FilesystemBrowseInput = typeof FilesystemBrowseInput.Type;
 
-export const FilesystemBrowseEntry = Schema.Struct({
-  name: TrimmedNonEmptyString,
-  fullPath: TrimmedNonEmptyString,
-});
+export const FilesystemBrowseEntry = strict(
+  Schema.Struct({
+    name: Schema.String.check(
+      Schema.isNonEmpty(),
+      Schema.isMaxLength(255),
+      Schema.makeFilter(
+        (value) =>
+          (!value.includes("/") && !value.includes("\0") && value !== "." && value !== "..") ||
+          "Filesystem entry names must be direct POSIX child names.",
+      ),
+    ),
+  }),
+);
 export type FilesystemBrowseEntry = typeof FilesystemBrowseEntry.Type;
 
-export const FilesystemBrowseResult = Schema.Struct({
-  parentPath: TrimmedNonEmptyString,
-  entries: Schema.Array(FilesystemBrowseEntry),
-});
+export const FilesystemBrowseResult = strict(
+  Schema.Struct({
+    directoryPath: FilesystemBrowseAbsolutePath,
+    parentPath: Schema.NullOr(FilesystemBrowseAbsolutePath),
+    entries: Schema.Array(FilesystemBrowseEntry).check(
+      Schema.isMaxLength(FILESYSTEM_BROWSE_MAX_ENTRIES),
+    ),
+    truncated: Schema.Boolean,
+  }),
+);
 export type FilesystemBrowseResult = typeof FilesystemBrowseResult.Type;
 
 export const FilesystemBrowseFailure = Schema.Literals([
-  "windows_path_unsupported",
-  "current_project_required",
-  "read_directory_failed",
+  "provider_instance_not_found",
+  "provider_unavailable",
+  "unsupported_operation",
+  "protocol_incompatible",
+  "invalid_path",
+  "path_not_found",
+  "path_not_directory",
+  "operation_failed",
 ]);
 export type FilesystemBrowseFailure = typeof FilesystemBrowseFailure.Type;
 
-function decodedFilesystemBrowseErrorMessage(props: object): string | undefined {
-  if (!("message" in props)) return undefined;
-  return typeof props.message === "string" ? props.message : undefined;
-}
+const FilesystemBrowseMessage = Schema.Literals([
+  "The selected provider endpoint was not found.",
+  "The selected provider endpoint is unavailable.",
+  "The selected provider endpoint does not support folder browsing.",
+  "The selected provider endpoint is incompatible with folder browsing.",
+  "The folder path is invalid.",
+  "The folder was not found.",
+  "The selected path is not a folder.",
+  "The folder could not be browsed.",
+]);
+
+const filesystemBrowseFailureMessage = (
+  failure: FilesystemBrowseFailure,
+): typeof FilesystemBrowseMessage.Type => {
+  switch (failure) {
+    case "provider_instance_not_found":
+      return "The selected provider endpoint was not found.";
+    case "provider_unavailable":
+      return "The selected provider endpoint is unavailable.";
+    case "unsupported_operation":
+      return "The selected provider endpoint does not support folder browsing.";
+    case "protocol_incompatible":
+      return "The selected provider endpoint is incompatible with folder browsing.";
+    case "invalid_path":
+      return "The folder path is invalid.";
+    case "path_not_found":
+      return "The folder was not found.";
+    case "path_not_directory":
+      return "The selected path is not a folder.";
+    case "operation_failed":
+      return "The folder could not be browsed.";
+  }
+};
 
 export class FilesystemBrowseError extends Schema.TaggedErrorClass<FilesystemBrowseError>()(
   "FilesystemBrowseError",
-  {
-    partialPath: Schema.optional(TrimmedNonEmptyString),
-    cwd: Schema.optional(TrimmedNonEmptyString),
-    failure: Schema.optional(FilesystemBrowseFailure),
-    parentPath: Schema.optional(TrimmedNonEmptyString),
-    platform: Schema.optional(TrimmedNonEmptyString),
-    message: TrimmedNonEmptyString,
-    cause: Schema.optional(Schema.Defect()),
-  },
+  strict(
+    Schema.Struct({
+      providerInstanceId: ProviderInstanceId,
+      failure: FilesystemBrowseFailure,
+      retryable: Schema.Boolean,
+      message: FilesystemBrowseMessage,
+    }),
+  ),
 ) {
-  // Structured diagnostics stay optional for rolling compatibility with legacy message-only
-  // payloads, while new call sites must provide the request context and failure classification.
   // @effect-diagnostics-next-line overriddenSchemaConstructor:off
   constructor(props: {
-    readonly partialPath: string;
-    readonly cwd?: string | undefined;
+    readonly providerInstanceId: ProviderInstanceId;
     readonly failure: FilesystemBrowseFailure;
-    readonly parentPath?: string;
-    readonly platform?: string;
-    readonly cause?: unknown;
+    readonly retryable: boolean;
   }) {
-    const cwd = props.cwd === undefined ? "" : ` from '${props.cwd}'`;
-    super({
-      ...props,
-      message:
-        decodedFilesystemBrowseErrorMessage(props) ??
-        `Failed to browse filesystem path '${props.partialPath}'${cwd}.`,
-    } as any);
+    super({ ...props, message: filesystemBrowseFailureMessage(props.failure) });
   }
 }

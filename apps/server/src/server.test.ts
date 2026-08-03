@@ -16,6 +16,7 @@ import {
   KeybindingRule,
   MessageId,
   ExternalLauncherCommandNotFoundError,
+  FilesystemBrowseError,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
   type OrchestrationCommand,
@@ -86,6 +87,7 @@ import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSna
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ProviderFilesystemBrowse from "./provider/ProviderFilesystemBrowse.ts";
 import {
   ProviderWorkspaceDisconnectedError,
   ProviderWorkspaceOperationError,
@@ -356,6 +358,9 @@ const buildAppUnderTest = (options?: {
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
     projectWorkspace?: Partial<ProjectWorkspace.ProjectWorkspace["Service"]>;
+    providerFilesystemBrowse?: Partial<
+      ProviderFilesystemBrowse.ProviderFilesystemBrowse["Service"]
+    >;
     workspaceEntries?: Partial<WorkspaceEntries.WorkspaceEntries["Service"]>;
     checkpointDiffQuery?: Partial<CheckpointDiffQuery.CheckpointDiffQuery["Service"]>;
     browserTraceCollector?: Partial<BrowserTraceCollector.BrowserTraceCollector["Service"]>;
@@ -523,6 +528,9 @@ const buildAppUnderTest = (options?: {
       WorkspacePaths.layer,
       workspaceEntriesLayer,
       Layer.mock(ProjectWorkspace.ProjectWorkspace)(options?.layers?.projectWorkspace ?? {}),
+      Layer.mock(ProviderFilesystemBrowse.ProviderFilesystemBrowse)(
+        options?.layers?.providerFilesystemBrowse ?? {},
+      ),
       ProjectFaviconResolver.layer.pipe(
         Layer.provide(WorkspacePaths.layer),
         Layer.provide(T3ProjectFileLoader.layer),
@@ -5018,7 +5026,6 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* fs.writeFileString(outsideFile, "outside\n");
       yield* fs.symlink(outsideFile, path.join(workspaceDir, "linked-outside.txt"));
 
-      const missingBrowseParent = path.join(workspaceDir, "missing-browse");
       const sensitiveQuery = "authorization: Bearer secret-token";
       const readProjectId = ProjectId.make("project-read-safe-error");
       yield* buildAppUnderTest({
@@ -5043,6 +5050,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 }),
               ),
           },
+          providerFilesystemBrowse: {
+            browse: (input) =>
+              Effect.fail(
+                new FilesystemBrowseError({
+                  providerInstanceId: input.providerInstanceId,
+                  failure: "path_not_found",
+                  retryable: false,
+                }),
+              ),
+          },
         },
       });
       const wsUrl = yield* getWsServerUrl("/ws");
@@ -5062,8 +5079,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               relativePath: "linked-outside.txt",
             }).pipe(Effect.result),
             browse: client[WS_METHODS.filesystemBrowse]({
-              cwd: workspaceDir,
-              partialPath: "./missing-browse/child",
+              providerInstanceId: ProviderInstanceId.make("provider-secret"),
+              locator: { kind: "absolute", path: "/private/root/missing-browse" },
             }).pipe(Effect.result),
           }),
         ),
@@ -5130,15 +5147,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.fail("Expected a FilesystemBrowseError");
       }
       const browseError = results.browse.failure;
-      assert.equal(
-        browseError.message,
-        `Failed to browse filesystem path './missing-browse/child' from '${workspaceDir}'.`,
-      );
-      assert.equal(browseError.cwd, workspaceDir);
-      assert.equal(browseError.partialPath, "./missing-browse/child");
-      assert.equal(browseError.failure, "read_directory_failed");
-      assert.equal(browseError.parentPath, missingBrowseParent);
-      assert.isDefined(browseError.cause);
+      assert.equal(browseError.message, "The folder was not found.");
+      assert.equal(browseError.providerInstanceId, "provider-secret");
+      assert.equal(browseError.failure, "path_not_found");
+      assert.equal(browseError.retryable, false);
+      assert.notProperty(browseError, "cwd");
+      assert.notProperty(browseError, "partialPath");
+      assert.notProperty(browseError, "parentPath");
+      assert.notProperty(browseError, "platform");
+      assert.notProperty(browseError, "cause");
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

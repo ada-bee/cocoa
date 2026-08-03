@@ -49,16 +49,15 @@ describe("projectPaths", () => {
   it("detects browse queries across supported path styles", () => {
     expect(isFilesystemBrowseQuery(".")).toBe(false);
     expect(isFilesystemBrowseQuery("..")).toBe(false);
-    expect(isFilesystemBrowseQuery("./")).toBe(true);
-    expect(isFilesystemBrowseQuery("../")).toBe(true);
+    expect(isFilesystemBrowseQuery("./")).toBe(false);
+    expect(isFilesystemBrowseQuery("../")).toBe(false);
     expect(isFilesystemBrowseQuery("~/projects")).toBe(true);
-    expect(isFilesystemBrowseQuery("..\\docs")).toBe(true);
+    expect(isFilesystemBrowseQuery("..\\docs")).toBe(false);
     expect(isFilesystemBrowseQuery("notes")).toBe(false);
   });
 
-  it("only treats windows-style paths as browse queries on windows", () => {
-    expect(isFilesystemBrowseQuery("C:\\Work\\Repo\\", "MacIntel")).toBe(false);
-    expect(isFilesystemBrowseQuery("C:\\Work\\Repo\\", "Win32")).toBe(true);
+  it("does not browse windows-style paths", () => {
+    expect(isFilesystemBrowseQuery("C:\\Work\\Repo\\")).toBe(false);
     expect(isUnsupportedWindowsProjectPath("C:\\Work\\Repo\\", "MacIntel")).toBe(true);
     expect(isUnsupportedWindowsProjectPath("C:\\Work\\Repo\\", "Win32")).toBe(false);
   });

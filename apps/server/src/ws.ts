@@ -41,8 +41,6 @@ import {
   type RelayClientInstallProgressEvent,
   type ServerSelfUpdateError,
   type ServerSelfUpdateProgressEvent,
-  type FilesystemBrowseFailure,
-  FilesystemBrowseError,
   AssetWorkspaceContextNotFoundError,
   AssetWorkspaceContextResolutionError,
   RpcClientId,
@@ -76,6 +74,7 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import * as ProviderFilesystemBrowse from "./provider/ProviderFilesystemBrowse.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
@@ -86,7 +85,6 @@ import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
-import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as ProjectWorkspace from "./project/ProjectWorkspace.ts";
 import * as ProjectWorkspaceRpc from "./project/ProjectWorkspaceRpc.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
@@ -145,23 +143,6 @@ function legacySetupFailureDescription(cause: unknown): string {
     return cause.message;
   }
   return String(cause);
-}
-
-function filesystemBrowseFailureContext(error: WorkspaceEntries.WorkspaceEntriesBrowseError): {
-  readonly failure: FilesystemBrowseFailure;
-  readonly parentPath?: string;
-  readonly platform?: string;
-} {
-  switch (error._tag) {
-    case "WorkspaceEntriesWindowsPathUnsupportedError":
-      return { failure: "windows_path_unsupported", platform: error.platform };
-    case "WorkspaceEntriesCurrentProjectRequiredError":
-      return { failure: "current_project_required" };
-    case "WorkspaceEntriesReadDirectoryError":
-      return { failure: "read_directory_failed", parentPath: error.parentPath };
-    default:
-      return unexpectedCompatibilityError(error);
-  }
 }
 
 function projectSetupScriptCompatibilityDetail(
@@ -282,7 +263,7 @@ const makeWsRpcLayer = (
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
-      const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+      const providerFilesystemBrowse = yield* ProviderFilesystemBrowse.ProviderFilesystemBrowse;
       const projectWorkspace = yield* ProjectWorkspace.ProjectWorkspace;
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
@@ -1587,20 +1568,9 @@ const makeWsRpcLayer = (
             "rpc.aggregate": "workspace",
           }),
         [WS_METHODS.filesystemBrowse]: (input) =>
-          observeRpcEffect(
-            WS_METHODS.filesystemBrowse,
-            workspaceEntries.browse(input).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new FilesystemBrowseError({
-                    ...input,
-                    ...filesystemBrowseFailureContext(cause),
-                    cause,
-                  }),
-              ),
-            ),
-            { "rpc.aggregate": "workspace" },
-          ),
+          observeRpcEffect(WS_METHODS.filesystemBrowse, providerFilesystemBrowse.browse(input), {
+            "rpc.aggregate": "workspace",
+          }),
         [WS_METHODS.assetsCreateUrl]: (input) =>
           observeRpcEffect(
             WS_METHODS.assetsCreateUrl,

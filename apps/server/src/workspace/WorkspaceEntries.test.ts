@@ -1,5 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off
-import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { FileFinder } from "@ff-labs/fff-node";
 import { it, afterEach, describe, expect } from "@effect/vitest";
@@ -11,15 +9,9 @@ import * as PlatformError from "effect/PlatformError";
 import { vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspaceEntries from "./WorkspaceEntries.ts";
 import * as WorkspacePaths from "./WorkspacePaths.ts";
-
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, readdir: vi.fn(actual.readdir) };
-});
 
 const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer))),
@@ -82,13 +74,6 @@ const searchWorkspaceEntries = (input: {
     const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
     return yield* workspaceEntries.search(input);
   });
-
-const appendSeparator = (input: string) =>
-  Effect.map(HostProcessPlatform, (platform) =>
-    input.endsWith("/") || input.endsWith("\\")
-      ? input
-      : `${input}${platform === "win32" ? "\\" : "/"}`,
-  );
 
 it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
   afterEach(() => {
@@ -630,106 +615,6 @@ it.layer(TestLayer, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         const match = result.matches[0]!;
         const range = match.matchRanges[0]!;
         expect(match.lineContent.slice(range.start, range.end)).toBe("wörld");
-      }),
-    );
-  });
-
-  describe("browse", () => {
-    it.effect("returns matching directories and excludes files", () =>
-      Effect.gen(function* () {
-        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
-        const path = yield* Path.Path;
-        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-prefix-" });
-        yield* writeTextFile(cwd, "alphabet.txt", "ignore me");
-        yield* writeTextFile(cwd, "alpha/index.ts", "export {};\n");
-        yield* writeTextFile(cwd, "alpine/index.ts", "export {};\n");
-
-        const result = yield* workspaceEntries.browse({
-          partialPath: path.join(cwd, "alp"),
-        });
-
-        expect(result).toEqual({
-          parentPath: cwd,
-          entries: [
-            { name: "alpha", fullPath: path.join(cwd, "alpha") },
-            { name: "alpine", fullPath: path.join(cwd, "alpine") },
-          ],
-        });
-      }),
-    );
-
-    it.effect("shows dot directories in directory mode and hidden-prefix mode", () =>
-      Effect.gen(function* () {
-        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
-        const path = yield* Path.Path;
-        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-hidden-" });
-        yield* writeTextFile(cwd, ".config/settings.json", "{}");
-        yield* writeTextFile(cwd, "config/settings.json", "{}");
-        const cwdWithSeparator = yield* appendSeparator(cwd);
-
-        const directoryResult = yield* workspaceEntries.browse({
-          partialPath: cwdWithSeparator,
-        });
-        const hiddenPrefixResult = yield* workspaceEntries.browse({
-          partialPath: `${cwdWithSeparator}.c`,
-        });
-
-        expect(directoryResult.entries.map((entry) => entry.name)).toEqual([".config", "config"]);
-        expect(hiddenPrefixResult).toEqual({
-          parentPath: cwd,
-          entries: [{ name: ".config", fullPath: path.join(cwd, ".config") }],
-        });
-      }),
-    );
-
-    it.effect("supports relative paths when cwd is provided", () =>
-      Effect.gen(function* () {
-        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
-        const path = yield* Path.Path;
-        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-relative-" });
-        yield* writeTextFile(cwd, "packages/pkg.json", "{}");
-
-        const result = yield* workspaceEntries.browse({
-          cwd,
-          partialPath: "./pack",
-        });
-
-        expect(result).toEqual({
-          parentPath: cwd,
-          entries: [{ name: "packages", fullPath: path.join(cwd, "packages") }],
-        });
-      }),
-    );
-
-    it.effect("rejects relative paths without cwd", () =>
-      Effect.gen(function* () {
-        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
-
-        const error = yield* workspaceEntries
-          .browse({
-            partialPath: "./src",
-          })
-          .pipe(Effect.flip);
-
-        expect(error._tag).toBe("WorkspaceEntriesCurrentProjectRequiredError");
-        expect(error.message).toBe(
-          "A current project is required to browse relative workspace path './src'.",
-        );
-      }),
-    );
-
-    it.effect("returns an empty listing when the OS denies directory access", () =>
-      Effect.gen(function* () {
-        const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
-        const cwd = yield* makeTempDir({ prefix: "t3code-workspace-browse-eacces-" });
-
-        const denied = Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
-        vi.mocked(NodeFSP.readdir).mockRejectedValueOnce(denied);
-
-        const result = yield* workspaceEntries.browse({
-          partialPath: yield* appendSeparator(cwd),
-        });
-        expect(result).toEqual({ parentPath: cwd, entries: [] });
       }),
     );
   });

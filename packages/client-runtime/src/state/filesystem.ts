@@ -1,4 +1,10 @@
-import { type FilesystemBrowseEntry, WS_METHODS } from "@t3tools/contracts";
+import {
+  type FilesystemBrowseEntry,
+  type FilesystemBrowseInput,
+  type FilesystemBrowseLocator,
+  type ProviderInstanceId,
+  WS_METHODS,
+} from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 
 import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
@@ -13,12 +19,61 @@ import {
 } from "./projects.ts";
 import { createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
 
-export function getFilesystemBrowsePath(query: string, platform = "", enabled = true) {
-  const isBrowsing = enabled && isFilesystemBrowseQuery(query, platform);
+function normalizePosixDirectoryPath(path: string): string | null {
+  if (path.includes("\\")) return null;
+  const withoutTrailingSlash = path.endsWith("/") ? path.slice(0, -1) : path;
+  if (withoutTrailingSlash.length === 0) return "";
+  const segments = withoutTrailingSlash.split("/");
+  return segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
+    ? null
+    : segments.join("/");
+}
+
+export function getFilesystemBrowseLocator(directoryPath: string): FilesystemBrowseLocator | null {
+  const trimmedPath = directoryPath.trim();
+  if (trimmedPath.startsWith("~/")) {
+    const relativePath = normalizePosixDirectoryPath(trimmedPath.slice(2));
+    return relativePath === null ? null : { kind: "home", relativePath };
+  }
+  if (trimmedPath.startsWith("/")) {
+    const relativePath = normalizePosixDirectoryPath(trimmedPath.slice(1));
+    if (relativePath === null) return null;
+    return { kind: "absolute", path: relativePath.length === 0 ? "/" : `/${relativePath}` };
+  }
+  return null;
+}
+
+export function getFilesystemBrowseInput(
+  providerInstanceId: ProviderInstanceId,
+  directoryPath: string,
+): FilesystemBrowseInput | null {
+  const locator = getFilesystemBrowseLocator(directoryPath);
+  return locator ? { providerInstanceId, locator } : null;
+}
+
+export function appendFilesystemBrowseLeaf(directoryPath: string, leaf: string): string | null {
+  const locator = getFilesystemBrowseLocator(directoryPath);
+  const trimmedLeaf = leaf.trim();
+  if (
+    locator?.kind !== "absolute" ||
+    trimmedLeaf.length === 0 ||
+    trimmedLeaf === "." ||
+    trimmedLeaf === ".." ||
+    trimmedLeaf.includes("/") ||
+    trimmedLeaf.includes("\\")
+  ) {
+    return null;
+  }
+  return locator.path === "/" ? `/${trimmedLeaf}` : `${locator.path}/${trimmedLeaf}`;
+}
+
+export function getFilesystemBrowsePath(query: string, enabled = true) {
+  const isBrowsing = enabled && isFilesystemBrowseQuery(query);
   const directoryPath = isBrowsing ? getBrowseDirectoryPath(query) : "";
   const filterQuery =
     isBrowsing && !hasTrailingPathSeparator(query) ? getBrowseLeafPathSegment(query) : "";
   const parentPath = isBrowsing ? getBrowseParentPath(directoryPath) : null;
+  const locator = isBrowsing ? getFilesystemBrowseLocator(directoryPath) : null;
 
   return {
     isBrowsing,
@@ -26,6 +81,7 @@ export function getFilesystemBrowsePath(query: string, platform = "", enabled = 
     filterQuery,
     parentPath,
     canBrowseUp: isBrowsing && canNavigateUp(directoryPath),
+    locator,
   };
 }
 
