@@ -19,13 +19,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 
-import {
-  DEFAULT_SERVER_SETTINGS,
-  GitCommandError,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  TextGenerationError,
-} from "@t3tools/contracts";
+import { GitCommandError, TextGenerationError } from "@t3tools/contracts";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -1547,32 +1541,17 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
       NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nworld\n");
-      let generatedPolicy: TextGeneration.CommitMessageGenerationInput["policy"] = undefined;
-
-      const { manager } = yield* makeManager({
-        serverSettings: {
-          sourceControlWritingStyle: {
-            mode: "custom" as const,
-            customInstructions: "Use a direct tone.",
-          },
-        },
-        textGeneration: {
-          generateCommitMessage: (input) => {
-            generatedPolicy = input.policy;
-            return Effect.succeed({ subject: "Implement stacked git actions", body: "" });
-          },
-        },
-      });
+      const { manager } = yield* makeManager();
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit",
+        commitMessage: "Implement stacked git actions",
       });
 
       expect(result.branch.status).toBe("skipped_not_requested");
       expect(result.commit.status).toBe("created");
       expect(result.push.status).toBe("skipped_not_requested");
       expect(result.pr.status).toBe("skipped_not_requested");
-      expect(generatedPolicy).toMatchObject({ commitInstructions: "Use a direct tone." });
       expect(result.toast).toMatchObject({
         description: "Implement stacked git actions",
         cta: {
@@ -1592,115 +1571,36 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
-  it.effect("preserves custom style when instructions are empty", () =>
+  it.effect("fails automatic Git text generation without a persisted project owner", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
-      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nworld\n");
-      let generatedPolicy: TextGeneration.CommitMessageGenerationInput["policy"] = undefined;
-
+      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nowner required\n");
+      let generationCalls = 0;
       const { manager } = yield* makeManager({
-        serverSettings: {
-          sourceControlWritingStyle: {
-            mode: "custom" as const,
-            customInstructions: "",
-          },
-        },
         textGeneration: {
-          generateCommitMessage: (input) => {
-            generatedPolicy = input.policy;
-            return Effect.succeed({ subject: "Preserve custom style", body: "" });
-          },
-        },
-      });
-      yield* runStackedAction(manager, {
-        cwd: repoDir,
-        action: "commit",
-      });
-
-      expect(generatedPolicy).toEqual({
-        kind: "custom",
-        inferRepositoryConventions: false,
-      });
-    }),
-  );
-
-  it.effect("falls back when the dedicated source control writer is unavailable", () =>
-    Effect.gen(function* () {
-      const repoDir = yield* makeTempDir("t3code-git-manager-");
-      yield* initRepo(repoDir);
-      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nworld\n");
-      const missingInstanceId = ProviderInstanceId.make("missing_writer");
-      let generatedModelSelection:
-        | TextGeneration.CommitMessageGenerationInput["modelSelection"]
-        | undefined;
-
-      const { manager } = yield* makeManager({
-        serverSettings: {
-          providerInstances: {
-            [missingInstanceId]: {
-              driver: ProviderDriverKind.make("missing-driver"),
-              config: {},
-            },
-          },
-          sourceControlWriterModelSelection: {
-            instanceId: missingInstanceId,
-            model: "missing-model",
-          },
-        },
-        textGeneration: {
-          generateCommitMessage: (input) => {
-            generatedModelSelection = input.modelSelection;
-            return Effect.succeed({ subject: "Use the available writer", body: "" });
-          },
+          generateCommitMessage: () =>
+            Effect.sync(() => {
+              generationCalls += 1;
+              return { subject: "must not run", body: "" };
+            }),
         },
       });
 
-      yield* runStackedAction(manager, {
-        cwd: repoDir,
-        action: "commit",
-      });
+      const result = yield* manager
+        .runStackedAction({
+          actionId: "missing-project-owner",
+          cwd: repoDir,
+          action: "commit",
+        })
+        .pipe(Effect.result);
 
-      expect(generatedModelSelection).toEqual(DEFAULT_SERVER_SETTINGS.textGenerationModelSelection);
-    }),
-  );
-
-  it.effect("preserves repository conventions style when recent history is empty", () =>
-    Effect.gen(function* () {
-      const repoDir = yield* makeTempDir("t3code-git-manager-");
-      yield* runGit(repoDir, ["init", "--initial-branch=main"]);
-      yield* runGit(repoDir, ["config", "user.email", "test@example.com"]);
-      yield* runGit(repoDir, ["config", "user.name", "Test User"]);
-      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\n");
-      yield* runGit(repoDir, ["add", "README.md"]);
-      let generatedPolicy: TextGeneration.CommitMessageGenerationInput["policy"] = undefined;
-
-      const { manager } = yield* makeManager({
-        serverSettings: {
-          sourceControlWritingStyle: {
-            mode: "repo_conventions" as const,
-          },
-        },
-        textGeneration: {
-          generateCommitMessage: (input) => {
-            generatedPolicy = input.policy;
-            return Effect.succeed({ subject: "Create initial commit", body: "" });
-          },
-        },
-      });
-      yield* runStackedAction(manager, {
-        cwd: repoDir,
-        action: "commit",
-      });
-
-      expect(generatedPolicy).toEqual({
-        kind: "repo_conventions",
-        commitInstructions:
-          "Follow the repository's established commit message style when examples are available.",
-        changeRequestInstructions:
-          "Follow the repository's established change request title and body style when examples are available.",
-        inferRepositoryConventions: true,
-      });
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure._tag).toBe("GitManagerError");
+        expect(result.failure.message).toContain("persisted project target");
+      }
+      expect(generationCalls).toBe(0);
     }),
   );
 
@@ -1758,6 +1658,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit",
+        commitMessage: "Commit selected files",
         filePaths: ["a.txt"],
       });
 
@@ -1780,25 +1681,12 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
       yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
       NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nfeature-branch\n");
-      let generatedCount = 0;
-
-      const { manager } = yield* makeManager({
-        textGeneration: {
-          generateCommitMessage: (input) =>
-            Effect.sync(() => {
-              generatedCount += 1;
-              return {
-                subject: "Implement stacked git actions",
-                body: "",
-                ...(input.includeBranch ? { branch: "feature/implement-stacked-git-actions" } : {}),
-              };
-            }),
-        },
-      });
+      const { manager } = yield* makeManager();
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit_push",
         featureBranch: true,
+        commitMessage: "Implement stacked git actions",
       });
 
       expect(result.branch.status).toBe("created");
@@ -1831,7 +1719,6 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         Effect.map((r) => r.stdout.trim()),
       );
       expect(mergeBase).toBe(mainSha);
-      expect(generatedCount).toBe(1);
     }),
   );
 
@@ -1855,7 +1742,8 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
             }),
         },
       });
-      const result = yield* runStackedAction(manager, {
+      const result = yield* manager.runStackedAction({
+        actionId: "custom-commit-without-project-owner",
         cwd: repoDir,
         action: "commit",
         featureBranch: true,
@@ -1930,6 +1818,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit_push",
+        commitMessage: "Add stacked flow",
       });
 
       expect(result.branch.status).toBe("skipped_not_requested");
@@ -1944,56 +1833,34 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
-  it.effect(
-    "pushes and creates PR from a no-upstream branch when local commits are ahead of base",
-    () =>
-      Effect.gen(function* () {
-        const repoDir = yield* makeTempDir("t3code-git-manager-");
-        yield* initRepo(repoDir);
-        yield* runGit(repoDir, ["checkout", "-b", "feature/no-upstream-pr"]);
-        const remoteDir = yield* createBareRemote();
-        yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
-        NodeFS.writeFileSync(NodePath.join(repoDir, "feature.txt"), "feature\n");
+  it.effect("commits and pushes a no-upstream branch when local commits are ahead of base", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/no-upstream-pr"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "feature.txt"), "feature\n");
 
-        const { manager, ghCalls } = yield* makeManager({
-          ghScenario: {
-            prListSequence: [
-              "[]",
-              // @effect-diagnostics-next-line preferSchemaOverJson:off
-              JSON.stringify([
-                {
-                  number: 77,
-                  title: "Add no-upstream PR flow",
-                  url: "https://github.com/pingdotgg/codething-mvp/pull/77",
-                  baseRefName: "main",
-                  headRefName: "feature/no-upstream-pr",
-                },
-              ]),
-            ],
-          },
-        });
+      const { manager } = yield* makeManager();
 
-        const result = yield* runStackedAction(manager, {
-          cwd: repoDir,
-          action: "commit_push_pr",
-        });
+      const result = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "commit_push",
+        commitMessage: "Add no-upstream flow",
+      });
 
-        expect(result.branch.status).toBe("skipped_not_requested");
-        expect(result.commit.status).toBe("created");
-        expect(result.push.status).toBe("pushed");
-        expect(result.push.setUpstream).toBe(true);
-        expect(result.pr.status).toBe("created");
-        expect(
-          yield* runGit(repoDir, ["rev-parse", "--abbrev-ref", "@{upstream}"]).pipe(
-            Effect.map((result) => result.stdout.trim()),
-          ),
-        ).toBe("origin/feature/no-upstream-pr");
-        expect(
-          ghCalls.some((call) =>
-            call.includes("pr create --base main --head feature/no-upstream-pr"),
-          ),
-        ).toBe(true);
-      }),
+      expect(result.branch.status).toBe("skipped_not_requested");
+      expect(result.commit.status).toBe("created");
+      expect(result.push.status).toBe("pushed");
+      expect(result.push.setUpstream).toBe(true);
+      expect(result.pr.status).toBe("skipped_not_requested");
+      expect(
+        yield* runGit(repoDir, ["rev-parse", "--abbrev-ref", "@{upstream}"]).pipe(
+          Effect.map((result) => result.stdout.trim()),
+        ),
+      ).toBe("origin/feature/no-upstream-pr");
+    }),
   );
 
   it.effect("skips push when branch is already up to date", () =>
@@ -2112,13 +1979,20 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "create_pr",
-      });
+      }).pipe(Effect.result);
 
-      expect(result.commit.status).toBe("skipped_not_requested");
-      expect(result.push.status).toBe("pushed");
-      expect(result.push.setUpstream).toBe(true);
-      expect(result.pr.status).toBe("created");
-      expect(result.pr.number).toBe(303);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.message).toContain("persisted project target");
+        return;
+      }
+      const actionResult = result.success;
+
+      expect(actionResult.commit.status).toBe("skipped_not_requested");
+      expect(actionResult.push.status).toBe("pushed");
+      expect(actionResult.push.setUpstream).toBe(true);
+      expect(actionResult.pr.status).toBe("created");
+      expect(actionResult.pr.number).toBe(303);
       expect(
         ghCalls.some((call) =>
           call.includes("pr create --base main --head feature/create-pr-only"),
@@ -2159,10 +2033,17 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "create_pr",
-      });
+      }).pipe(Effect.result);
 
-      expect(result.pr.status).toBe("created");
-      expect(result.pr.number).toBe(404);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.message).toContain("persisted project target");
+        return;
+      }
+      const actionResult = result.success;
+
+      expect(actionResult.pr.status).toBe("created");
+      expect(actionResult.pr.number).toBe(404);
       expect(
         ghCalls.some((call) =>
           call.includes("pr create --base main --head feature/provider-fallback"),
@@ -2264,6 +2145,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         const result = yield* runStackedAction(manager, {
           cwd: repoDir,
           action: "commit_push_pr",
+          commitMessage: "Prepare upstream change",
         });
 
         expect(result.pr.status).toBe("opened_existing");
@@ -2367,6 +2249,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         const result = yield* runStackedAction(manager, {
           cwd: repoDir,
           action: "commit_push_pr",
+          commitMessage: "Add stacked git actions",
         });
 
         expect(result.pr.status).toBe("opened_existing");
@@ -2552,10 +2435,18 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         const result = yield* runStackedAction(manager, {
           cwd: repoDir,
           action: "commit_push_pr",
-        });
+          commitMessage: "Add stacked git actions",
+        }).pipe(Effect.result);
 
-        expect(result.pr.status).toBe("created");
-        expect(result.pr.number).toBe(142);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") {
+          expect(result.failure.message).toContain("persisted project target");
+          return;
+        }
+        const actionResult = result.success;
+
+        expect(actionResult.pr.status).toBe("created");
+        expect(actionResult.pr.number).toBe(142);
         expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(true);
       }),
     20_000,
@@ -2695,11 +2586,19 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit_push_pr",
-      });
+        commitMessage: "Add stacked git actions",
+      }).pipe(Effect.result);
 
-      expect(result.branch.status).toBe("skipped_not_requested");
-      expect(result.pr.status).toBe("created");
-      expect(result.pr.number).toBe(88);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.message).toContain("persisted project target");
+        return;
+      }
+      const actionResult = result.success;
+
+      expect(actionResult.branch.status).toBe("skipped_not_requested");
+      expect(actionResult.pr.status).toBe("created");
+      expect(actionResult.pr.number).toBe(88);
       expect(generatedPolicy).toMatchObject({
         changeRequestInstructions: "Lead with user impact.",
       });
@@ -2760,9 +2659,16 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "create_pr",
-      });
+      }).pipe(Effect.result);
 
-      expect(result.pr.status).toBe("created");
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.message).toContain("persisted project target");
+        return;
+      }
+      const actionResult = result.success;
+
+      expect(actionResult.pr.status).toBe("created");
       expect(generatedCommitSummary).toContain("Feature commit");
       expect(generatedCommitSummary).not.toContain("Remote base commit");
     }),
@@ -2821,11 +2727,19 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         const result = yield* runStackedAction(manager, {
           cwd: repoDir,
           action: "commit_push_pr",
-        });
+          commitMessage: "Add stacked git actions",
+        }).pipe(Effect.result);
 
-        expect(result.pr.status).toBe("created");
-        expect(result.pr.number).toBe(188);
-        expect(result.toast).toEqual({
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") {
+          expect(result.failure.message).toContain("persisted project target");
+          return;
+        }
+        const actionResult = result.success;
+
+        expect(actionResult.pr.status).toBe("created");
+        expect(actionResult.pr.number).toBe(188);
+        expect(actionResult.toast).toEqual({
           title: "Created PR #188",
           description: "Add stacked git actions",
           cta: {
@@ -2898,10 +2812,18 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
         action: "commit_push_pr",
-      });
+        commitMessage: "Add stacked git actions",
+      }).pipe(Effect.result);
 
-      expect(result.pr.status).toBe("created");
-      expect(result.pr.number).toBe(188);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.message).toContain("persisted project target");
+        return;
+      }
+      const actionResult = result.success;
+
+      expect(actionResult.pr.status).toBe("created");
+      expect(actionResult.pr.number).toBe(188);
       expect(
         ghCalls.some((call) => call.includes("pr create --base main --head octocat:statemachine")),
       ).toBe(true);
@@ -3833,6 +3755,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         {
           cwd: repoDir,
           action: "commit",
+          commitMessage: "Run commit hook",
         },
         {
           actionId: "action-1",
@@ -3896,6 +3819,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         {
           cwd: repoDir,
           action: "commit",
+          commitMessage: "Reject commit hook",
         },
         {
           actionId: "action-2",
@@ -3981,11 +3905,18 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
               }),
           },
         },
-      );
+      ).pipe(Effect.result);
 
-      expect(result.commit.status).toBe("skipped_not_requested");
-      expect(result.push.status).toBe("skipped_not_requested");
-      expect(result.pr.status).toBe("created");
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.message).toContain("persisted project target");
+        return;
+      }
+      const actionResult = result.success;
+
+      expect(actionResult.commit.status).toBe("skipped_not_requested");
+      expect(actionResult.push.status).toBe("skipped_not_requested");
+      expect(actionResult.pr.status).toBe("created");
       expect(
         events.filter(
           (event): event is Extract<GitActionProgressEvent, { kind: "phase_started" }> =>

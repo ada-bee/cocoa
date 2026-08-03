@@ -11,6 +11,8 @@ import type { TextGenerationPolicy } from "./TextGenerationPolicy.ts";
 export type TextGenerationProvider = "codex" | "claudeAgent" | "cursor" | "grok" | "opencode";
 
 export interface CommitMessageGenerationInput {
+  /** Persisted provider instance which owns `cwd`. */
+  providerInstanceId: ProviderInstanceId;
   cwd: string;
   branch: string | null;
   stagedSummary: string;
@@ -30,6 +32,8 @@ export interface CommitMessageGenerationResult {
 }
 
 export interface PrContentGenerationInput {
+  /** Persisted provider instance which owns `cwd`. */
+  providerInstanceId: ProviderInstanceId;
   cwd: string;
   baseBranch: string;
   headBranch: string;
@@ -48,6 +52,8 @@ export interface PrContentGenerationResult {
 }
 
 export interface BranchNameGenerationInput {
+  /** Persisted provider instance which owns `cwd`. */
+  providerInstanceId: ProviderInstanceId;
   cwd: string;
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
@@ -60,6 +66,8 @@ export interface BranchNameGenerationResult {
 }
 
 export interface ThreadTitleGenerationInput {
+  /** Persisted provider instance which owns `cwd`. */
+  providerInstanceId: ProviderInstanceId;
   cwd: string;
   message: string;
   /** Present when replacing an existing title from the current thread history. */
@@ -125,42 +133,84 @@ type TextGenerationOp =
   | "generateBranchName"
   | "generateThreadTitle";
 
+const failOwnershipMismatch = (operation: TextGenerationOp): TextGenerationError =>
+  new TextGenerationError({
+    operation,
+    detail: "Workspace ownership does not match the selected text-generation provider.",
+  });
+
+export const bindTextGenerationOwnership = (
+  providerInstanceId: ProviderInstanceId,
+  service: TextGeneration["Service"],
+): TextGeneration["Service"] => {
+  const owns = (input: {
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly modelSelection: ModelSelection;
+  }) =>
+    input.providerInstanceId === providerInstanceId &&
+    input.modelSelection.instanceId === providerInstanceId;
+
+  return TextGeneration.of({
+    generateCommitMessage: (input) =>
+      owns(input)
+        ? service.generateCommitMessage(input)
+        : Effect.fail(failOwnershipMismatch("generateCommitMessage")),
+    generatePrContent: (input) =>
+      owns(input)
+        ? service.generatePrContent(input)
+        : Effect.fail(failOwnershipMismatch("generatePrContent")),
+    generateBranchName: (input) =>
+      owns(input)
+        ? service.generateBranchName(input)
+        : Effect.fail(failOwnershipMismatch("generateBranchName")),
+    generateThreadTitle: (input) =>
+      owns(input)
+        ? service.generateThreadTitle(input)
+        : Effect.fail(failOwnershipMismatch("generateThreadTitle")),
+  });
+};
+
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
   operation: TextGenerationOp,
-  instanceId: ProviderInstanceId,
+  input: {
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly modelSelection: ModelSelection;
+  },
 ): Effect.Effect<ProviderInstance["textGeneration"], TextGenerationError> =>
-  registry.getInstance(instanceId).pipe(
-    Effect.flatMap((instance) =>
-      instance
-        ? Effect.succeed(instance.textGeneration)
-        : Effect.fail(
-            new TextGenerationError({
-              operation,
-              detail: `No provider instance registered for id '${instanceId}'.`,
-            }),
-          ),
-    ),
-  );
+  input.providerInstanceId !== input.modelSelection.instanceId
+    ? Effect.fail(failOwnershipMismatch(operation))
+    : registry.getInstance(input.providerInstanceId).pipe(
+        Effect.flatMap((instance) =>
+          instance
+            ? Effect.succeed(instance.textGeneration)
+            : Effect.fail(
+                new TextGenerationError({
+                  operation,
+                  detail: `No provider instance registered for id '${input.providerInstanceId}'.`,
+                }),
+              ),
+        ),
+      );
 
 export const makeTextGenerationFromRegistry = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
 ): TextGeneration["Service"] =>
   TextGeneration.of({
     generateCommitMessage: (input) =>
-      resolveInstance(registry, "generateCommitMessage", input.modelSelection.instanceId).pipe(
+      resolveInstance(registry, "generateCommitMessage", input).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateCommitMessage(input)),
       ),
     generatePrContent: (input) =>
-      resolveInstance(registry, "generatePrContent", input.modelSelection.instanceId).pipe(
+      resolveInstance(registry, "generatePrContent", input).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generatePrContent(input)),
       ),
     generateBranchName: (input) =>
-      resolveInstance(registry, "generateBranchName", input.modelSelection.instanceId).pipe(
+      resolveInstance(registry, "generateBranchName", input).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateBranchName(input)),
       ),
     generateThreadTitle: (input) =>
-      resolveInstance(registry, "generateThreadTitle", input.modelSelection.instanceId).pipe(
+      resolveInstance(registry, "generateThreadTitle", input).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateThreadTitle(input)),
       ),
   });

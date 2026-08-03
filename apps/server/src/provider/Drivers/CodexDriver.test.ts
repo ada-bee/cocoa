@@ -237,8 +237,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           let vcsFactoryCalls = 0;
           const workspaceGenerations: Array<number> = [];
           const vcsGenerations: Array<number> = [];
+          const textGenerationGenerations: Array<number> = [];
           let vcsFactoryPath: string | undefined;
           let vcsFactoryProviderInstanceId: ProviderInstanceId | undefined;
+          let endpointTextGenerationFactoryCalls = 0;
 
           const router = {
             registerSession: () => Effect.die("unused"),
@@ -334,6 +336,24 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
               Effect.die(
                 "endpoint branch constructed local text generation",
               )) as CodexDriverDependencies["makeLocalTextGeneration"],
+            makeEndpointTextGeneration: ((options) => {
+              endpointTextGenerationFactoryCalls += 1;
+              assert.equal(options.providerInstanceId, INSTANCE_ID);
+              return Effect.succeed({
+                generateCommitMessage: () => Effect.die("unused"),
+                generatePrContent: () => Effect.die("unused"),
+                generateBranchName: () => Effect.die("unused"),
+                generateThreadTitle: () =>
+                  options.borrowRoutedConnection.pipe(
+                    Effect.tap((borrowed) => borrowed.ensureCurrent),
+                    Effect.tap((borrowed) =>
+                      Effect.sync(() => textGenerationGenerations.push(borrowed.generationId)),
+                    ),
+                    Effect.as({ title: "Endpoint title" }),
+                    Effect.orDie,
+                  ),
+              } satisfies TextGeneration["Service"]);
+            }) as CodexDriverDependencies["makeEndpointTextGeneration"],
             checkLocalProviderStatus: (() =>
               Effect.die(
                 "endpoint branch ran local status probe",
@@ -354,16 +374,26 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           assert.equal(endpointFactoryCalls, 1);
           assert.equal(workspaceFactoryCalls, 1);
           assert.equal(vcsFactoryCalls, 1);
+          assert.equal(endpointTextGenerationFactoryCalls, 1);
           assert.equal(vcsFactoryPath, "/run/current-system/sw/bin/git");
           assert.equal(vcsFactoryProviderInstanceId, INSTANCE_ID);
           assert.isDefined(instance.workspace);
           assert.isDefined(instance.vcs);
           assert.deepStrictEqual(workspaceGenerations, []);
           assert.deepStrictEqual(vcsGenerations, []);
+          assert.deepStrictEqual(textGenerationGenerations, []);
           yield* instance.workspace!.openRoot("/remote/workspace");
           yield* instance.vcs!.openRepository("/remote/workspace");
+          const initialTextGeneration = yield* instance.textGeneration.generateThreadTitle({
+            providerInstanceId: INSTANCE_ID,
+            cwd: "/remote/workspace",
+            message: "title",
+            modelSelection: { instanceId: INSTANCE_ID, model: "gpt-5.6-sol", options: [] },
+          });
+          assert.equal(initialTextGeneration.title, "Endpoint title");
           assert.deepStrictEqual(workspaceGenerations, [1]);
           assert.deepStrictEqual(vcsGenerations, [1]);
+          assert.deepStrictEqual(textGenerationGenerations, [1]);
           assert.equal(
             instance.continuationIdentity.continuationKey,
             `codex:instance:${INSTANCE_ID}`,
@@ -454,16 +484,17 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
 
           const textGeneration = yield* instance.textGeneration
             .generateThreadTitle({
+              providerInstanceId: INSTANCE_ID,
               cwd: "/remote/workspace",
               message: "title",
               modelSelection: { instanceId: INSTANCE_ID, model: "gpt-5.6-sol", options: [] },
             })
             .pipe(Effect.result);
-          assert.equal(textGeneration._tag, "Failure");
+          assert.equal(textGeneration._tag, "Success");
           if (textGeneration._tag === "Success") {
-            return assert.fail("expected endpoint text generation to fail");
+            assert.deepStrictEqual(textGeneration.success, { title: "Endpoint title" });
           }
-          assert.include(textGeneration.failure.detail, "unavailable");
+          assert.deepStrictEqual(textGenerationGenerations, [1, 2]);
 
           yield* Scope.close(instanceScope, Exit.void);
           assert.equal(generationReleases, 2);

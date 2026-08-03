@@ -40,6 +40,7 @@ import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeCodexTextGeneration } from "../../textGeneration/CodexTextGeneration.ts";
+import { makeCodexEndpointTextGeneration } from "../../textGeneration/CodexEndpointTextGeneration.ts";
 import * as TextGeneration from "../../textGeneration/TextGeneration.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -130,6 +131,7 @@ export interface CodexDriverDependencies {
   readonly makeEndpointWorkspace: typeof makeCodexWorkspaceAdapter;
   readonly makeAdapter: typeof makeCodexAdapter;
   readonly makeLocalTextGeneration: typeof makeCodexTextGeneration;
+  readonly makeEndpointTextGeneration: typeof makeCodexEndpointTextGeneration;
   readonly checkEndpointProviderStatus: typeof checkCodexEndpointProviderStatus;
   readonly checkLocalProviderStatus: typeof checkCodexProviderStatus;
   readonly resolveHomeLayout: typeof resolveCodexHomeLayout;
@@ -146,6 +148,7 @@ const defaultDependencies: CodexDriverDependencies = {
   makeEndpointWorkspace: makeCodexWorkspaceAdapter,
   makeAdapter: makeCodexAdapter,
   makeLocalTextGeneration: makeCodexTextGeneration,
+  makeEndpointTextGeneration: makeCodexEndpointTextGeneration,
   checkEndpointProviderStatus: checkCodexEndpointProviderStatus,
   checkLocalProviderStatus: checkCodexProviderStatus,
   resolveHomeLayout: resolveCodexHomeLayout,
@@ -232,7 +235,7 @@ export const makeCodexDriver = (
             provider: DRIVER_KIND,
             packageName: null,
           });
-          const textGeneration = makeUnavailableEndpointTextGeneration(instanceId);
+          const disabledTextGeneration = makeUnavailableEndpointTextGeneration(instanceId);
 
           if (!enabled) {
             const adapter = yield* dependencies.makeAdapter(effectiveConfig, {
@@ -276,7 +279,7 @@ export const makeCodexDriver = (
               gatewayMcpMode: "unavailable",
               snapshot,
               adapter,
-              textGeneration,
+              textGeneration: disabledTextGeneration,
             } satisfies ProviderInstance;
           }
 
@@ -288,6 +291,14 @@ export const makeCodexDriver = (
               makeRouter: dependencies.makeEndpointRouter,
             },
           });
+          const endpointTextGeneration = yield* dependencies.makeEndpointTextGeneration({
+            providerInstanceId: instanceId,
+            borrowRoutedConnection: supervisor.borrowRoutedConnection,
+          });
+          const textGeneration = TextGeneration.bindTextGenerationOwnership(
+            instanceId,
+            endpointTextGeneration,
+          );
           const terminalConfig = effectiveConfig.endpointTerminal;
           const terminalCapability =
             terminalConfig.enabled === false
@@ -615,9 +626,13 @@ export const makeCodexDriver = (
           environment: processEnv,
           ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         });
-        const textGeneration = yield* dependencies.makeLocalTextGeneration(
+        const localTextGeneration = yield* dependencies.makeLocalTextGeneration(
           effectiveConfig,
           processEnv,
+        );
+        const textGeneration = TextGeneration.bindTextGenerationOwnership(
+          instanceId,
+          localTextGeneration,
         );
         const checkProvider = dependencies
           .checkLocalProviderStatus(effectiveConfig, undefined, processEnv)

@@ -97,6 +97,7 @@ it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateCommitMessage({
+            providerInstanceId: ProviderInstanceId.make("grok"),
             cwd: process.cwd(),
             branch: "feature/grok",
             stagedSummary: "M apps/server/src/provider/Drivers/GrokDriver.ts",
@@ -136,6 +137,7 @@ it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateThreadTitle({
+            providerInstanceId: ProviderInstanceId.make("grok"),
             cwd: process.cwd(),
             message: "the lint job is red",
             modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-mock-alt"),
@@ -154,6 +156,7 @@ it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
         Effect.gen(function* () {
           const error = yield* Effect.flip(
             textGeneration.generateBranchName({
+              providerInstanceId: ProviderInstanceId.make("grok"),
               cwd: process.cwd(),
               message: "wire up grok",
               modelSelection: createModelSelection(
@@ -177,6 +180,7 @@ it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
         Effect.gen(function* () {
           const error = yield* Effect.flip(
             textGeneration.generateThreadTitle({
+              providerInstanceId: ProviderInstanceId.make("grok"),
               cwd: process.cwd(),
               message: "anything",
               modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),
@@ -199,6 +203,7 @@ it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generatePrContent({
+            providerInstanceId: ProviderInstanceId.make("grok"),
             cwd: process.cwd(),
             baseBranch: "main",
             headBranch: "feat/grok-provider",
@@ -223,6 +228,7 @@ it.layer(GrokTextGenerationTestLayer)("GrokTextGeneration", (it) => {
         Effect.gen(function* () {
           const error = yield* Effect.flip(
             textGeneration.generateThreadTitle({
+              providerInstanceId: ProviderInstanceId.make("grok"),
               cwd: process.cwd(),
               message: "anything",
               modelSelection: createModelSelection(ProviderInstanceId.make("grok"), "grok-build"),

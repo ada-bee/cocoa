@@ -777,7 +777,11 @@ describe("ProviderCommandReactor", () => {
   );
 
   it("generates a thread title on the first turn", async () => {
-    const harness = await createHarness();
+    const ownedModelSelection = createModelSelection(
+      ProviderInstanceId.make("codex_remote"),
+      "gpt-5-owned",
+    );
+    const harness = await createHarness({ threadModelSelection: ownedModelSelection });
     const now = "2026-01-01T00:00:00.000Z";
     const seededTitle = "Please investigate reconnect failures after restar...";
     harness.generateThreadTitle.mockReturnValue(Effect.succeed({ title: "Generated title" }));
@@ -811,7 +815,9 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.generateThreadTitle.mock.calls.length === 1);
     expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
+      providerInstanceId: ownedModelSelection.instanceId,
       message: "Please investigate reconnect failures after restarting the session.",
+      modelSelection: ownedModelSelection,
     });
 
     await waitFor(async () => {
@@ -889,6 +895,7 @@ describe("ProviderCommandReactor", () => {
 
     expect(harness.generateThreadTitle).toHaveBeenCalledTimes(1);
     expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
+      providerInstanceId: ProviderInstanceId.make("codex"),
       cwd: "/tmp/provider-project",
       previousTitle: "Investigate reconnect regressions",
       message: [
@@ -1444,7 +1451,7 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.title).toBe("Reconnect spinner resume bug");
   });
 
-  it("generates a worktree branch name for the first turn", async () => {
+  it("does not generate or locally rename a provider-owned worktree branch", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1455,21 +1462,6 @@ describe("ProviderCommandReactor", () => {
         threadId: ThreadId.make("thread-1"),
         branch: "t3code/1234abcd",
         worktreePath: "/tmp/provider-project-worktree",
-      }),
-    );
-
-    harness.generateBranchName.mockImplementation((input: unknown) =>
-      Effect.succeed({
-        branch:
-          typeof input === "object" &&
-          input !== null &&
-          "modelSelection" in input &&
-          typeof input.modelSelection === "object" &&
-          input.modelSelection !== null &&
-          "model" in input.modelSelection &&
-          typeof input.modelSelection.model === "string"
-            ? `feature/${input.modelSelection.model}`
-            : "feature/generated",
       }),
     );
 
@@ -1490,12 +1482,14 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await waitFor(() => harness.generateBranchName.mock.calls.length === 1);
-    await waitFor(() => harness.refreshStatus.mock.calls.length === 1);
-    expect(harness.generateBranchName.mock.calls[0]?.[0]).toMatchObject({
-      message: "Add a safer reconnect backoff.",
-    });
-    expect(harness.refreshStatus.mock.calls[0]?.[0]).toBe("/tmp/provider-project-worktree");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.generateBranchName).not.toHaveBeenCalled();
+    expect(harness.renameBranch).not.toHaveBeenCalled();
+    expect(harness.refreshStatus).not.toHaveBeenCalled();
+    const readModel = await harness.readModel();
+    expect(
+      readModel.threads.find((thread) => thread.id === ThreadId.make("thread-1"))?.branch,
+    ).toBe("t3code/1234abcd");
   });
 
   it("forwards codex model options through session start and turn send", async () => {
@@ -2188,7 +2182,7 @@ describe("ProviderCommandReactor", () => {
     });
     const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.session.set",
         commandId: CommandId.make("cmd-session-set-runtime-mode-claude"),
@@ -2695,7 +2689,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.activity.append",
         commandId: CommandId.make("cmd-approval-requested"),
@@ -2823,7 +2817,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.user-input.respond",
         commandId: CommandId.make("cmd-user-input-respond-stale"),

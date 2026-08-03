@@ -85,6 +85,7 @@ describe("makeTextGenerationFromRegistry", () => {
       const tg = TextGeneration.makeTextGenerationFromRegistry(makeStubRegistry([personal, work]));
 
       const result = yield* tg.generateBranchName({
+        providerInstanceId: personalId,
         cwd: process.cwd(),
         message: "Refactor the routing layer",
         modelSelection: createModelSelection(ProviderInstanceId.make("codex_personal"), "gpt-5"),
@@ -101,6 +102,7 @@ describe("makeTextGenerationFromRegistry", () => {
 
       const result = yield* tg
         .generateBranchName({
+          providerInstanceId: ProviderInstanceId.make("missing_instance"),
           cwd: process.cwd(),
           message: "anything",
           modelSelection: createModelSelection(
@@ -116,6 +118,40 @@ describe("makeTextGenerationFromRegistry", () => {
         expect(result.failure.operation).toBe("generateBranchName");
         expect(result.failure.detail).toContain("missing_instance");
       }
+    }),
+  );
+
+  it.effect("rejects workspace and model ownership mismatches before registry lookup", () =>
+    Effect.gen(function* () {
+      let registryReads = 0;
+      const registry = makeStubRegistry([]);
+      const tg = TextGeneration.makeTextGenerationFromRegistry({
+        ...registry,
+        getInstance: (_id) =>
+          Effect.sync(() => {
+            registryReads += 1;
+            return undefined;
+          }),
+      });
+
+      const result = yield* tg
+        .generateThreadTitle({
+          providerInstanceId: ProviderInstanceId.make("codex_workspace"),
+          cwd: "/remote/workspace",
+          message: "anything",
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("codex_generation"),
+            "gpt-5",
+          ),
+        })
+        .pipe(Effect.result);
+
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure.detail).toContain("ownership");
+        expect(result.failure.detail).not.toContain("/remote/workspace");
+      }
+      expect(registryReads).toBe(0);
     }),
   );
 });

@@ -205,6 +205,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateCommitMessage({
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
             cwd: process.cwd(),
             branch: "feature/claude-effect",
             stagedSummary: "M README.md",
@@ -236,6 +237,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generatePrContent({
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
             cwd: process.cwd(),
             baseBranch: "main",
             headBranch: "feature/claude-effect",
@@ -269,6 +271,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateThreadTitle({
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
             cwd: process.cwd(),
             message: "Please investigate reconnect failures after restarting the session.",
             modelSelection: {
@@ -304,6 +307,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
         (textGeneration) =>
           Effect.gen(function* () {
             const generated = yield* textGeneration.generateThreadTitle({
+              providerInstanceId: ProviderInstanceId.make("claudeAgent"),
               cwd: process.cwd(),
               message: "thread title",
               modelSelection: {
@@ -330,6 +334,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateThreadTitle({
+            providerInstanceId: ProviderInstanceId.make("claudeAgent"),
             cwd: process.cwd(),
             message: "Name this thread.",
             modelSelection: {

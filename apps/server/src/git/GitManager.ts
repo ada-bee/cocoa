@@ -28,6 +28,7 @@ import {
   type VcsStatusRemoteResult,
   VcsStatusResult,
   ModelSelection,
+  type ProviderInstanceId,
   type SourceControlWritingStyleSettings,
 } from "@t3tools/contracts";
 import {
@@ -584,6 +585,19 @@ export const make = Effect.gen(function* () {
 
   const sourceControlProvider = (cwd: string) => sourceControlProviders.resolve({ cwd });
   const serverSettingsService = yield* ServerSettings.ServerSettingsService;
+
+  const requirePersistedProjectTextGenerationOwner = (
+    operation: "generateCommitMessage" | "generatePrContent",
+    cwd: string,
+  ): Effect.Effect<ProviderInstanceId, GitManagerError> =>
+    Effect.fail(
+      new GitManagerError({
+        operation,
+        cwd,
+        detail:
+          "Automatic Git text generation is unavailable until this action is bound to a persisted project target.",
+      }),
+    );
 
   const readRecentCommitSubjects = (cwd: string) =>
     gitCore
@@ -1409,10 +1423,16 @@ export const make = Effect.gen(function* () {
         };
       }
 
+      const providerInstanceId = yield* requirePersistedProjectTextGenerationOwner(
+        "generateCommitMessage",
+        input.cwd,
+      );
+
       const policy = yield* resolveStylePolicy(input.cwd, input.settings.style);
 
       const generated = yield* textGeneration
         .generateCommitMessage({
+          providerInstanceId,
           cwd: input.cwd,
           branch: input.branch,
           stagedSummary: limitContext(context.stagedSummary, 8_000),
@@ -1594,6 +1614,10 @@ export const make = Effect.gen(function* () {
       label: `Generating ${terms.shortLabel} content...`,
     });
     const baseRangeRef = yield* resolveBaseRangeRef(cwd, baseBranch);
+    const providerInstanceId = yield* requirePersistedProjectTextGenerationOwner(
+      "generatePrContent",
+      cwd,
+    );
     const rangeContext = yield* gitCore.readRangeContext(cwd, baseRangeRef);
     const policy = yield* resolveStylePolicy(cwd, settings.style);
     const changeRequestTemplate =
@@ -1602,6 +1626,7 @@ export const make = Effect.gen(function* () {
         : undefined;
 
     const generated = yield* textGeneration.generatePrContent({
+      providerInstanceId,
       cwd,
       baseBranch,
       headBranch: headContext.headBranch,

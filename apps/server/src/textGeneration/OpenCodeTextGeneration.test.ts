@@ -122,6 +122,7 @@ const DEFAULT_TEST_MODEL_SELECTION = {
   model: "openai/gpt-5",
 };
 const DEFAULT_COMMIT_MESSAGE_INPUT = {
+  providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
   cwd: process.cwd(),
   branch: "feature/opencode-reuse",
   stagedSummary: "M README.md",
@@ -191,6 +192,7 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
     withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
       Effect.gen(function* () {
         yield* textGeneration.generateCommitMessage({
+          providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
           cwd: process.cwd(),
           branch: "feature/opencode-reuse",
           stagedSummary: "M README.md",
@@ -198,6 +200,7 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
           modelSelection: DEFAULT_TEST_MODEL_SELECTION,
         });
         yield* textGeneration.generateCommitMessage({
+          providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
           cwd: process.cwd(),
           branch: "feature/opencode-reuse",
           stagedSummary: "M README.md",
@@ -223,6 +226,7 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
     withOpenCodeTextGeneration(DEFAULT_OPENCODE_SETTINGS, (textGeneration) =>
       Effect.gen(function* () {
         yield* textGeneration.generateCommitMessage({
+          providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
           cwd: process.cwd(),
           branch: "feature/opencode-reuse",
           stagedSummary: "M README.md",
@@ -233,6 +237,7 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
         yield* advanceIdleClock;
 
         yield* textGeneration.generateCommitMessage({
+          providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
           cwd: process.cwd(),
           branch: "feature/opencode-reuse",
           stagedSummary: "M README.md",
@@ -362,6 +367,7 @@ it.layer(OpenCodeTextGenerationTestLayer)("OpenCodeTextGeneration", (it) => {
         };
 
         const result = yield* textGeneration.generateCommitMessage({
+          providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
           cwd: process.cwd(),
           branch: "feature/opencode-reuse",
           stagedSummary: "M README.md",
@@ -422,6 +428,7 @@ it.layer(OpenCodeTextGenerationExistingServerTestLayer)(
       withOpenCodeTextGeneration(EXISTING_SERVER_OPENCODE_SETTINGS, (textGeneration) =>
         Effect.gen(function* () {
           yield* textGeneration.generateCommitMessage({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             branch: "feature/opencode-reuse",
             stagedSummary: "M README.md",
@@ -429,6 +436,7 @@ it.layer(OpenCodeTextGenerationExistingServerTestLayer)(
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
           });
           yield* textGeneration.generateCommitMessage({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             branch: "feature/opencode-reuse",
             stagedSummary: "M README.md",

@@ -218,6 +218,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateCommitMessage({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             branch: "feature/codex-effect",
             stagedSummary: "M README.md",
@@ -248,6 +249,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
         },
         (textGeneration) =>
           textGeneration.generateCommitMessage({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             branch: "feature/codex-effect",
             stagedSummary: "M README.md",
@@ -273,6 +275,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       },
       (textGeneration) =>
         textGeneration.generateCommitMessage({
+          providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
           cwd: process.cwd(),
           branch: "feature/codex-effect",
           stagedSummary: "M README.md",
@@ -296,6 +299,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       },
       (textGeneration) =>
         textGeneration.generateCommitMessage({
+          providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
           cwd: process.cwd(),
           branch: "feature/codex-effect",
           stagedSummary: "M README.md",
@@ -316,6 +320,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       },
       (textGeneration) =>
         textGeneration.generateCommitMessage({
+          providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
           cwd: process.cwd(),
           branch: "feature/codex-effect",
           stagedSummary: "M README.md",
@@ -338,6 +343,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateCommitMessage({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             branch: "feature/codex-effect",
             stagedSummary: "M README.md",
@@ -363,6 +369,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generatePrContent({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             baseBranch: "main",
             headBranch: "feature/codex-effect",
@@ -390,6 +397,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateBranchName({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             message: "Please update session handling.",
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
@@ -411,6 +419,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateThreadTitle({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             message: "Please investigate websocket reconnect regressions after a worktree restore.",
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
@@ -431,6 +440,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateThreadTitle({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             message: "Name this thread.",
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
@@ -451,6 +461,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateThreadTitle({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             message: "Name this thread.",
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
@@ -472,6 +483,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateBranchName({
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             message: "Fix timeout behavior.",
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
@@ -503,6 +515,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
 
           const generated = yield* textGeneration.generateBranchName({
             modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
             cwd: process.cwd(),
             message: "Fix layout bug from screenshot.",
             attachments: [
@@ -542,6 +555,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           const generated = yield* textGeneration
             .generateBranchName({
               modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
               cwd: process.cwd(),
               message: "Fix layout bug from screenshot.",
               attachments: [
@@ -590,6 +604,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           const result = yield* textGeneration
             .generateBranchName({
               modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
               cwd: process.cwd(),
               message: "Fix layout bug from screenshot.",
               attachments: [
@@ -626,6 +641,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           Effect.gen(function* () {
             const result = yield* textGeneration
               .generateBranchName({
+                providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
                 cwd: process.cwd(),
                 message: "Fix websocket reconnect flake",
                 modelSelection: DEFAULT_TEST_MODEL_SELECTION,
@@ -652,6 +668,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
         Effect.gen(function* () {
           const result = yield* textGeneration
             .generateCommitMessage({
+              providerInstanceId: DEFAULT_TEST_MODEL_SELECTION.instanceId,
               cwd: process.cwd(),
               branch: "feature/codex-error",
               stagedSummary: "M README.md",

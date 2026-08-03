@@ -108,6 +108,7 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateCommitMessage({
+            providerInstanceId: ProviderInstanceId.make("cursor"),
             cwd: process.cwd(),
             branch: "feature/cursor-text-generation",
             stagedSummary: "M apps/server/src/textGeneration/CursorTextGeneration.ts",
@@ -197,6 +198,7 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateCommitMessage({
+            providerInstanceId: ProviderInstanceId.make("cursor"),
             cwd: process.cwd(),
             branch: "feature/cursor-noisy-json",
             stagedSummary: "M README.md",
@@ -223,6 +225,7 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateThreadTitle({
+            providerInstanceId: ProviderInstanceId.make("cursor"),
             cwd: process.cwd(),
             message: "Fix the reconnect spinner after a resumed session.",
             modelSelection: {
@@ -253,6 +256,7 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGeneration", (it) => {
       (textGeneration) =>
         Effect.gen(function* () {
           const generated = yield* textGeneration.generateCommitMessage({
+            providerInstanceId: ProviderInstanceId.make("cursor"),
             cwd: process.cwd(),
             branch: "feature/cursor-runtime-close",
             stagedSummary: "M apps/server/src/textGeneration/CursorTextGeneration.ts",
