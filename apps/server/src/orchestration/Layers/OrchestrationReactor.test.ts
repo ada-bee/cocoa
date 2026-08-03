@@ -5,7 +5,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Scope from "effect/Scope";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
-import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
+import { CheckpointRevertReactor } from "../Services/CheckpointRevertReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { PostTurnCheckpointReactor } from "../Services/PostTurnCheckpointReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -69,9 +69,11 @@ describe("OrchestrationReactor", () => {
           }),
         ),
         Layer.provideMerge(
-          Layer.succeed(CheckpointReactor, {
+          Layer.succeed(CheckpointRevertReactor, {
+            process: () => Effect.die("unused"),
+            recover: () => Effect.succeed([]),
             start: () => {
-              started.push("checkpoint-reactor");
+              started.push("checkpoint-revert-reactor");
               return Effect.void;
             },
             drain: Effect.void,
@@ -107,7 +109,7 @@ describe("OrchestrationReactor", () => {
       "post-turn-checkpoint-reactor",
       "provider-generation-recovery",
       "provider-command-reactor",
-      "checkpoint-reactor",
+      "checkpoint-revert-reactor",
       "thread-deletion-reactor",
       "agent-awareness-relay",
     ]);

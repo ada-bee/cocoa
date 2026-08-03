@@ -37,6 +37,10 @@ import {
   PostTurnCheckpointReactor,
   type PostTurnCheckpointReactorShape,
 } from "../../orchestration/Services/PostTurnCheckpointReactor.ts";
+import {
+  CheckpointRevertReactor,
+  type CheckpointRevertReactorShape,
+} from "../../orchestration/Services/CheckpointRevertReactor.ts";
 
 const INSTANCE_ID = ProviderInstanceId.make("codex_remote");
 const OTHER_INSTANCE_ID = ProviderInstanceId.make("codex_other");
@@ -146,6 +150,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
   const recoveries = yield* Queue.unbounded<RecoveryInput>();
   const dispatchRecoveries = yield* Queue.unbounded<ProviderInstanceId | undefined>();
   const checkpointRecoveries = yield* Queue.unbounded<ProviderInstanceId | undefined>();
+  const revertRecoveries = yield* Queue.unbounded<void>();
   const registryReleased = yield* Deferred.make<void>();
 
   const registry: ProviderInstanceRegistryShape = {
@@ -193,12 +198,19 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
     start: () => Effect.die("unused"),
     drain: Effect.void,
   };
+  const checkpointRevertReactor: CheckpointRevertReactorShape = {
+    process: () => Effect.die("unused"),
+    recover: () => Queue.offer(revertRecoveries, undefined).pipe(Effect.as([])),
+    start: () => Effect.die("unused"),
+    drain: Effect.void,
+  };
   const reactor = yield* makeProviderGenerationRecoveryReactor.pipe(
     Effect.provideService(ProviderInstanceRegistry, registry),
     Effect.provideService(ProviderSessionDirectory, directory),
     Effect.provideService(ProviderService, providerService),
     Effect.provideService(ProviderCommandReactor, providerCommandReactor),
     Effect.provideService(PostTurnCheckpointReactor, postTurnCheckpointReactor),
+    Effect.provideService(CheckpointRevertReactor, checkpointRevertReactor),
   );
   const ownerScope = yield* Scope.make("sequential");
 
@@ -208,6 +220,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
     recoveries,
     dispatchRecoveries,
     checkpointRecoveries,
+    revertRecoveries,
     registryReleased,
     setBindings: (next: ReadonlyArray<ProviderRuntimeBindingWithMetadata>) =>
       Ref.set(bindings, next),
@@ -236,6 +249,7 @@ it("recovers an initially ready generation", () =>
       });
       assert.equal(yield* Queue.take(harness.dispatchRecoveries), INSTANCE_ID);
       assert.equal(yield* Queue.take(harness.checkpointRecoveries), INSTANCE_ID);
+      yield* Queue.take(harness.revertRecoveries);
       yield* Scope.close(harness.ownerScope, Exit.void);
     }),
   ));
@@ -280,6 +294,8 @@ it("recovers later ready generations and survives an individual typed failure", 
         ],
         [INSTANCE_ID, INSTANCE_ID],
       );
+      yield* Queue.take(harness.revertRecoveries);
+      yield* Queue.take(harness.revertRecoveries);
       assert.equal(attempts, 2);
       yield* Scope.close(harness.ownerScope, Exit.void);
     }),
@@ -336,6 +352,7 @@ it("does not run checkpoint recovery after the ready generation changes", () =>
       yield* Deferred.await(generationChanged);
       yield* Deferred.await(generationRechecked);
       assert.equal(yield* Queue.size(harness.checkpointRecoveries), 0);
+      assert.equal(yield* Queue.size(harness.revertRecoveries), 0);
       yield* Scope.close(harness.ownerScope, Exit.void);
     }),
   ));

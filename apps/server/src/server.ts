@@ -34,7 +34,10 @@ import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { ProviderCheckpointOperationRepositoryLive } from "./persistence/Layers/ProviderCheckpointOperations.ts";
+import { ProjectionCheckpointRepositoryLive } from "./persistence/Layers/ProjectionCheckpoints.ts";
 import { PostTurnCheckpointIntentRepositoryLive } from "./persistence/Layers/PostTurnCheckpointIntents.ts";
+import { CheckpointRevertIntentRepositoryLive } from "./persistence/Layers/CheckpointRevertIntents.ts";
+import { CheckpointRevertSagaRepositoryLive } from "./persistence/Layers/CheckpointRevertSagas.ts";
 import { TurnDispatchJournalRepositoryLive } from "./persistence/Layers/TurnDispatchJournal.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
@@ -73,7 +76,8 @@ import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRun
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { CheckpointCoordinatorLive } from "./orchestration/Layers/CheckpointCoordinator.ts";
 import { PostTurnCheckpointReactorLive } from "./orchestration/Layers/PostTurnCheckpointReactor.ts";
-import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
+import { CheckpointRevertReactorLive } from "./orchestration/Layers/CheckpointRevertReactor.ts";
+import { CheckpointRevertGateLive } from "./orchestration/Layers/CheckpointRevertGate.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
@@ -227,6 +231,9 @@ const PlatformServicesLive = Layer.unwrap(
 const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<ROut, E, RIn>) => {
   const turnDispatchJournalLayer = TurnDispatchJournalRepositoryLive;
   const postTurnCheckpointIntentLayer = PostTurnCheckpointIntentRepositoryLive;
+  const checkpointRevertIntentLayer = CheckpointRevertIntentRepositoryLive;
+  const checkpointRevertSagaLayer = CheckpointRevertSagaRepositoryLive;
+  const projectionCheckpointLayer = ProjectionCheckpointRepositoryLive;
   const providerCheckpointOperationLayer = ProviderCheckpointOperationRepositoryLive.pipe(
     Layer.provide(PersistenceLayerLive),
   );
@@ -235,9 +242,13 @@ const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<R
     Layer.provide(OrchestrationLayerLive),
     Layer.provide(providerCheckpointOperationLayer),
   );
+  const checkpointRevertGateLayer = CheckpointRevertGateLive.pipe(
+    Layer.provide(checkpointRevertSagaLayer),
+  );
   const providerCommandReactorLayer = ProviderCommandReactorLive.pipe(
     Layer.provide(turnDispatchJournalLayer),
     Layer.provide(checkpointCoordinatorLayer),
+    Layer.provide(checkpointRevertGateLayer),
   );
   const postTurnCheckpointReactorLayer = PostTurnCheckpointReactorLive.pipe(
     Layer.provide(ProjectRepositoryLayerLive),
@@ -245,9 +256,18 @@ const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<R
     Layer.provide(postTurnCheckpointIntentLayer),
     Layer.provide(providerCheckpointOperationLayer),
   );
+  const checkpointRevertReactorLayer = CheckpointRevertReactorLive.pipe(
+    Layer.provide(ProjectRepositoryLayerLive),
+    Layer.provide(OrchestrationLayerLive),
+    Layer.provide(providerCheckpointOperationLayer),
+    Layer.provide(projectionCheckpointLayer),
+    Layer.provide(checkpointRevertIntentLayer),
+    Layer.provide(checkpointRevertSagaLayer),
+  );
   const providerGenerationRecoveryLayer = ProviderGenerationRecoveryReactorLive.pipe(
     Layer.provide(providerCommandReactorLayer),
     Layer.provide(postTurnCheckpointReactorLayer),
+    Layer.provide(checkpointRevertReactorLayer),
   );
   return Layer.empty.pipe(
     Layer.provideMerge(orchestrationReactorLayer),
@@ -255,11 +275,15 @@ const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<R
     Layer.provideMerge(providerGenerationRecoveryLayer),
     Layer.provideMerge(turnDispatchJournalLayer),
     Layer.provideMerge(postTurnCheckpointIntentLayer),
+    Layer.provideMerge(checkpointRevertIntentLayer),
+    Layer.provideMerge(checkpointRevertSagaLayer),
+    Layer.provideMerge(projectionCheckpointLayer),
     Layer.provideMerge(providerCheckpointOperationLayer),
     Layer.provideMerge(checkpointCoordinatorLayer),
     Layer.provideMerge(providerCommandReactorLayer),
     Layer.provideMerge(postTurnCheckpointReactorLayer),
-    Layer.provideMerge(CheckpointReactorLive),
+    Layer.provideMerge(checkpointRevertReactorLayer),
+    Layer.provideMerge(checkpointRevertGateLayer),
     Layer.provideMerge(ThreadDeletionReactorLive),
     Layer.provideMerge(RuntimeReceiptBusLive),
   );

@@ -46,7 +46,8 @@ import {
 import { ProviderService } from "../src/provider/Services/ProviderService.ts";
 import { ProviderGenerationRecoveryReactor } from "../src/provider/Services/ProviderGenerationRecoveryReactor.ts";
 import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
-import { CheckpointReactorLive } from "../src/orchestration/Layers/CheckpointReactor.ts";
+import { CheckpointRevertReactor } from "../src/orchestration/Services/CheckpointRevertReactor.ts";
+import { CheckpointRevertGate } from "../src/orchestration/Services/CheckpointRevertGate.ts";
 import * as RepositoryIdentityResolver from "../src/project/RepositoryIdentityResolver.ts";
 import * as ProjectWorkspace from "../src/project/ProjectWorkspace.ts";
 import { OrchestrationEngineLive } from "../src/orchestration/Layers/OrchestrationEngine.ts";
@@ -76,10 +77,7 @@ import {
   type TestProviderAdapterHarness,
 } from "./TestProviderAdapter.integration.ts";
 import { deriveServerPaths, ServerConfig } from "../src/config.ts";
-import * as WorkspaceEntries from "../src/workspace/WorkspaceEntries.ts";
-import * as WorkspacePaths from "../src/workspace/WorkspacePaths.ts";
 import * as VcsDriverRegistry from "../src/vcs/VcsDriverRegistry.ts";
-import { VcsStatusBroadcaster } from "../src/vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../src/git/GitWorkflowService.ts";
 import * as VcsProcess from "../src/vcs/VcsProcess.ts";
 import * as AgentAwarenessRelay from "../src/relay/AgentAwarenessRelay.ts";
@@ -337,6 +335,13 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(gitWorkflowLayer),
       Layer.provideMerge(textGenerationLayer),
       Layer.provideMerge(serverSettingsLayer),
+      Layer.provideMerge(VcsProcess.layer),
+      Layer.provideMerge(
+        Layer.succeed(CheckpointRevertGate, {
+          assertThreadAvailable: () => Effect.void,
+          isThreadBlocked: () => Effect.succeed(false),
+        }),
+      ),
       Layer.provideMerge(TurnDispatchJournalRepositoryLive),
       Layer.provideMerge(
         Layer.succeed(
@@ -348,34 +353,12 @@ export const makeOrchestrationIntegrationHarness = (
         ),
       ),
     );
-    const checkpointReactorLayer = CheckpointReactorLive.pipe(
-      Layer.provideMerge(runtimeServicesLayer),
-      Layer.provideMerge(
-        Layer.succeed(VcsStatusBroadcaster, {
-          getStatus: () => Effect.die("getStatus should not be called in this test"),
-          refreshLocalStatus: () =>
-            Effect.succeed({
-              isRepo: true,
-              hasPrimaryRemote: false,
-              isDefaultRef: true,
-              refName: "main",
-              hasWorkingTreeChanges: false,
-              workingTree: { files: [], insertions: 0, deletions: 0 },
-            }),
-          refreshStatus: () => Effect.die("refreshStatus should not be called in this test"),
-          streamStatus: () => Stream.empty,
-        }),
-      ),
-      Layer.provideMerge(
-        WorkspaceEntries.layer.pipe(
-          Layer.provide(WorkspacePaths.layer),
-          Layer.provideMerge(VcsDriverRegistry.layer),
-          Layer.provide(NodeServices.layer),
-        ),
-      ),
-      Layer.provideMerge(WorkspacePaths.layer),
-      Layer.provideMerge(VcsProcess.layer),
-    );
+    const checkpointReactorLayer = Layer.succeed(CheckpointRevertReactor, {
+      process: () => Effect.die("unused"),
+      recover: () => Effect.succeed([]),
+      start: () => Effect.void,
+      drain: Effect.void,
+    });
     const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
       Layer.provideMerge(runtimeIngestionLayer),
       Layer.provideMerge(providerCommandReactorLayer),
