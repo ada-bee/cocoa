@@ -387,6 +387,8 @@ const buildAppUnderTest = (options?: {
     desktopTelemetryReceiver?: Partial<
       DesktopTelemetryReceiver.DesktopTelemetryReceiver["Service"]
     >;
+    httpClient?: HttpClient.HttpClient;
+    childProcessSpawner?: ChildProcessSpawner.ChildProcessSpawner["Service"];
   };
 }) =>
   Effect.gen(function* () {
@@ -814,6 +816,44 @@ const buildAppUnderTest = (options?: {
       ),
     );
 
+    const hostedCloudServicesLayer =
+      config.runtimeProfile === "cocoa-gateway"
+        ? Layer.empty
+        : Layer.mergeAll(
+            Layer.succeed(
+              CloudManagedEndpointRuntime.CloudManagedEndpointRuntime,
+              CloudManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
+                applyConfig: () => Effect.succeed({ status: "disabled" }),
+                ...options?.layers?.cloudManagedEndpointRuntime,
+              }),
+            ),
+            Layer.succeed(
+              RelayClient.RelayClient,
+              RelayClient.RelayClient.of({
+                resolve: Effect.succeed({
+                  status: "missing",
+                  version: RelayClient.CLOUDFLARED_VERSION,
+                }),
+                install: Effect.die("unused relay-client install"),
+                installWithProgress: () => Effect.die("unused relay-client install"),
+                ...options?.layers?.relayClient,
+              }),
+            ),
+            Layer.mock(CloudCliTokenManager.CloudCliTokenManager)({
+              get: Effect.die(new Error("Unexpected T3 Connect CLI authorization request.")),
+              getExisting: Effect.succeed(Option.none()),
+              hasCredential: Effect.succeed(false),
+              clear: Effect.void,
+              ...options?.layers?.cloudCliTokenManager,
+            }),
+          );
+    const httpClientLayer = options?.layers?.httpClient
+      ? Layer.succeed(HttpClient.HttpClient, options.layers.httpClient)
+      : FetchHttpClient.layer;
+    const childProcessSpawnerLayer = options?.layers?.childProcessSpawner
+      ? Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, options.layers.childProcessSpawner)
+      : Layer.empty;
+
     const appLayer = servedRoutesLayer.pipe(
       Layer.provide(resourceTelemetryLayer),
       Layer.provide(
@@ -903,42 +943,12 @@ const buildAppUnderTest = (options?: {
           ...options?.layers?.repositoryIdentityResolver,
         }),
       ),
-      Layer.provide(
-        Layer.succeed(
-          CloudManagedEndpointRuntime.CloudManagedEndpointRuntime,
-          CloudManagedEndpointRuntime.CloudManagedEndpointRuntime.of({
-            applyConfig: () => Effect.succeed({ status: "disabled" }),
-            ...options?.layers?.cloudManagedEndpointRuntime,
-          }),
-        ),
-      ),
-      Layer.provide(
-        Layer.succeed(
-          RelayClient.RelayClient,
-          RelayClient.RelayClient.of({
-            resolve: Effect.succeed({
-              status: "missing",
-              version: RelayClient.CLOUDFLARED_VERSION,
-            }),
-            install: Effect.die("unused relay-client install"),
-            installWithProgress: () => Effect.die("unused relay-client install"),
-            ...options?.layers?.relayClient,
-          }),
-        ),
-      ),
-      Layer.provide(
-        Layer.mock(CloudCliTokenManager.CloudCliTokenManager)({
-          get: Effect.die(new Error("Unexpected T3 Connect CLI authorization request.")),
-          getExisting: Effect.succeed(Option.none()),
-          hasCredential: Effect.succeed(false),
-          clear: Effect.void,
-          ...options?.layers?.cloudCliTokenManager,
-        }),
-      ),
+      Layer.provide(hostedCloudServicesLayer),
       Layer.provideMerge(makeAuthTestLayer()),
       Layer.provideMerge(ServerSecretStore.layer),
       Layer.provide(workspaceAndProjectServicesLayer),
-      Layer.provideMerge(FetchHttpClient.layer),
+      Layer.provideMerge(httpClientLayer),
+      Layer.provide(childProcessSpawnerLayer),
       Layer.provide(HttpResponseCompression.layerNode),
       Layer.provide(layerConfig),
     );
@@ -2131,6 +2141,68 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(response.status, 200);
       assert.equal(body.linked, false);
       assert.equal(body.publishAgentActivity, false);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("boots Cocoa gateway routes without hosted process or network services", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        config: { runtimeProfile: "cocoa-gateway" },
+        layers: {
+          httpClient: HttpClient.make(() =>
+            Effect.die(new Error("Cocoa boot attempted an outbound HTTP request")),
+          ),
+          childProcessSpawner: ChildProcessSpawner.make(() =>
+            Effect.die(new Error("Cocoa boot attempted to spawn a child process")),
+          ),
+        },
+      });
+
+      const descriptorResponse = yield* HttpClient.get("/.well-known/t3/environment");
+      assert.equal(descriptorResponse.status, 200);
+      assert.deepEqual(
+        (yield* descriptorResponse.json) as typeof testEnvironmentDescriptor,
+        testEnvironmentDescriptor,
+      );
+
+      const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+      const pairingResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+        headers: { cookie: ownerCookie },
+        body: yield* HttpBody.json({}),
+      });
+      assert.equal(pairingResponse.status, 200);
+
+      const linkStateUrl = yield* getHttpServerUrl("/api/connect/link-state");
+      const linkStateResponse = yield* fetchEffect(linkStateUrl, {
+        headers: { cookie: ownerCookie },
+      });
+      assert.equal(linkStateResponse.status, 503);
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const relayStatus = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) => client[WS_METHODS.cloudGetRelayClientStatus]({})),
+      );
+      const relayInstallResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.cloudInstallRelayClient]({}).pipe(Stream.runCollect),
+        ).pipe(Effect.result),
+      );
+
+      assert.deepEqual(relayStatus, {
+        status: "unsupported",
+        platform: process.platform,
+        arch: "external-provider",
+        version: RelayClient.CLOUDFLARED_VERSION,
+      });
+      assert.equal(relayInstallResult._tag, "Failure");
+      if (relayInstallResult._tag === "Failure") {
+        if (relayInstallResult.failure._tag !== "RelayClientInstallFailedError") {
+          assert.fail(
+            `Expected RelayClientInstallFailedError, got ${relayInstallResult.failure._tag}`,
+          );
+        }
+        assert.equal(relayInstallResult.failure.reason, "unsupported_platform");
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
