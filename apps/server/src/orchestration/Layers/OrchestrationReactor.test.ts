@@ -12,6 +12,7 @@ import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
+import { ProviderGenerationRecoveryReactor } from "../../provider/Services/ProviderGenerationRecoveryReactor.ts";
 
 describe("OrchestrationReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<OrchestrationReactor, never> | null = null;
@@ -35,6 +36,14 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             drain: Effect.void,
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(ProviderGenerationRecoveryReactor, {
+            start: () => {
+              started.push("provider-generation-recovery");
+              return Effect.void;
+            },
           }),
         ),
         Layer.provideMerge(
@@ -82,6 +91,7 @@ describe("OrchestrationReactor", () => {
 
     expect(started).toEqual([
       "provider-runtime-ingestion",
+      "provider-generation-recovery",
       "provider-command-reactor",
       "checkpoint-reactor",
       "thread-deletion-reactor",
