@@ -25,6 +25,7 @@ import {
   type CodexEndpointSupervisor,
   type CodexEndpointSupervisorDependencies,
   type CodexEndpointSupervisorState,
+  type StartCodexEndpointSupervisorOptions,
 } from "./CodexEndpointSupervisor.ts";
 
 const INSTANCE_ID = ProviderInstanceId.make("codex_remote");
@@ -134,7 +135,46 @@ const awaitState = Effect.fn("test.awaitSupervisorState")(function* (
   return Option.getOrThrow(matched);
 });
 
+const startAndAwaitState = Effect.fn("test.startAndAwaitSupervisorState")(function* (
+  supervisor: CodexEndpointSupervisor,
+  options: StartCodexEndpointSupervisorOptions,
+  predicate: (state: CodexEndpointSupervisorState) => boolean,
+) {
+  yield* supervisor.start(options);
+  return yield* awaitState(supervisor, predicate);
+});
+
 it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
+  it.effect("returns in Connecting while a first connector attempt never settles", () =>
+    Effect.gen(function* () {
+      const owner = yield* Scope.make("sequential");
+      const acquisitionStarted = yield* Deferred.make<void>();
+      const acquisitionInterrupted = yield* Deferred.make<void>();
+      const supervisor = yield* makeSupervisor(
+        {
+          makeEndpoint: (() =>
+            Deferred.succeed(acquisitionStarted, undefined).pipe(
+              Effect.andThen(Effect.never),
+              Effect.onInterrupt(() =>
+                Deferred.succeed(acquisitionInterrupted, undefined).pipe(Effect.asVoid),
+              ),
+            )) as CodexEndpointSupervisorDependencies["makeEndpoint"],
+        },
+        owner,
+      );
+
+      yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
+      assert.deepStrictEqual(yield* supervisor.getState, { _tag: "Connecting", attempt: 1 });
+
+      yield* Deferred.await(acquisitionStarted);
+      assert.deepStrictEqual(yield* supervisor.getState, { _tag: "Connecting", attempt: 1 });
+
+      yield* Scope.close(owner, Exit.void);
+      yield* Deferred.await(acquisitionInterrupted);
+      assert.deepStrictEqual(yield* supervisor.getState, { _tag: "Closed" });
+    }),
+  );
+
   it.effect("installs and borrows one successful initial immutable generation", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -152,8 +192,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
           }) as CodexEndpointSupervisorDependencies["makeRouter"],
         });
 
-        yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
-        const state = yield* supervisor.getState;
+        const state = yield* startAndAwaitState(
+          supervisor,
+          { onGenerationInvalidated: noopInvalidation },
+          (state) => state._tag === "Ready",
+        );
         assert.equal(state._tag, "Ready");
         assert.equal(factoryCalls, 1);
         assert.equal(routerClient, connection.client);
@@ -240,7 +283,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
           sleep: gated.sleep,
         });
 
-        yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
+        yield* startAndAwaitState(
+          supervisor,
+          { onGenerationInvalidated: noopInvalidation },
+          (state) => state._tag === "Retrying",
+        );
         assert.equal((yield* supervisor.getState)._tag, "Retrying");
         assert.equal((yield* supervisor.borrow(THREAD_ID).pipe(Effect.result))._tag, "Failure");
         const connectionBorrow = yield* supervisor.borrowConnection.pipe(Effect.result);
@@ -279,8 +326,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
           sleep: () => Effect.sync(() => void (sleepCalls += 1)),
         });
 
-        yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
-        const state = yield* supervisor.getState;
+        const state = yield* startAndAwaitState(
+          supervisor,
+          { onGenerationInvalidated: noopInvalidation },
+          (state) => state._tag === "Blocked",
+        );
         assert.equal(state._tag, "Blocked");
         assert.equal(factoryCalls, 1);
         assert.equal(sleepCalls, 0);
@@ -331,13 +381,17 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
           retryDelay: constantRetryDelay(),
           sleep: gated.sleep,
         });
-        yield* supervisor.start({
-          onGenerationInvalidated: () =>
-            Effect.sync(() => void (invalidationCalls += 1)).pipe(
-              Effect.andThen(Deferred.succeed(invalidated, undefined)),
-              Effect.asVoid,
-            ),
-        });
+        yield* startAndAwaitState(
+          supervisor,
+          {
+            onGenerationInvalidated: () =>
+              Effect.sync(() => void (invalidationCalls += 1)).pipe(
+                Effect.andThen(Deferred.succeed(invalidated, undefined)),
+                Effect.asVoid,
+              ),
+          },
+          (state) => state._tag === "Ready",
+        );
 
         assert.isTrue(yield* first.terminate());
         assert.isFalse(yield* first.terminate("duplicate"));
@@ -367,7 +421,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
           retryDelay: constantRetryDelay(),
           sleep: gated.sleep,
         });
-        yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
+        yield* startAndAwaitState(
+          supervisor,
+          { onGenerationInvalidated: noopInvalidation },
+          (state) => state._tag === "Ready",
+        );
         const oldBorrow = yield* supervisor.borrow(THREAD_ID);
         const oldConnectionBorrow = yield* supervisor.borrowConnection;
         const oldRoutedBorrow = yield* supervisor.borrowRoutedConnection;
@@ -430,7 +488,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
           retryDelay: constantRetryDelay(),
           sleep: gated.sleep,
         });
-        yield* supervisor.start({ onGenerationInvalidated: () => Effect.die("callback-defect") });
+        yield* startAndAwaitState(
+          supervisor,
+          { onGenerationInvalidated: () => Effect.die("callback-defect") },
+          (state) => state._tag === "Ready",
+        );
         yield* first.terminate();
         const request = yield* Queue.take(gated.requests);
         const ready = yield* awaitState(supervisor, (state) => state._tag === "Ready").pipe(
@@ -467,7 +529,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
           retryDelay: constantRetryDelay(),
           sleep: gated.sleep,
         });
-        yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
+        yield* startAndAwaitState(
+          supervisor,
+          { onGenerationInvalidated: noopInvalidation },
+          (state) => state._tag === "Ready",
+        );
         const captured = yield* supervisor.borrow(THREAD_ID);
         yield* first.terminate();
         const request = yield* Queue.take(gated.requests);
@@ -505,7 +571,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
           retryDelay: constantRetryDelay(),
           sleep: gated.sleep,
         });
-        yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
+        yield* startAndAwaitState(
+          supervisor,
+          { onGenerationInvalidated: noopInvalidation },
+          (state) => state._tag === "Retrying",
+        );
         assert.equal(releases, 1);
 
         const firstRetry = yield* Queue.take(gated.requests);
@@ -547,7 +617,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
         },
         owner,
       );
-      yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
+      yield* startAndAwaitState(
+        supervisor,
+        { onGenerationInvalidated: noopInvalidation },
+        (state) => state._tag === "Retrying",
+      );
       yield* Queue.take(gated.requests);
       yield* Scope.close(owner, Exit.void);
       yield* Deferred.await(sleepInterrupted);
@@ -578,14 +652,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
         },
         owner,
       );
-      const startFiber = yield* supervisor
-        .start({ onGenerationInvalidated: noopInvalidation })
-        .pipe(Effect.forkChild);
+      yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
       yield* Deferred.await(acquisitionStarted);
       yield* Scope.close(owner, Exit.void);
       yield* Deferred.await(candidateClosed);
       yield* Deferred.succeed(releaseAcquisition, undefined);
-      yield* Fiber.join(startFiber);
       assert.equal((yield* supervisor.getState)._tag, "Closed");
       assert.equal((yield* supervisor.borrow(THREAD_ID).pipe(Effect.result))._tag, "Failure");
     }),
@@ -607,9 +678,11 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
         },
         owner,
       );
-      yield* supervisor.start({
-        onGenerationInvalidated: () => Effect.sync(() => void (invalidations += 1)),
-      });
+      yield* startAndAwaitState(
+        supervisor,
+        { onGenerationInvalidated: () => Effect.sync(() => void (invalidations += 1)) },
+        (state) => state._tag === "Ready",
+      );
       yield* Scope.close(owner, Exit.void);
       yield* Scope.close(owner, Exit.void);
       assert.equal(releases, 1);

@@ -523,9 +523,9 @@ export const makeCodexDriver = (
               ),
           });
           if (terminalCapability !== undefined) {
-            // Eagerly settle the terminal supervisor's first connection
-            // attempt before advertising the capability. Its retry lifecycle
-            // remains wholly separate from conversation/provider health.
+            // Schedule the isolated terminal connection without making
+            // provider hydration wait for its connector timeout. Its retry
+            // lifecycle remains separate from conversation/provider health.
             yield* terminalCapability.supervisor.start({
               // Terminal sessions are permanently bound to their captured
               // connection generation. Their invalidation is deliberately

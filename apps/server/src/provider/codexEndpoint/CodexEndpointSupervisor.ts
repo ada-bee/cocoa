@@ -1,7 +1,6 @@
 import { ProviderInstanceId, type CodexEndpointTransport, type ThreadId } from "@t3tools/contracts";
 
 import * as Cause from "effect/Cause";
-import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -193,7 +192,6 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
   };
   const parentScope = yield* Effect.scope;
   const changes = yield* PubSub.unbounded<CodexEndpointSupervisorState>();
-  const firstAttemptSettled = yield* Deferred.make<void>();
   const transitionSemaphore = yield* Semaphore.make(1);
   const stateRef = yield* SynchronizedRef.make<SupervisorInternalState>({
     publicState: { _tag: "Connecting", attempt: 1 },
@@ -337,8 +335,6 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
     );
   });
 
-  const settleFirstAttempt = Deferred.succeed(firstAttemptSettled, undefined).pipe(Effect.asVoid);
-
   const run = Effect.fn("CodexEndpointSupervisor.run")(function* <E>(
     startOptions: StartCodexEndpointSupervisorOptions<E>,
   ) {
@@ -401,7 +397,6 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
                   },
                 ],
           );
-          yield* settleFirstAttempt;
           return;
         }
 
@@ -422,7 +417,6 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
                 },
               ],
         );
-        yield* settleFirstAttempt;
         if (!(yield* waitBeforeRetry(error))) return;
         continue;
       }
@@ -444,7 +438,6 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
               },
             ],
       );
-      yield* settleFirstAttempt;
       if (installed === null) {
         yield* closeGeneration(generation);
         return;
@@ -498,9 +491,15 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
           : ([true, { ...state, started: true }] as const),
       );
       if (shouldStart) {
-        yield* run(startOptions).pipe(Effect.forkIn(parentScope));
+        // Start is a scheduling boundary, not a connectivity barrier. The
+        // reconnect loop is owned by this supervisor's scope and begins after
+        // the caller regains control, so provider hydration cannot inherit a
+        // connector's timeout or a never-settling initial attempt.
+        yield* run(startOptions).pipe(
+          Effect.forkIn(parentScope, { startImmediately: false }),
+          Effect.asVoid,
+        );
       }
-      yield* Deferred.await(firstAttemptSettled);
     },
   );
 
@@ -523,7 +522,6 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
       if (generation !== null) {
         yield* closeGeneration(generation);
       }
-      yield* settleFirstAttempt;
       yield* PubSub.shutdown(changes);
     }),
   );
