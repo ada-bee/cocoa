@@ -2,6 +2,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import { normalizeProjectPathForDispatch } from "@t3tools/shared/path";
 import {
   type ClientOrchestrationCommand,
   type IsoDateTime,
@@ -13,7 +14,6 @@ import {
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
 import { parseBase64DataUrl } from "../imageMime.ts";
-import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 
 export const canonicalizeClientCommandTimestamps = (
   command: ClientOrchestrationCommand,
@@ -47,45 +47,11 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
   Effect.gen(function* () {
     const receivedAt = DateTime.formatIso(yield* DateTime.now);
     const canonicalCommand = canonicalizeClientCommandTimestamps(command, receivedAt);
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const serverConfig = yield* ServerConfig;
-    const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
-
-    const normalizeProjectWorkspaceRoot = (workspaceRoot: string) =>
-      workspacePaths.normalizeWorkspaceRoot(workspaceRoot).pipe(
-        Effect.mapError(
-          (cause) =>
-            new OrchestrationDispatchCommandError({
-              message: cause.message,
-            }),
-        ),
-      );
-
-    const normalizeProjectWorkspaceRootForCreate = (
-      workspaceRoot: string,
-      createIfMissing: boolean | undefined,
-    ) =>
-      workspacePaths
-        .normalizeWorkspaceRoot(workspaceRoot, {
-          createIfMissing: createIfMissing === true,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestrationDispatchCommandError({
-                message: cause.message,
-              }),
-          ),
-        );
 
     if (canonicalCommand.type === "project.create") {
       return {
         ...canonicalCommand,
-        workspaceRoot: yield* normalizeProjectWorkspaceRootForCreate(
-          canonicalCommand.workspaceRoot,
-          canonicalCommand.createWorkspaceRootIfMissing,
-        ),
+        workspaceRoot: normalizeProjectPathForDispatch(canonicalCommand.workspaceRoot),
         createWorkspaceRootIfMissing: canonicalCommand.createWorkspaceRootIfMissing === true,
       } satisfies OrchestrationCommand;
     }
@@ -96,13 +62,17 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
     ) {
       return {
         ...canonicalCommand,
-        workspaceRoot: yield* normalizeProjectWorkspaceRoot(canonicalCommand.workspaceRoot),
+        workspaceRoot: normalizeProjectPathForDispatch(canonicalCommand.workspaceRoot),
       } satisfies OrchestrationCommand;
     }
 
     if (canonicalCommand.type !== "thread.turn.start") {
       return canonicalCommand as OrchestrationCommand;
     }
+
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const serverConfig = yield* ServerConfig;
 
     const normalizedAttachments = yield* Effect.forEach(
       canonicalCommand.message.attachments,

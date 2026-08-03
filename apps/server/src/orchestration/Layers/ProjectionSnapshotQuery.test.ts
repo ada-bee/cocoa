@@ -27,7 +27,6 @@ const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(val
 
 const projectionSnapshotLayer = it.layer(
   OrchestrationProjectionSnapshotQueryLive.pipe(
-    Layer.provideMerge(RepositoryIdentityResolver.layer),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(NodeServices.layer),
   ),
@@ -1848,7 +1847,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
 });
 
 it.effect(
-  "ProjectionSnapshotQuery dedupes repository identity resolution by workspace root and skips deleted projects for shell snapshots",
+  "ProjectionSnapshotQuery returns null repository identity without consulting the gateway resolver",
   () => {
     const resolveCalls: string[] = [];
     const layer = OrchestrationProjectionSnapshotQueryLive.pipe(
@@ -1857,15 +1856,7 @@ it.effect(
           resolve: (cwd: string) =>
             Effect.sync(() => {
               resolveCalls.push(cwd);
-              return {
-                canonicalKey: `github.com/acme${cwd}`,
-                locator: {
-                  source: "git-remote" as const,
-                  remoteName: "origin",
-                  remoteUrl: `https://github.com/acme${cwd}.git`,
-                },
-                rootPath: cwd,
-              };
+              throw new Error(`Gateway repository identity resolver invoked for ${cwd}`);
             }),
         }),
       ),
@@ -1880,6 +1871,7 @@ it.effect(
       yield* sql`DELETE FROM projection_threads`;
       yield* sql`DELETE FROM projection_turns`;
       yield* sql`DELETE FROM projection_state`;
+      const windowsWorkspaceRoot = String.raw`C:\Users\Ada\Cocoa`;
 
       yield* sql`
         INSERT INTO projection_projects (
@@ -1898,7 +1890,7 @@ it.effect(
             'project-1',
             'codex',
             'Shared Project 1',
-            '/tmp/shared-root',
+            '/srv/shared-root',
             '{"provider":"codex","model":"gpt-5-codex"}',
             '[]',
             '2026-04-04T00:00:00.000Z',
@@ -1909,7 +1901,7 @@ it.effect(
             'project-2',
             'codex_remote',
             'Shared Project 2',
-            '/tmp/shared-root',
+            '/srv/shared-root',
             '{"provider":"codex","model":"gpt-5-codex"}',
             '[]',
             '2026-04-04T00:00:02.000Z',
@@ -1918,44 +1910,61 @@ it.effect(
           ),
           (
             'project-3',
-            'codex',
-            'Deleted Project',
-            '/tmp/deleted-root',
+            'codex_windows',
+            'Windows Project',
+            ${windowsWorkspaceRoot},
             '{"provider":"codex","model":"gpt-5-codex"}',
             '[]',
             '2026-04-04T00:00:04.000Z',
             '2026-04-04T00:00:05.000Z',
-            '2026-04-04T00:00:06.000Z'
+            NULL
           )
       `;
 
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
-      assert.deepStrictEqual(resolveCalls.toSorted(), ["/tmp/shared-root"]);
-      assert.equal(shellSnapshot.projects.length, 2);
-      assert.equal(shellSnapshot.projects[0]?.repositoryIdentity?.rootPath, "/tmp/shared-root");
-      assert.equal(shellSnapshot.projects[1]?.repositoryIdentity?.rootPath, "/tmp/shared-root");
+      assert.equal(shellSnapshot.projects.length, 3);
+      assert.deepStrictEqual(
+        shellSnapshot.projects.map((project) => project.repositoryIdentity),
+        [null, null, null],
+      );
 
       const firstProject = yield* snapshotQuery.getActiveProjectByWorkspaceRoot({
         providerInstanceId: ProviderInstanceId.make("codex"),
-        workspaceRoot: "/tmp/shared-root",
+        workspaceRoot: "/srv/shared-root",
       });
       const secondProject = yield* snapshotQuery.getActiveProjectByWorkspaceRoot({
         providerInstanceId: ProviderInstanceId.make("codex_remote"),
-        workspaceRoot: "/tmp/shared-root",
+        workspaceRoot: "/srv/shared-root",
       });
       assert.equal(firstProject._tag, "Some");
       assert.equal(secondProject._tag, "Some");
       if (firstProject._tag === "Some" && secondProject._tag === "Some") {
         assert.equal(firstProject.value.id, asProjectId("project-1"));
         assert.equal(secondProject.value.id, asProjectId("project-2"));
+        assert.equal(firstProject.value.repositoryIdentity, null);
+        assert.equal(secondProject.value.repositoryIdentity, null);
       }
 
-      resolveCalls.length = 0;
-
       const fullSnapshot = yield* snapshotQuery.getSnapshot();
-      assert.deepStrictEqual(resolveCalls.toSorted(), ["/tmp/deleted-root", "/tmp/shared-root"]);
+      const commandReadModel = yield* snapshotQuery.getCommandReadModel();
+      const windowsProject = yield* snapshotQuery.getProjectShellById(asProjectId("project-3"));
+      yield* snapshotQuery.getArchivedShellSnapshot();
+
       assert.equal(fullSnapshot.projects.length, 3);
-      assert.equal(fullSnapshot.projects[2]?.repositoryIdentity?.rootPath, "/tmp/deleted-root");
+      assert.deepStrictEqual(
+        fullSnapshot.projects.map((project) => project.repositoryIdentity),
+        [null, null, null],
+      );
+      assert.deepStrictEqual(
+        commandReadModel.projects.map((project) => project.repositoryIdentity),
+        [null, null, null],
+      );
+      assert.equal(windowsProject._tag, "Some");
+      if (windowsProject._tag === "Some") {
+        assert.equal(windowsProject.value.workspaceRoot, windowsWorkspaceRoot);
+        assert.equal(windowsProject.value.repositoryIdentity, null);
+      }
+      assert.deepStrictEqual(resolveCalls, []);
     }).pipe(Effect.provide(layer));
   },
 );
