@@ -1612,6 +1612,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           reconciliation: {
             status: turn.status,
             completedAt: turn.completedAt,
+            assistantMessages: turn.assistantMessages,
             finalAssistantItemId: turn.finalAssistantItemId,
             finalAssistantText: turn.finalAssistantText,
             hasNonrecoverableActivityGap: turn.hasNonrecoverableActivityGap,

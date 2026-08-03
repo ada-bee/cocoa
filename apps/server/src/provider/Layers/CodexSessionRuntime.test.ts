@@ -44,10 +44,23 @@ it("normalizes authoritative Codex turn state and signals omitted nonrecoverable
 
   NodeAssert.equal(normalized.id, "turn-authoritative");
   NodeAssert.equal(normalized.status, "completed");
+  NodeAssert.deepStrictEqual(normalized.assistantMessages, [
+    { itemId: "assistant-commentary", text: "working", phase: "commentary" },
+    { itemId: "assistant-final", text: "done", phase: "final_answer" },
+  ]);
   NodeAssert.equal(normalized.finalAssistantItemId, "assistant-final");
   NodeAssert.equal(normalized.finalAssistantText, "done");
   NodeAssert.equal(normalized.hasNonrecoverableActivityGap, true);
   NodeAssert.equal(normalized.completedAt, "2026-01-01T00:00:00.000Z");
+
+  const fullWithTool = normalizeCodexThreadTurnSnapshot({
+    id: "turn-full-with-tool",
+    status: "completed",
+    completedAt: null,
+    itemsView: "full",
+    items: [{ id: "tool-full", type: "contextCompaction" }],
+  });
+  NodeAssert.equal(fullWithTool.hasNonrecoverableActivityGap, true);
 });
 
 describe("CodexSessionRuntimeIdentifierGenerationError", () => {

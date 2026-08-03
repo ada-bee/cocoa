@@ -74,6 +74,7 @@ import {
   CheckpointCoordinatorBlockedError,
   type CheckpointCoordinatorShape,
 } from "../Services/CheckpointCoordinator.ts";
+import { CheckpointRevertGate } from "../Services/CheckpointRevertGate.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
@@ -173,6 +174,8 @@ describe("ProviderCommandReactor", () => {
     readonly sendTurn?: ProviderServiceShape["sendTurn"];
     readonly turnStartBeforeReactor?: boolean;
     readonly preStartProviderInFlight?: boolean;
+    readonly readAuthoritativeConversation?: ProviderServiceShape["readAuthoritativeConversation"];
+    readonly revertBlocked?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -365,7 +368,7 @@ describe("ProviderCommandReactor", () => {
       },
       rollbackConversation: () => unsupported(),
       inspectConversation: () => unsupported(),
-      readAuthoritativeConversation: () => unsupported(),
+      readAuthoritativeConversation: input?.readAuthoritativeConversation ?? (() => unsupported()),
       rollbackConversationChecked: () => unsupported(),
       get streamEvents() {
         return Stream.fromPubSub(runtimeEventPubSub);
@@ -449,6 +452,15 @@ describe("ProviderCommandReactor", () => {
               input?.gateBaseline ??
               (() => Effect.succeed({ _tag: "NotApplicable", reason: "not_repository" })),
             recover: () => Effect.succeed([]),
+          }),
+        ),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(
+          CheckpointRevertGate,
+          CheckpointRevertGate.of({
+            assertThreadAvailable: () => Effect.void,
+            isThreadBlocked: () => Effect.succeed(input?.revertBlocked === true),
           }),
         ),
       ),
@@ -675,7 +687,7 @@ describe("ProviderCommandReactor", () => {
             instanceId: "codex",
             model: "gpt-5-codex",
           },
-          finalizedSequence: 0,
+          finalizedSequence: null,
         });
       }
     }
@@ -738,9 +750,28 @@ describe("ProviderCommandReactor", () => {
   });
 
   it("adopts only an exact authoritative provider turn during bounded startup recovery", async () => {
+    const readAuthoritativeConversation = vi.fn<
+      ProviderServiceShape["readAuthoritativeConversation"]
+    >((request) =>
+      Effect.succeed({
+        ...request,
+        turns: [
+          {
+            id: asTurnId("turn-recovered"),
+            status: "running",
+            completedAt: null,
+            assistantMessages: [],
+            finalAssistantItemId: null,
+            finalAssistantText: null,
+            hasNonrecoverableActivityGap: false,
+          },
+        ],
+      }),
+    );
     const harness = await createHarness({
       turnStartBeforeReactor: true,
       preStartProviderInFlight: true,
+      readAuthoritativeConversation,
       initialSessions: [
         {
           provider: ProviderDriverKind.make("codex"),
@@ -756,6 +787,9 @@ describe("ProviderCommandReactor", () => {
         },
       ],
     });
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
+    await harness.drain();
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
     await harness.drain();
     expect(harness.sendTurn).not.toHaveBeenCalled();
     if (harness.preStartTurnEventId === undefined) {
@@ -766,7 +800,13 @@ describe("ProviderCommandReactor", () => {
     if (dispatch._tag === "Some") {
       expect(dispatch.value.state).toBe("started");
       expect(dispatch.value.providerTurnId).toBe("turn-recovered");
+      expect(dispatch.value.finalizedSequence).toBeNull();
     }
+    expect(readAuthoritativeConversation).toHaveBeenCalledWith({
+      threadId: ThreadId.make("thread-1"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+    });
+    expect(readAuthoritativeConversation).toHaveBeenCalledTimes(2);
   });
 
   it("marks an unprovable in-flight startup dispatch indeterminate without replay", async () => {
@@ -774,7 +814,9 @@ describe("ProviderCommandReactor", () => {
       turnStartBeforeReactor: true,
       preStartProviderInFlight: true,
       initialSessions: [],
+      readAuthoritativeConversation: (request) => Effect.succeed({ ...request, turns: [] }),
     });
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
     await harness.drain();
     expect(harness.sendTurn).not.toHaveBeenCalled();
     if (harness.preStartTurnEventId === undefined) {
@@ -787,6 +829,220 @@ describe("ProviderCommandReactor", () => {
       expect(dispatch.value.error?.code).toBe("provider_recovery_unproven");
       expect(dispatch.value.finalizedSequence).not.toBeNull();
     }
+  });
+
+  it("refuses an authoritative snapshot with more than the exact next turn", async () => {
+    const runningTurn = (id: string) => ({
+      id: asTurnId(id),
+      status: "running" as const,
+      completedAt: null,
+      assistantMessages: [],
+      finalAssistantItemId: null,
+      finalAssistantText: null,
+      hasNonrecoverableActivityGap: false,
+    });
+    const harness = await createHarness({
+      turnStartBeforeReactor: true,
+      preStartProviderInFlight: true,
+      readAuthoritativeConversation: (request) =>
+        Effect.succeed({
+          ...request,
+          turns: [
+            {
+              ...runningTurn("turn-extra-1"),
+              status: "completed",
+              completedAt: "2026-01-01T00:00:00.000Z",
+            },
+            runningTurn("turn-extra-2"),
+          ],
+        }),
+    });
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
+    await harness.drain();
+
+    const dispatch = await harness.getTurnDispatch(harness.preStartTurnEventId!);
+    expect(dispatch._tag).toBe("Some");
+    if (dispatch._tag === "Some") {
+      expect(dispatch.value.state).toBe("indeterminate");
+      expect(dispatch.value.error?.code).toBe("provider_recovery_unproven");
+    }
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a started dispatch when the authoritative next-turn identity changes", async () => {
+    let providerTurnId = asTurnId("turn-original");
+    const harness = await createHarness({
+      turnStartBeforeReactor: true,
+      preStartProviderInFlight: true,
+      readAuthoritativeConversation: (request) =>
+        Effect.succeed({
+          ...request,
+          turns: [
+            {
+              id: providerTurnId,
+              status: "running",
+              completedAt: null,
+              assistantMessages: [],
+              finalAssistantItemId: null,
+              finalAssistantText: null,
+              hasNonrecoverableActivityGap: false,
+            },
+          ],
+        }),
+    });
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
+    await harness.drain();
+    providerTurnId = asTurnId("turn-mismatched");
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
+    await harness.drain();
+
+    const dispatch = await harness.getTurnDispatch(harness.preStartTurnEventId!);
+    expect(dispatch._tag).toBe("Some");
+    if (dispatch._tag === "Some") {
+      expect(dispatch.value.state).toBe("indeterminate");
+      expect(dispatch.value.error?.code).toBe("provider_recovery_unproven");
+    }
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("reconstructs missed final text and terminal turn exactly once from an offline snapshot", async () => {
+    const candidate = {
+      id: asTurnId("turn-offline-complete"),
+      status: "completed" as const,
+      completedAt: null,
+      assistantMessages: [
+        {
+          itemId: "assistant-offline-commentary",
+          text: "offline commentary",
+          phase: "commentary" as const,
+        },
+        {
+          itemId: "assistant-offline-final",
+          text: "partial and recovered",
+          phase: "final_answer" as const,
+        },
+      ],
+      finalAssistantItemId: "assistant-offline-final",
+      finalAssistantText: "partial and recovered",
+      hasNonrecoverableActivityGap: false,
+    };
+    const harness = await createHarness({
+      turnStartBeforeReactor: true,
+      preStartProviderInFlight: true,
+      readAuthoritativeConversation: (request) =>
+        Effect.succeed({ ...request, turns: [candidate] }),
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-offline-partial-session"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: ProviderDriverKind.make("codex"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          runtimeMode: "approval-required",
+          activeTurnId: candidate.id,
+          lastError: null,
+          updatedAt: "2026-01-01T00:01:00.000Z",
+        },
+        createdAt: "2026-01-01T00:01:00.000Z",
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-offline-partial-delta"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: asMessageId("assistant:assistant-offline-final"),
+        delta: "partial",
+        turnId: candidate.id,
+        createdAt: "2026-01-01T00:02:00.000Z",
+      }),
+    );
+
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
+    await harness.drain();
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(
+      thread?.messages.filter(
+        (message) => message.id === asMessageId("assistant:assistant-offline-final"),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        text: "partial and recovered",
+        streaming: false,
+        turnId: candidate.id,
+      }),
+    ]);
+    expect(
+      thread?.messages
+        .filter((message) => message.id.startsWith("assistant:assistant-offline-"))
+        .map((message) => ({ id: message.id, text: message.text, streaming: message.streaming })),
+    ).toEqual([
+      {
+        id: "assistant:assistant-offline-commentary",
+        text: "offline commentary",
+        streaming: false,
+      },
+      {
+        id: "assistant:assistant-offline-final",
+        text: "partial and recovered",
+        streaming: false,
+      },
+    ]);
+    expect(thread?.latestTurn).toMatchObject({
+      turnId: candidate.id,
+      state: "completed",
+      completedAt: "2026-01-01T00:00:00.000Z",
+    });
+    expect(
+      thread?.activities.filter((activity) => activity.kind === "provider.reconciliation.gap"),
+    ).toHaveLength(1);
+    const events = Array.from(
+      await Effect.runPromise(Stream.runCollect(harness.engine.readEvents(0, 100))),
+    );
+    expect(events.filter((event) => event.type === "thread.turn-completed")).toHaveLength(1);
+  });
+
+  it("fails an accepted turn before baseline/provider work when a revert race is active", async () => {
+    const harness = await createHarness({ revertBlocked: true });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-blocked-by-revert"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("message-turn-blocked-by-revert"),
+          role: "user",
+          text: "must not dispatch",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await harness.drain();
+    expect(harness.validateWorkspaceRoot).not.toHaveBeenCalled();
+    expect(harness.startSession).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(
+      thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toMatchObject({
+      payload: {
+        detail: "The provider turn was blocked because a checkpoint revert is active.",
+      },
+    });
   });
 
   it.each([

@@ -525,6 +525,13 @@ it.effect("captures, diffs, and finalizes a durable provider turn exactly once",
     );
     assert.strictEqual(row.state, "completed");
     assert.strictEqual(row.finalizedSequence, 100);
+    const dispatch = Option.getOrThrow(
+      yield* (yield* TurnDispatchJournalRepository).getStartedByProviderTurn({
+        threadId,
+        providerTurnId,
+      }),
+    );
+    assert.strictEqual(dispatch.finalizedSequence, completionEvent.sequence);
   }).pipe(Effect.provide(testLayer(state)));
 });
 

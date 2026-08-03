@@ -1025,10 +1025,22 @@ routing.layer("ProviderServiceLive routing", (it) => {
           turns: [
             {
               id: asTurnId("turn-authoritative"),
-              items: [{ providerNative: "not exposed" }],
+              items: [{ providerNative: "not exposed" }, { providerNative: "also hidden" }],
               reconciliation: {
                 status: "completed",
-                completedAt: "2026-08-04T12:00:00.000Z",
+                completedAt: null,
+                assistantMessages: [
+                  {
+                    itemId: "assistant-commentary",
+                    text: "Working through it",
+                    phase: "commentary",
+                  },
+                  {
+                    itemId: "assistant-authoritative",
+                    text: "Recovered final answer",
+                    phase: "final_answer",
+                  },
+                ],
                 finalAssistantItemId: "assistant-authoritative",
                 finalAssistantText: "Recovered final answer",
                 hasNonrecoverableActivityGap: true,
@@ -1050,7 +1062,19 @@ routing.layer("ProviderServiceLive routing", (it) => {
             {
               id: asTurnId("turn-authoritative"),
               status: "completed",
-              completedAt: "2026-08-04T12:00:00.000Z",
+              completedAt: null,
+              assistantMessages: [
+                {
+                  itemId: "assistant-commentary",
+                  text: "Working through it",
+                  phase: "commentary",
+                },
+                {
+                  itemId: "assistant-authoritative",
+                  text: "Recovered final answer",
+                  phase: "final_answer",
+                },
+              ],
               finalAssistantItemId: "assistant-authoritative",
               finalAssistantText: "Recovered final answer",
               hasNonrecoverableActivityGap: true,

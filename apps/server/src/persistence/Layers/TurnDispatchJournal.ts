@@ -264,8 +264,6 @@ const make = Effect.gen(function* () {
       UPDATE turn_dispatch_journal
       SET state = 'started', provider_turn_id = ${input.providerTurnId},
           error_json = NULL,
-          -- Sequence zero is reserved for terminal states requiring no domain dispatch.
-          finalized_sequence = 0,
           updated_at = ${input.updatedAt}
       WHERE dispatch_id = ${input.dispatchId}
         AND state IN ('provider_in_flight', 'indeterminate')
@@ -293,7 +291,9 @@ const make = Effect.gen(function* () {
     execute: (input) => sql`
       UPDATE turn_dispatch_journal
       SET state = 'indeterminate', error_json = ${input.error}, updated_at = ${input.updatedAt}
-      WHERE dispatch_id = ${input.dispatchId} AND state = 'provider_in_flight'
+      WHERE dispatch_id = ${input.dispatchId}
+        AND state IN ('provider_in_flight', 'started')
+        AND finalized_sequence IS NULL
     `,
   });
 

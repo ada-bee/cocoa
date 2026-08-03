@@ -405,7 +405,7 @@ export interface TurnDispatchJournalRepositoryShape {
   readonly markProviderInFlight: (
     input: MarkTurnDispatchProviderInFlightInput,
   ) => Effect.Effect<void, TurnDispatchJournalRepositoryError>;
-  /** Started is terminal and atomically self-finalizes with reserved sequence zero. */
+  /** Started remains recoverable until an exact durable completion sequence is bound. */
   readonly markStarted: (
     input: MarkTurnDispatchStartedInput,
   ) => Effect.Effect<void, TurnDispatchJournalRepositoryError>;

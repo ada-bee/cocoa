@@ -163,7 +163,7 @@ repositoryLayer("TurnDispatchJournalRepository", (it) => {
     }),
   );
 
-  it.effect("enforces the no-replay barrier and self-finalizes started rows", () =>
+  it.effect("keeps started rows recoverable until their exact completion is finalized", () =>
     Effect.gen(function* () {
       const repository = yield* TurnDispatchJournalRepository;
       const startedProvider = ProviderInstanceId.make("codex-started-test");
@@ -186,7 +186,7 @@ repositoryLayer("TurnDispatchJournalRepository", (it) => {
         yield* repository.getByDispatchId({ dispatchId: input.dispatchId }),
       );
       assert.equal(started.state, "started");
-      assert.equal(started.finalizedSequence, 0);
+      assert.equal(started.finalizedSequence, null);
       assert.equal(
         Option.getOrThrow(
           yield* repository.getStartedByProviderTurn({
@@ -204,6 +204,18 @@ repositoryLayer("TurnDispatchJournalRepository", (it) => {
           }),
         ),
       );
+      assert.deepStrictEqual(
+        (yield* repository.listRecovery({ providerInstanceId: startedProvider, limit: 100 })).map(
+          (entry) => entry.dispatchId,
+        ),
+        [input.dispatchId],
+      );
+
+      yield* repository.markFinalized({
+        dispatchId: input.dispatchId,
+        sequence: 42,
+        updatedAt: later,
+      });
       assert.deepStrictEqual(
         yield* repository.listRecovery({ providerInstanceId: startedProvider, limit: 100 }),
         [],

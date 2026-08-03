@@ -605,11 +605,36 @@ export const makePostTurnCheckpointReactor = Effect.gen(function* () {
     } satisfies PostTurnContext;
   });
 
+  const finalizeBoundTurnDispatch = Effect.fn(
+    "PostTurnCheckpointReactor.finalizeBoundTurnDispatch",
+  )(function* (intent: PostTurnCheckpointIntent) {
+    if (intent.state !== "bound") return yield* block("intent_conflict");
+    if (intent.providerTurnId === null) return yield* block("intent_conflict");
+    const dispatch = yield* turnDispatches
+      .getStartedByProviderTurn({
+        threadId: intent.threadId,
+        providerTurnId: intent.providerTurnId,
+      })
+      .pipe(
+        Effect.mapError(() => block("persistence_failure")),
+        Effect.map(Option.getOrUndefined),
+      );
+    if (dispatch === undefined) return yield* block("thread_not_found");
+    yield* turnDispatches
+      .markFinalized({
+        dispatchId: dispatch.dispatchId,
+        sequence: intent.sourceSequence,
+        updatedAt: intent.completedAt,
+      })
+      .pipe(Effect.mapError(() => block("persistence_failure")));
+  });
+
   const loadContext = Effect.fn("PostTurnCheckpointReactor.loadContext")(function* (
     projected: PostTurnCheckpointIntent,
   ) {
     if (projected.state === "uncorrelatable") return Option.none<PostTurnContext>();
     if (projected.state === "bound") {
+      yield* finalizeBoundTurnDispatch(projected);
       return Option.some(yield* materializeContext(projected));
     }
     if (projected.providerTurnId === null) return yield* block("intent_conflict");
@@ -650,6 +675,7 @@ export const makePostTurnCheckpointReactor = Effect.gen(function* () {
       }),
       identity,
     );
+    yield* finalizeBoundTurnDispatch(bound);
     return Option.some(yield* materializeContext(bound));
   });
 

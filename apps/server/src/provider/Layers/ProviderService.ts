@@ -1623,21 +1623,39 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             (turn, index) => {
               const reconciliation = turn.reconciliation;
               itemCount += turn.items.length;
-              assistantBytes +=
-                reconciliation?.finalAssistantText === null ||
-                reconciliation?.finalAssistantText === undefined
-                  ? 0
-                  : Buffer.byteLength(reconciliation.finalAssistantText, "utf8");
+              const assistantMessages = reconciliation?.assistantMessages ?? [];
+              const assistantItemIds = new Set<string>();
+              for (const message of assistantMessages) {
+                assistantBytes += Buffer.byteLength(message.text, "utf8");
+                assistantItemIds.add(message.itemId);
+              }
+              const expectedFinal =
+                assistantMessages.findLast((message) => message.phase === "final_answer") ??
+                assistantMessages.at(-1);
               if (
                 reconciliation === undefined ||
                 seen.has(turn.id) ||
                 itemCount > MAX_AUTHORITATIVE_ITEMS ||
                 assistantBytes > MAX_AUTHORITATIVE_TOTAL_ASSISTANT_BYTES ||
-                (reconciliation.status === "running") !== (reconciliation.completedAt === null) ||
+                (reconciliation.status === "running" && reconciliation.completedAt !== null) ||
                 (reconciliation.completedAt !== null &&
                   !Number.isFinite(Date.parse(reconciliation.completedAt))) ||
+                assistantMessages.length > turn.items.length ||
+                assistantItemIds.size !== assistantMessages.length ||
+                assistantMessages.some(
+                  (message) =>
+                    message.itemId.length < 1 ||
+                    message.itemId.length > 256 ||
+                    (message.phase !== null &&
+                      message.phase !== "commentary" &&
+                      message.phase !== "final_answer") ||
+                    Buffer.byteLength(message.text, "utf8") >
+                      MAX_AUTHORITATIVE_FINAL_ASSISTANT_BYTES,
+                ) ||
                 (reconciliation.finalAssistantText === null) !==
                   (reconciliation.finalAssistantItemId === null) ||
+                (expectedFinal?.itemId ?? null) !== reconciliation.finalAssistantItemId ||
+                (expectedFinal?.text ?? null) !== reconciliation.finalAssistantText ||
                 (reconciliation.finalAssistantItemId !== null &&
                   (reconciliation.finalAssistantItemId.length < 1 ||
                     reconciliation.finalAssistantItemId.length > 256)) ||

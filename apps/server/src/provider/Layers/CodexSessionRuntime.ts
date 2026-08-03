@@ -151,6 +151,11 @@ export interface CodexThreadTurnSnapshot {
   readonly items: ReadonlyArray<CodexThreadItem>;
   readonly status: "running" | "completed" | "failed" | "interrupted";
   readonly completedAt: string | null;
+  readonly assistantMessages: ReadonlyArray<{
+    readonly itemId: string;
+    readonly text: string;
+    readonly phase: "commentary" | "final_answer" | null;
+  }>;
   readonly finalAssistantItemId: string | null;
   readonly finalAssistantText: string | null;
   readonly hasNonrecoverableActivityGap: boolean;
@@ -193,7 +198,8 @@ export type CodexSessionRuntimeError =
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
-  | CodexSessionRuntimeThreadIdMissingError;
+  | CodexSessionRuntimeThreadIdMissingError
+  | CodexSessionRuntimeMultipleRunningTurnsError;
 
 export class CodexSessionRuntimeEndpointInstanceMismatchError extends Schema.TaggedErrorClass<CodexSessionRuntimeEndpointInstanceMismatchError>()(
   "CodexSessionRuntimeEndpointInstanceMismatchError",
@@ -272,6 +278,18 @@ export class CodexSessionRuntimeThreadIdMissingError extends Schema.TaggedErrorC
 ) {
   override get message(): string {
     return `Codex session is missing a provider thread id for ${this.threadId}`;
+  }
+}
+
+export class CodexSessionRuntimeMultipleRunningTurnsError extends Schema.TaggedErrorClass<CodexSessionRuntimeMultipleRunningTurnsError>()(
+  "CodexSessionRuntimeMultipleRunningTurnsError",
+  {
+    threadId: ThreadId,
+    count: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `Codex thread '${this.threadId}' returned ${this.count} running turns.`;
   }
 }
 
@@ -801,9 +819,16 @@ export function normalizeCodexThreadTurnSnapshot(
     items: turn.items,
     status: normalizeCodexTurnStatus(turn.status),
     completedAt: epochSecondsToIso(turn.completedAt),
+    assistantMessages: assistantItems.map((item) => ({
+      itemId: item.id,
+      text: item.text,
+      phase: item.phase ?? null,
+    })),
     finalAssistantItemId: finalAssistant?.id ?? null,
     finalAssistantText: finalAssistant?.text ?? null,
-    hasNonrecoverableActivityGap: turn.itemsView !== "full",
+    hasNonrecoverableActivityGap:
+      turn.itemsView !== "full" ||
+      turn.items.some((item) => item.type !== "userMessage" && item.type !== "agentMessage"),
   };
 }
 
@@ -1525,7 +1550,20 @@ const makeCodexSessionRuntimeCore = (
           threadId: providerThreadId,
           includeTurns: true,
         });
-        return parseThreadSnapshot(response);
+        const snapshot = parseThreadSnapshot(response);
+        const runningTurns = snapshot.turns.filter((turn) => turn.status === "running");
+        if (runningTurns.length > 1) {
+          return yield* new CodexSessionRuntimeMultipleRunningTurnsError({
+            threadId: options.threadId,
+            count: runningTurns.length,
+          });
+        }
+        yield* updateSession(sessionRef, {
+          status: runningTurns.length === 1 ? "running" : "ready",
+          activeTurnId: runningTurns[0]?.id,
+          lastError: undefined,
+        });
+        return snapshot;
       }),
       rollbackThread: (numTurns) =>
         Effect.gen(function* () {

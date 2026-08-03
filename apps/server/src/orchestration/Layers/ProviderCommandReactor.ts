@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  MessageId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -11,7 +12,7 @@ import {
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
-  type TurnId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
@@ -51,6 +52,8 @@ import {
   CheckpointCoordinator,
   CheckpointCoordinatorBlockedError,
 } from "../Services/CheckpointCoordinator.ts";
+import { CheckpointRevertGate } from "../Services/CheckpointRevertGate.ts";
+
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
 const isCheckpointCoordinatorBlockedError = Schema.is(CheckpointCoordinatorBlockedError);
@@ -274,6 +277,7 @@ const make = Effect.gen(function* () {
   const serverSettingsService = yield* ServerSettingsService;
   const projectWorkspace = yield* ProjectWorkspace;
   const checkpointCoordinator = yield* CheckpointCoordinator;
+  const checkpointRevertGate = yield* CheckpointRevertGate;
   const turnDispatchJournal = yield* TurnDispatchJournalRepository;
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
@@ -287,7 +291,8 @@ const make = Effect.gen(function* () {
       | "provider.turn.interrupt.failed"
       | "provider.approval.respond.failed"
       | "provider.user-input.respond.failed"
-      | "provider.session.stop.failed";
+      | "provider.session.stop.failed"
+      | "provider.turn.reconciliation.failed";
     readonly summary: string;
     readonly detail: string;
     readonly turnId: TurnId | null;
@@ -1033,7 +1038,7 @@ const make = Effect.gen(function* () {
       const current = Option.getOrUndefined(
         yield* turnDispatchJournal.getByDispatchId({ dispatchId: input.entry.dispatchId }),
       );
-      if (current === undefined || current.state === "started") return;
+      if (current === undefined) return;
       if (current.state !== "failed" && current.state !== "indeterminate") {
         if (input.state === "indeterminate") {
           yield* turnDispatchJournal.markIndeterminate({
@@ -1058,32 +1063,211 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const reconcileProviderInFlight = Effect.fn("reconcileProviderInFlight")(function* (
+  const appendReconciliationGap = Effect.fn("appendReconciliationGap")(function* (input: {
+    readonly entry: TurnDispatchJournalEntry;
+    readonly turnId: TurnId;
+    readonly createdAt: string;
+  }) {
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(`server:turn-reconciliation-gap:${input.entry.dispatchId}`),
+      threadId: input.entry.threadId,
+      activity: {
+        id: EventId.make(`turn-reconciliation-gap:${input.entry.dispatchId}`),
+        tone: "info",
+        kind: "provider.reconciliation.gap",
+        summary: "Some provider activity could not be reconstructed",
+        payload: {
+          detail:
+            "The authoritative provider snapshot omitted activity details that cannot be reconstructed.",
+        },
+        turnId: input.turnId,
+        createdAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+
+  const reconcileTerminalTurn = Effect.fn("reconcileTerminalTurn")(function* (input: {
+    readonly entry: TurnDispatchJournalEntry;
+    readonly candidate: {
+      readonly id: TurnId;
+      readonly status: "completed" | "failed" | "interrupted";
+      readonly completedAt: string;
+      readonly assistantMessages: ReadonlyArray<{
+        readonly itemId: string;
+        readonly text: string;
+        readonly phase: "commentary" | "final_answer" | null;
+      }>;
+      readonly finalAssistantItemId: string | null;
+      readonly finalAssistantText: string | null;
+      readonly hasNonrecoverableActivityGap: boolean;
+    };
+  }) {
+    const { entry, candidate } = input;
+    let thread = yield* resolveThread(entry.threadId);
+    if (thread === undefined) {
+      return yield* recordDurableTurnDispatchFailure({
+        entry,
+        state: "indeterminate",
+        error: { code: "provider_recovery_thread_missing", summary: "Recovery thread missing" },
+        detail: "The provider turn could not be reconciled with its durable thread.",
+        updatedAt: candidate.completedAt,
+      });
+    }
+    const instance = yield* providerService.getInstanceInfo(entry.providerInstanceId);
+    if (thread.latestTurn?.turnId !== candidate.id) {
+      yield* setThreadSession({
+        threadId: entry.threadId,
+        commandId: CommandId.make(`server:turn-reconciliation-start:${entry.dispatchId}`),
+        session: {
+          threadId: entry.threadId,
+          status: "running",
+          providerName: instance.driverKind,
+          providerInstanceId: entry.providerInstanceId,
+          runtimeMode: entry.runtimeMode,
+          activeTurnId: candidate.id,
+          lastError: null,
+          updatedAt: entry.createdAt,
+        },
+        createdAt: entry.createdAt,
+      });
+      thread = yield* resolveThread(entry.threadId);
+    }
+
+    for (const [index, assistantMessage] of candidate.assistantMessages.entries()) {
+      const messageId = MessageId.make(`assistant:${assistantMessage.itemId}`);
+      const existing = thread?.messages.find((message) => message.id === messageId);
+      if (
+        existing !== undefined &&
+        (existing.role !== "assistant" || !assistantMessage.text.startsWith(existing.text))
+      ) {
+        return yield* recordDurableTurnDispatchFailure({
+          entry,
+          state: "indeterminate",
+          error: { code: "provider_recovery_message_mismatch", summary: "Message mismatch" },
+          detail: "The authoritative provider response conflicted with durable message state.",
+          updatedAt: candidate.completedAt,
+        });
+      }
+      const missingText = assistantMessage.text.slice(existing?.text.length ?? 0);
+      if (missingText.length > 0) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.message.assistant.delta",
+          commandId: CommandId.make(
+            `server:turn-reconciliation-delta:${entry.dispatchId}:${index}`,
+          ),
+          threadId: entry.threadId,
+          messageId,
+          delta: missingText,
+          turnId: candidate.id,
+          createdAt: candidate.completedAt,
+        });
+      }
+      yield* orchestrationEngine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.make(
+          `server:turn-reconciliation-message:${entry.dispatchId}:${index}`,
+        ),
+        threadId: entry.threadId,
+        messageId,
+        turnId: candidate.id,
+        createdAt: candidate.completedAt,
+      });
+    }
+
+    if (candidate.hasNonrecoverableActivityGap) {
+      yield* appendReconciliationGap({
+        entry,
+        turnId: candidate.id,
+        createdAt: candidate.completedAt,
+      });
+    }
+
+    yield* orchestrationEngine.dispatch({
+      type: "thread.turn.complete",
+      commandId: CommandId.make(`server:turn-reconciliation-complete:${entry.dispatchId}`),
+      threadId: entry.threadId,
+      turnId: candidate.id,
+      providerTurnId: candidate.id,
+      outcome: candidate.status,
+      completedAt: candidate.completedAt,
+    });
+    yield* setThreadSession({
+      threadId: entry.threadId,
+      commandId: CommandId.make(`server:turn-reconciliation-session:${entry.dispatchId}`),
+      session: {
+        threadId: entry.threadId,
+        status:
+          candidate.status === "completed"
+            ? "ready"
+            : candidate.status === "interrupted"
+              ? "interrupted"
+              : "error",
+        providerName: instance.driverKind,
+        providerInstanceId: entry.providerInstanceId,
+        runtimeMode: entry.runtimeMode,
+        activeTurnId: null,
+        lastError: candidate.status === "failed" ? "The provider turn failed." : null,
+        updatedAt: candidate.completedAt,
+      },
+      createdAt: candidate.completedAt,
+    });
+  });
+
+  const reconcileAuthoritativeTurn = Effect.fn("reconcileAuthoritativeTurn")(function* (
     entry: TurnDispatchJournalEntry,
   ) {
-    const candidates = (yield* providerService.listSessions()).filter(
-      (session) => session.threadId === entry.threadId,
+    const inspected = yield* Effect.result(
+      providerService.readAuthoritativeConversation({
+        threadId: entry.threadId,
+        providerInstanceId: entry.providerInstanceId,
+      }),
     );
-    const candidate = candidates.length === 1 ? candidates[0] : undefined;
-    if (
+    const candidate = Result.isSuccess(inspected)
+      ? inspected.success.turns[entry.checkpointTurnCount]
+      : undefined;
+    const exactCandidate =
+      Result.isSuccess(inspected) &&
+      inspected.success.providerInstanceId === entry.providerInstanceId &&
+      inspected.success.threadId === entry.threadId &&
+      inspected.success.turns.length === entry.checkpointTurnCount + 1 &&
       candidate !== undefined &&
-      candidate.providerInstanceId === entry.providerInstanceId &&
-      candidate.status === "running" &&
-      candidate.activeTurnId !== undefined
-    ) {
-      yield* turnDispatchJournal.markStarted({
-        dispatchId: entry.dispatchId,
-        providerTurnId: candidate.activeTurnId,
+      (entry.state !== "started" || candidate.id === entry.providerTurnId);
+    if (!exactCandidate || candidate === undefined) {
+      yield* recordDurableTurnDispatchFailure({
+        entry,
+        state: "indeterminate",
+        error: { code: "provider_recovery_unproven", summary: "Provider turn identity unproven" },
+        detail: "The provider turn outcome could not be proven from the authoritative snapshot.",
         updatedAt: entry.updatedAt,
       });
       return;
     }
-    yield* recordDurableTurnDispatchFailure({
+    if (entry.state === "provider_in_flight") {
+      yield* turnDispatchJournal.markStarted({
+        dispatchId: entry.dispatchId,
+        providerTurnId: candidate.id,
+        updatedAt: entry.updatedAt,
+      });
+      entry = Option.getOrThrow(
+        yield* turnDispatchJournal.getByDispatchId({ dispatchId: entry.dispatchId }),
+      );
+    }
+    if (candidate.status === "running") {
+      return;
+    }
+    const terminalStatus = candidate.status;
+    const completedAt = candidate.completedAt ?? entry.updatedAt;
+    yield* reconcileTerminalTurn({
       entry,
-      state: "indeterminate",
-      error: { code: "provider_recovery_unproven", summary: "Provider turn identity unproven" },
-      detail: "The provider turn outcome could not be proven after recovery.",
-      updatedAt: entry.updatedAt,
+      candidate: {
+        ...candidate,
+        status: terminalStatus,
+        completedAt,
+        hasNonrecoverableActivityGap:
+          candidate.hasNonrecoverableActivityGap || candidate.completedAt === null,
+      },
     });
   });
 
@@ -1095,12 +1279,26 @@ const make = Effect.gen(function* () {
     readonly entry: TurnDispatchJournalEntry;
     /** Raw title input is intentionally available only on the hot path. */
     readonly event?: TurnStartRequestedEvent;
+    readonly providerReady?: boolean;
   }
 
   const processTurnDispatch = Effect.fn("processTurnDispatch")(function* (work: TurnDispatchWork) {
     let entry = work.entry;
 
-    if (entry.state === "started") return;
+    if (work.event === undefined && work.providerReady !== true) {
+      if (entry.state === "failed" || entry.state === "indeterminate") {
+        yield* finalizeDurableTurnDispatchFailure(
+          entry,
+          entry.error?.summary ?? "The provider turn did not start.",
+        );
+      }
+      return;
+    }
+
+    if (entry.state === "started") {
+      if (work.event === undefined) yield* reconcileAuthoritativeTurn(entry);
+      return;
+    }
     if (entry.state === "failed" || entry.state === "indeterminate") {
       yield* finalizeDurableTurnDispatchFailure(
         entry,
@@ -1109,7 +1307,17 @@ const make = Effect.gen(function* () {
       return;
     }
     if (entry.state === "provider_in_flight") {
-      yield* reconcileProviderInFlight(entry);
+      if (work.event === undefined) yield* reconcileAuthoritativeTurn(entry);
+      return;
+    }
+    if (yield* checkpointRevertGate.isThreadBlocked(entry.threadId)) {
+      yield* recordDurableTurnDispatchFailure({
+        entry,
+        state: "failed",
+        error: { code: "checkpoint_revert_active", summary: "Checkpoint revert active" },
+        detail: "The provider turn was blocked because a checkpoint revert is active.",
+        updatedAt: entry.createdAt,
+      });
       return;
     }
     if (entry.sourceCommandId === null) {
@@ -1546,9 +1754,15 @@ const make = Effect.gen(function* () {
         })
         .pipe(Effect.orDie);
       recoveryCount += rows.length;
-      yield* Effect.forEach(rows, (entry) => turnDispatchWorker.enqueue({ entry }), {
-        discard: true,
-      });
+      yield* Effect.forEach(
+        rows,
+        (entry) =>
+          turnDispatchWorker.enqueue({
+            entry,
+            providerReady: providerInstanceId !== undefined,
+          }),
+        { discard: true },
+      );
       const last = rows.at(-1);
       if (last === undefined || rows.length < 500) break;
       recoveryCursor = { createdAt: last.createdAt, dispatchId: last.dispatchId };

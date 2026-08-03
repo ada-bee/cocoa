@@ -52,6 +52,11 @@ export interface ProviderAuthoritativeTurnSnapshot {
   readonly id: TurnId;
   readonly status: "running" | "completed" | "failed" | "interrupted";
   readonly completedAt: string | null;
+  readonly assistantMessages: ReadonlyArray<{
+    readonly itemId: string;
+    readonly text: string;
+    readonly phase: "commentary" | "final_answer" | null;
+  }>;
   readonly finalAssistantItemId: string | null;
   readonly finalAssistantText: string | null;
   readonly hasNonrecoverableActivityGap: boolean;

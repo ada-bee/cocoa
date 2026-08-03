@@ -1,4 +1,4 @@
-import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -66,6 +66,7 @@ function makeEndpointHarness() {
     | ((method: string, params: unknown) => Effect.Effect<void, CodexErrors.CodexAppServerError>)
     | undefined;
   let failResume = false;
+  let readTurns: ReadonlyArray<unknown> = [];
 
   const emitUnknownNotification = (method: string, params: unknown) =>
     Effect.forEach(unknownNotificationHandlers, (handler) => handler(method, params), {
@@ -101,7 +102,7 @@ function makeEndpointHarness() {
             id: input.threadId,
             createdAt: "2026-08-03T00:00:00.000Z",
             source: { session: "cli" },
-            turns: [],
+            turns: readTurns,
             status: { state: "idle", activeFlags: [] },
           },
         } as never;
@@ -149,6 +150,9 @@ function makeEndpointHarness() {
     },
     failResume: () => {
       failResume = true;
+    },
+    setReadTurns: (turns: ReadonlyArray<unknown>) => {
+      readTurns = turns;
     },
   };
 }
@@ -268,6 +272,54 @@ it.effect("binds a resume cursor before issuing thread/resume", () =>
     assert.deepEqual(
       harness.requests.map(({ method }) => method),
       ["thread/resume"],
+    );
+  }),
+);
+
+it.effect("rehydrates the active native turn on each fresh endpoint reconnect", () =>
+  Effect.gen(function* () {
+    const harness = makeEndpointHarness();
+    harness.setReadTurns([
+      {
+        id: "native-running-turn",
+        status: "inProgress",
+        completedAt: null,
+        itemsView: "full",
+        items: [],
+      },
+    ]);
+    const router = yield* makeCodexEndpointRouter(harness.client as CodexEndpointRouterClient);
+    const connection = CodexEndpointConnection.of({
+      identity: { providerInstanceId: ProviderInstanceId.make("codex-remote") },
+      client: harness.client,
+      compatibility: {
+        userAgent: "codex_cli_rs/0.146.0",
+        serverVersion: "0.146.0",
+        codexHome: "/remote/.codex",
+        platformFamily: "unix",
+        platformOs: "linux",
+      },
+      awaitTermination: Effect.never,
+    });
+
+    for (const suffix of ["first", "second"]) {
+      const sessionScope = yield* Scope.make("sequential");
+      const runtime = yield* makeRuntimeInScope(
+        connection,
+        router,
+        runtimeOptions(`cocoa-reconnect-${suffix}`, "/workspace/reconnect", "native-reconnect"),
+        sessionScope,
+      );
+      yield* runtime.start();
+      yield* runtime.readThread;
+      const session = yield* runtime.getSession;
+      assert.equal(session.status, "running");
+      assert.equal(session.activeTurnId, TurnId.make("native-running-turn"));
+      yield* runtime.close;
+    }
+    assert.deepEqual(
+      harness.requests.map(({ method }) => method),
+      ["thread/resume", "thread/read", "thread/resume", "thread/read"],
     );
   }),
 );
