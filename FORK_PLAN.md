@@ -243,6 +243,16 @@ bounded reads on the host; if it is unavailable, report the workspace operation 
 unsupported. Do not add a gateway-to-host file-sharing protocol, mount the remote
 workspace into the Pi container, or fall back to the gateway filesystem.
 
+The initial Unix-host bridge may invoke an explicitly configured absolute Python
+3 interpreter through the endpoint's bounded, read-only `command/exec`. The
+embedded helper must use descriptor-relative traversal, reject symlink traversal,
+and bound its own result before writing stdout. This is a capability-probed
+bootstrap, not an implicit host dependency. The durable Cocoa-owned fallback is a
+small administrator-installed, Nix-built workspace helper with the same versioned
+protocol; Cocoa never uploads, updates, discovers, or supervises that binary.
+Prefer a native rooted and bounded app-server capability when Codex exposes one,
+without changing the provider-normal or client contracts.
+
 Client-facing workspace operations take a `ProjectId` plus a relative path, not
 an arbitrary host path. The gateway resolves the project to its provider
 instance, and the provider workspace adapter performs canonicalization and
@@ -393,6 +403,10 @@ two fake endpoints prove correct routing for the same workspace path.
 - Capability-gate a provider-host root-relative workspace operation. It must
   confine the operation on the provider host and bound file and directory results
   before they cross the shared endpoint connection.
+- Define one versioned validate/list/stat/read helper protocol shared by the
+  capability-probed Python bootstrap, the packaged native helper, and a future
+  native Codex adapter. Provider configuration selects an absolute helper path;
+  absence or failed probing means workspace access is unsupported.
 - Treat the 0.146.0 absolute-path filesystem methods as version-sensitive
   interoperability primitives, not proof of containment. Never call its legacy
   unbounded `fs/readFile` for an arbitrary project path.
