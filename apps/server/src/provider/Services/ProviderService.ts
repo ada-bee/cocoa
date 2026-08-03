@@ -45,6 +45,17 @@ export interface ProviderServiceShape {
   ) => Effect.Effect<ProviderSession, ProviderServiceError>;
 
   /**
+   * Recover a persisted resumable session for one configured provider instance.
+   *
+   * This adopts an already-active matching session or resumes from persisted
+   * provider state. It never sends or replays user input.
+   */
+  readonly recoverSession: (input: {
+    readonly threadId: ThreadId;
+    readonly providerInstanceId: ProviderInstanceId;
+  }) => Effect.Effect<ProviderSession, ProviderServiceError>;
+
+  /**
    * Send a provider turn.
    */
   readonly sendTurn: (

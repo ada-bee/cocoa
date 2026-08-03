@@ -23,6 +23,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { it, assert, vi } from "@effect/vitest";
 
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -94,7 +95,9 @@ function makeFakeCodexAdapter(
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
 
-  const startSession = vi.fn((input: ProviderSessionStartInput) =>
+  const startSessionImplementation = (
+    input: ProviderSessionStartInput,
+  ): Effect.Effect<ProviderSession, ProviderAdapterError> =>
     Effect.sync(() => {
       onStartSession?.(input);
       const now = "2026-01-01T00:00:00.000Z";
@@ -115,8 +118,8 @@ function makeFakeCodexAdapter(
       };
       sessions.set(session.threadId, session);
       return session;
-    }),
-  );
+    });
+  const startSession = vi.fn(startSessionImplementation);
 
   const sendTurn = vi.fn(
     (
@@ -246,6 +249,7 @@ function makeFakeCodexAdapter(
     adapter,
     emit,
     updateSession,
+    startSessionImplementation,
     startSession,
     sendTurn,
     interruptTurn,
@@ -2031,6 +2035,226 @@ validation.layer("ProviderServiceLive validation", (it) => {
       if (Option.isSome(runtime)) {
         assert.equal(runtime.value.threadId, session.threadId);
       }
+    }),
+  );
+});
+
+const recovery = makeProviderServiceLayer();
+
+const seedRecoveryBinding = Effect.fn("ProviderServiceTest.seedRecoveryBinding")(function* (input: {
+  readonly threadId: ThreadId;
+  readonly providerInstanceId?: ProviderInstanceId;
+  readonly resumeCursor?: unknown;
+}) {
+  const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+  yield* directory.upsert({
+    threadId: input.threadId,
+    provider: CODEX_DRIVER,
+    providerInstanceId: input.providerInstanceId ?? codexInstanceId,
+    status: "stopped",
+    runtimeMode: "full-access",
+    ...(input.resumeCursor === undefined ? {} : { resumeCursor: input.resumeCursor }),
+    runtimePayload: { cwd: "/remote/project" },
+  });
+});
+
+recovery.layer("ProviderServiceLive recovery", (it) => {
+  it.effect("deduplicates concurrent proactive recovery by thread id", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-recovery-deduplicate");
+      yield* seedRecoveryBinding({ threadId, resumeCursor: { opaque: "resume-deduplicate" } });
+
+      recovery.codex.startSession.mockClear();
+      recovery.codex.sendTurn.mockClear();
+      const startEntered = yield* Deferred.make<void>();
+      const releaseStart = yield* Deferred.make<void>();
+      recovery.codex.startSession.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(startEntered, undefined);
+          yield* Deferred.await(releaseStart);
+          return yield* recovery.codex.startSessionImplementation(input);
+        }),
+      );
+
+      const first = yield* provider
+        .recoverSession({ threadId, providerInstanceId: codexInstanceId })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(startEntered);
+      const second = yield* provider
+        .recoverSession({ threadId, providerInstanceId: codexInstanceId })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+
+      assert.equal(recovery.codex.startSession.mock.calls.length, 1);
+      yield* Deferred.succeed(releaseStart, undefined);
+      const [firstSession, secondSession] = yield* Effect.all(
+        [Fiber.join(first), Fiber.join(second)],
+        { concurrency: "unbounded" },
+      );
+      assert.strictEqual(firstSession, secondSession);
+      assert.deepEqual(firstSession.resumeCursor, { opaque: "resume-deduplicate" });
+      assert.equal(recovery.codex.sendTurn.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("rejects recovery when the persisted provider instance differs", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-recovery-instance-mismatch");
+      yield* seedRecoveryBinding({ threadId, resumeCursor: { opaque: "resume-mismatch" } });
+      recovery.codex.startSession.mockClear();
+      recovery.claude.startSession.mockClear();
+
+      const error = yield* provider
+        .recoverSession({ threadId, providerInstanceId: claudeAgentInstanceId })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderValidationError);
+      assert.include(error.issue, "persisted for 'codex'");
+      assert.equal(recovery.codex.startSession.mock.calls.length, 0);
+      assert.equal(recovery.claude.startSession.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("rejects recovery when no persisted binding exists", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-recovery-missing-binding");
+      recovery.codex.startSession.mockClear();
+
+      const error = yield* provider
+        .recoverSession({ threadId, providerInstanceId: codexInstanceId })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderValidationError);
+      assert.include(error.issue, "no persisted provider binding exists");
+      assert.equal(recovery.codex.startSession.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("rejects persisted recovery without a resume cursor", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-recovery-missing-cursor");
+      yield* seedRecoveryBinding({ threadId });
+      recovery.codex.startSession.mockClear();
+
+      const error = yield* provider
+        .recoverSession({ threadId, providerInstanceId: codexInstanceId })
+        .pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderValidationError);
+      assert.include(error.issue, "no provider resume state is persisted");
+      assert.equal(recovery.codex.startSession.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("removes a failed recovery flight so a later retry can resume", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-recovery-retry");
+      yield* seedRecoveryBinding({ threadId, resumeCursor: { opaque: "resume-retry" } });
+      recovery.codex.startSession.mockClear();
+      const firstFailure = new ProviderAdapterRequestError({
+        provider: CODEX_DRIVER,
+        method: "thread/resume",
+        detail: "temporary disconnect",
+      });
+      recovery.codex.startSession.mockImplementationOnce(() => Effect.fail(firstFailure));
+
+      const failed = yield* provider
+        .recoverSession({ threadId, providerInstanceId: codexInstanceId })
+        .pipe(Effect.flip);
+      const recovered = yield* provider.recoverSession({
+        threadId,
+        providerInstanceId: codexInstanceId,
+      });
+
+      assert.strictEqual(failed, firstFailure);
+      assert.equal(recovered.threadId, threadId);
+      assert.equal(recovery.codex.startSession.mock.calls.length, 2);
+    }),
+  );
+
+  it.effect("keeps recovery alive when its initiating caller is interrupted", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-recovery-owner-interrupted");
+      yield* seedRecoveryBinding({ threadId, resumeCursor: { opaque: "resume-interrupted" } });
+
+      recovery.codex.startSession.mockClear();
+      const startEntered = yield* Deferred.make<void>();
+      const releaseStart = yield* Deferred.make<void>();
+      recovery.codex.startSession.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(startEntered, undefined);
+          yield* Deferred.await(releaseStart);
+          return yield* recovery.codex.startSessionImplementation(input);
+        }),
+      );
+
+      const initiatingCaller = yield* provider
+        .recoverSession({ threadId, providerInstanceId: codexInstanceId })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(startEntered);
+      const waiter = yield* provider
+        .recoverSession({ threadId, providerInstanceId: codexInstanceId })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+
+      yield* Fiber.interrupt(initiatingCaller);
+      yield* Deferred.succeed(releaseStart, undefined);
+      const recovered = yield* Fiber.join(waiter);
+
+      assert.equal(recovered.threadId, threadId);
+      assert.equal(recovery.codex.startSession.mock.calls.length, 1);
+
+      yield* recovery.codex.stopSession(threadId);
+      const retried = yield* provider.recoverSession({
+        threadId,
+        providerInstanceId: codexInstanceId,
+      });
+      assert.equal(retried.threadId, threadId);
+      assert.equal(recovery.codex.startSession.mock.calls.length, 2);
+    }),
+  );
+
+  it.effect("converges proactive recovery and demand routing on one adapter start", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-recovery-demand-convergence");
+      yield* seedRecoveryBinding({ threadId, resumeCursor: { opaque: "resume-converge" } });
+
+      recovery.codex.startSession.mockClear();
+      recovery.codex.sendTurn.mockClear();
+      const startEntered = yield* Deferred.make<void>();
+      const releaseStart = yield* Deferred.make<void>();
+      recovery.codex.startSession.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(startEntered, undefined);
+          yield* Deferred.await(releaseStart);
+          return yield* recovery.codex.startSessionImplementation(input);
+        }),
+      );
+
+      const proactive = yield* provider
+        .recoverSession({ threadId, providerInstanceId: codexInstanceId })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(startEntered);
+      const demand = yield* provider
+        .sendTurn({ threadId, input: "new input only", attachments: [] })
+        .pipe(Effect.forkChild({ startImmediately: true }));
+
+      assert.equal(recovery.codex.startSession.mock.calls.length, 1);
+      yield* Deferred.succeed(releaseStart, undefined);
+      const [recovered, turn] = yield* Effect.all([Fiber.join(proactive), Fiber.join(demand)], {
+        concurrency: "unbounded",
+      });
+
+      assert.equal(recovered.threadId, threadId);
+      assert.equal(turn.threadId, threadId);
+      assert.equal(recovery.codex.startSession.mock.calls.length, 1);
+      assert.equal(recovery.codex.sendTurn.mock.calls.length, 1);
+      assert.equal(recovery.codex.sendTurn.mock.calls[0]?.[0].input, "new input only");
     }),
   );
 });
