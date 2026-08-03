@@ -50,6 +50,14 @@ export const ProviderVcsReadCapability = Schema.Literals([
 ]);
 export type ProviderVcsReadCapability = typeof ProviderVcsReadCapability.Type;
 
+export const ProviderVcsCheckpointMutationOperation = Schema.Literals([
+  "captureCheckpoint",
+  "restoreCheckpoint",
+  "deleteCheckpoints",
+]);
+export type ProviderVcsCheckpointMutationOperation =
+  typeof ProviderVcsCheckpointMutationOperation.Type;
+
 /** Closed, generation-specific declaration of the reads implemented by a handle. */
 export const ProviderVcsReadCapabilities = Schema.Struct({
   status: Schema.Boolean,
@@ -273,8 +281,8 @@ export class ProviderVcsOperationError extends Schema.TaggedErrorClass<ProviderV
 }
 
 /**
- * Restore was dispatched but its receipt could not be observed. Callers must
- * observe the operation receipt after reconnect and must not replay restore.
+ * A well-framed helper response reported `operation_failed` for restore, so
+ * the provider cannot safely claim that the worktree was left unchanged.
  */
 export class ProviderVcsCheckpointRestoreIndeterminateError extends Schema.TaggedErrorClass<ProviderVcsCheckpointRestoreIndeterminateError>()(
   "ProviderVcsCheckpointRestoreIndeterminateError",
@@ -284,7 +292,23 @@ export class ProviderVcsCheckpointRestoreIndeterminateError extends Schema.Tagge
   },
 ) {
   override get message(): string {
-    return `Checkpoint restore outcome is indeterminate for provider VCS '${this.providerInstanceId}'; observe its receipt before any retry.`;
+    return `Checkpoint helper reported an indeterminate restore failure for provider VCS '${this.providerInstanceId}'; do not retry automatically.`;
+  }
+}
+
+/**
+ * A checkpoint mutation was dispatched, but transport or provider generation
+ * ended before a matching receipt could establish its outcome.
+ */
+export class ProviderVcsCheckpointOutcomeUnknownError extends Schema.TaggedErrorClass<ProviderVcsCheckpointOutcomeUnknownError>()(
+  "ProviderVcsCheckpointOutcomeUnknownError",
+  {
+    providerInstanceId: ProviderInstanceId,
+    operation: ProviderVcsCheckpointMutationOperation,
+  },
+) {
+  override get message(): string {
+    return `Checkpoint mutation outcome is unknown for provider VCS '${this.providerInstanceId}' during ${this.operation}; observe its receipt before any retry.`;
   }
 }
 
@@ -294,7 +318,8 @@ export type ProviderVcsError =
   | ProviderVcsProtocolError
   | ProviderVcsPathError
   | ProviderVcsOperationError
-  | ProviderVcsCheckpointRestoreIndeterminateError;
+  | ProviderVcsCheckpointRestoreIndeterminateError
+  | ProviderVcsCheckpointOutcomeUnknownError;
 
 export interface ProviderVcsRepositoryIdentity {
   readonly kind: VcsDriverKind;

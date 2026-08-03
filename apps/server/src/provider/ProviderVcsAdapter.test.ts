@@ -15,8 +15,10 @@ import {
   type ProviderVcsCheckpointDeleteInput,
   type ProviderVcsCheckpointDiffInput,
   type ProviderVcsCheckpointObserveInput,
+  ProviderVcsCheckpointOutcomeUnknownError,
   ProviderVcsCheckpointRestoreIndeterminateError,
   type ProviderVcsCheckpointRestoreInput,
+  ProviderVcsCheckpointMutationOperation,
   ProviderVcsDisconnectedError,
   type ProviderVcsError,
   ProviderVcsOperation,
@@ -48,6 +50,9 @@ const decodeScope = Schema.decodeUnknownSync(ProviderVcsRefScope);
 const decodeChangedPathKind = Schema.decodeUnknownSync(ProviderVcsChangedPathKind);
 const decodeDiffSourceKind = Schema.decodeUnknownSync(ProviderVcsReviewDiffSourceKind);
 const decodeReadCapabilities = Schema.decodeUnknownSync(ProviderVcsReadCapabilities);
+const decodeCheckpointMutationOperation = Schema.decodeUnknownSync(
+  ProviderVcsCheckpointMutationOperation,
+);
 
 const operationId = "11111111-1111-4111-8111-111111111111";
 const checkpointId = "22222222-2222-4222-a222-222222222222";
@@ -138,6 +143,15 @@ it("keeps operations, capabilities, scopes, and result kinds closed", () => {
     ["status", "refs", "remotes", "reviewDiff"],
   );
   assert.throws(() => decodeCapability("checkpoint"));
+
+  assert.deepStrictEqual(
+    ["captureCheckpoint", "restoreCheckpoint", "deleteCheckpoints"].map((value) =>
+      decodeCheckpointMutationOperation(value),
+    ),
+    ["captureCheckpoint", "restoreCheckpoint", "deleteCheckpoints"],
+  );
+  assert.throws(() => decodeCheckpointMutationOperation("diffCheckpoints"));
+  assert.throws(() => decodeCheckpointMutationOperation("getStatus"));
 
   assert.deepStrictEqual(
     ["local", "knownRemote", "all"].map((value) => decodeScope(value)),
@@ -409,6 +423,7 @@ function describeError(error: ProviderVcsError): string {
     case "ProviderVcsPathError":
       return `${error._tag}:${error.providerHostPath}:${error.issue}`;
     case "ProviderVcsCheckpointRestoreIndeterminateError":
+    case "ProviderVcsCheckpointOutcomeUnknownError":
       return `${error._tag}:${error.operation}`;
     default: {
       const exhaustive: never = error;
@@ -447,6 +462,10 @@ it("preserves exhaustive provider VCS failure categories", () => {
       providerInstanceId,
       operation: "restoreCheckpoint",
     }),
+    new ProviderVcsCheckpointOutcomeUnknownError({
+      providerInstanceId,
+      operation: "captureCheckpoint",
+    }),
   ];
 
   assert.deepStrictEqual(errors.map(describeError), [
@@ -456,9 +475,17 @@ it("preserves exhaustive provider VCS failure categories", () => {
     "ProviderVcsPathError:/missing:directory does not exist",
     "ProviderVcsOperationError:provider helper rejected the request",
     "ProviderVcsCheckpointRestoreIndeterminateError:restoreCheckpoint",
+    "ProviderVcsCheckpointOutcomeUnknownError:captureCheckpoint",
   ]);
   assert.match(errors[0]!.message, /provider-vcs-test.*disconnected.*getStatus/i);
   assert.match(errors[3]!.message, /\/missing.*provider-vcs-test.*openRepository/i);
-  assert.match(errors[5]!.message, /indeterminate.*provider-vcs-test.*receipt.*retry/i);
+  assert.match(errors[5]!.message, /indeterminate.*restore.*provider-vcs-test.*not retry/i);
   assert.strictEqual("cause" in errors[5]!, false);
+  assert.strictEqual("detail" in errors[5]!, false);
+  assert.match(
+    errors[6]!.message,
+    /unknown.*provider-vcs-test.*captureCheckpoint.*receipt.*retry/i,
+  );
+  assert.strictEqual("cause" in errors[6]!, false);
+  assert.strictEqual("detail" in errors[6]!, false);
 });
