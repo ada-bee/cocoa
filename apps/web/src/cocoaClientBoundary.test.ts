@@ -40,6 +40,7 @@ describe("Cocoa web client boundary", () => {
       "RelayClientInstallDialog",
       "ProviderUpdateLaunchNotification",
       "desktopLocal",
+      "DesktopLocal",
       "getLocalEnvironment",
       "readDesktopPrimaryBearerToken",
       'from "../components/settings/ConnectionsSettings"',
