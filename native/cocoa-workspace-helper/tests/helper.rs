@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 use std::fs;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::symlink;
+use std::path::Path;
 use std::process::Command;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -31,6 +33,24 @@ fn decode_frame(frame: Vec<u8>) -> (Value, usize, Vec<u8>) {
     (response, payload.len(), frame)
 }
 
+fn invoke_process(request: Value, home: Option<&Path>) -> (Value, usize, Vec<u8>) {
+    let encoded = BASE64.encode(serde_json::to_vec(&request).unwrap());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_cocoa-workspace-helper"));
+    command.arg(encoded);
+    match home {
+        Some(path) => {
+            command.env("HOME", path);
+        }
+        None => {
+            command.env_remove("HOME");
+        }
+    }
+    let output = command.output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    decode_frame(output.stdout)
+}
+
 fn validate(root: &std::path::Path) -> Value {
     let (response, _, _) = invoke(json!({
         "protocol": 1,
@@ -56,7 +76,11 @@ fn probe_and_validate_match_v1_contract() {
     let (probe, _, _) = invoke(json!({"protocol": 1, "operation": "probe"}));
     assert_eq!(probe["ok"], true);
     assert_eq!(probe["result"]["operation"], "probe");
-    assert_eq!(probe["result"]["capabilities"].as_array().unwrap().len(), 5);
+    assert_eq!(probe["result"]["capabilities"].as_array().unwrap().len(), 6);
+    assert!(probe["result"]["capabilities"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("browse")));
 
     let temp = TempDir::new().unwrap();
     let root = temp.path().join("workspace");
@@ -344,4 +368,168 @@ fn invalid_paths_and_errors_never_echo_raw_host_paths() {
         assert_eq!(response["error"]["code"], "invalid_path");
         assert!(!String::from_utf8(frame).unwrap().contains(path));
     }
+}
+
+#[test]
+fn browse_resolves_filesystem_root_and_home_without_recursive_entries() {
+    let (root_response, _, _) = invoke(json!({
+        "protocol": 1,
+        "operation": "browse",
+        "locator": {"kind": "absolute", "path": "/"},
+        "maxEntries": 1,
+        "maxResponseBytes": 4096,
+    }));
+    assert_eq!(root_response["ok"], true);
+    assert_eq!(root_response["result"]["directoryPath"], "/");
+    assert_eq!(root_response["result"]["parentPath"], Value::Null);
+
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir_all(home.join("Developer/nested")).unwrap();
+    fs::write(home.join("Developer/project"), b"project").unwrap();
+    fs::write(home.join("Developer/nested/hidden"), b"hidden").unwrap();
+    let (response, _, _) = invoke_process(
+        json!({
+            "protocol": 1,
+            "operation": "browse",
+            "locator": {"kind": "home", "relativePath": "Developer"},
+            "maxEntries": 100,
+            "maxResponseBytes": 8192,
+        }),
+        Some(&home),
+    );
+    assert_eq!(response["ok"], true);
+    assert_eq!(
+        response["result"]["directoryPath"],
+        home.join("Developer").to_str().unwrap()
+    );
+    assert_eq!(response["result"]["parentPath"], home.to_str().unwrap());
+    let names: Vec<_> = response["result"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["nested", "project"]);
+    assert!(!names.contains(&"hidden"));
+}
+
+#[test]
+fn browse_rejects_symlink_traversal_and_reports_leaf_symlink_entries() {
+    let temp = TempDir::new().unwrap();
+    let directory = temp.path().join("directory");
+    let outside = temp.path().join("outside");
+    fs::create_dir(&directory).unwrap();
+    fs::create_dir(&outside).unwrap();
+    symlink(&outside, directory.join("escape")).unwrap();
+
+    let (response, _, _) = invoke(json!({
+        "protocol": 1,
+        "operation": "browse",
+        "locator": {"kind": "absolute", "path": directory.to_str().unwrap()},
+        "maxEntries": 100,
+        "maxResponseBytes": 8192,
+    }));
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["result"]["entries"][0]["name"], "escape");
+    assert_eq!(response["result"]["entries"][0]["kind"], "symlink");
+
+    let (response, _, _) = invoke(json!({
+        "protocol": 1,
+        "operation": "browse",
+        "locator": {
+            "kind": "absolute",
+            "path": directory.join("escape").to_str().unwrap(),
+        },
+        "maxEntries": 100,
+        "maxResponseBytes": 8192,
+    }));
+    assert_eq!(response["ok"], false);
+    assert_eq!(response["error"]["code"], "path_is_symlink");
+}
+
+#[test]
+fn browse_enforces_entry_and_serialized_response_caps() {
+    let temp = TempDir::new().unwrap();
+    let directory = temp.path().join("directory");
+    fs::create_dir(&directory).unwrap();
+    for name in ["alpha-long-name", "beta-long-name", "gamma-long-name"] {
+        fs::write(directory.join(name), b"x").unwrap();
+    }
+    let request = |max_entries, max_response_bytes| {
+        json!({
+            "protocol": 1,
+            "operation": "browse",
+            "locator": {"kind": "absolute", "path": directory.to_str().unwrap()},
+            "maxEntries": max_entries,
+            "maxResponseBytes": max_response_bytes,
+        })
+    };
+
+    let (response, _, _) = invoke(request(2, 8192));
+    assert_eq!(response["result"]["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(response["result"]["truncated"], true);
+
+    let (_, full_payload_bytes, _) = invoke(request(100, 8192));
+    let response_limit = full_payload_bytes - 1;
+    let (response, payload_bytes, _) = invoke(request(100, response_limit));
+    assert_eq!(response["ok"], true);
+    assert!(payload_bytes <= response_limit);
+    assert_eq!(response["result"]["truncated"], true);
+    assert!(response["result"]["entries"].as_array().unwrap().len() < 3);
+}
+
+#[test]
+fn browse_rejects_invalid_home_paths_and_non_utf8_entries() {
+    let request = |locator| {
+        json!({
+            "protocol": 1,
+            "operation": "browse",
+            "locator": locator,
+            "maxEntries": 100,
+            "maxResponseBytes": 8192,
+        })
+    };
+    let (response, _, _) =
+        invoke_process(request(json!({"kind": "home", "relativePath": ""})), None);
+    assert_eq!(response["error"]["code"], "invalid_root");
+
+    let (response, _, _) = invoke_process(
+        request(json!({"kind": "home", "relativePath": ""})),
+        Some(Path::new("relative/home")),
+    );
+    assert_eq!(response["error"]["code"], "invalid_root");
+
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let (response, _, _) = invoke_process(
+        request(json!({"kind": "home", "relativePath": "../escape"})),
+        Some(&home),
+    );
+    assert_eq!(response["error"]["code"], "invalid_path");
+
+    let invalid_name = OsString::from_vec(vec![b'b', b'a', b'd', 0xff]);
+    match fs::write(home.join(invalid_name), b"x") {
+        Ok(()) => {
+            let (response, _, _) = invoke(request(json!({
+                "kind": "absolute",
+                "path": home.to_str().unwrap(),
+            })));
+            assert_eq!(response["error"]["code"], "operation_failed");
+        }
+        Err(error) => {
+            #[cfg(target_os = "macos")]
+            assert_eq!(error.raw_os_error(), Some(92));
+            #[cfg(not(target_os = "macos"))]
+            panic!("failed to create non-UTF-8 fixture: {error}");
+        }
+    }
+
+    let invalid_absolute = format!("{}/../home", temp.path().display());
+    let (response, _, _) = invoke(request(json!({
+        "kind": "absolute",
+        "path": invalid_absolute,
+    })));
+    assert_eq!(response["error"]["code"], "invalid_path");
 }

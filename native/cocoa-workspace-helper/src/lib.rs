@@ -25,6 +25,9 @@ const MAX_LIST_ENTRIES: usize = 25_000;
 const MAX_LIST_DEPTH: usize = 64;
 const MAX_LIST_DIRECTORIES: usize = 10_000;
 const MAX_RESPONSE_BYTES: usize = 8 * 1_024 * 1_024;
+const MAX_BROWSE_ENTRIES: usize = 10_000;
+const MAX_BROWSE_RESPONSE_BYTES: usize = 4 * 1_024 * 1_024;
+const MAX_ENTRY_NAME_CHARS: usize = 1_024;
 const MAX_ENCODED_REQUEST_BYTES: usize = 131_072;
 const MAX_DECODED_REQUEST_BYTES: usize = 65_536;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -96,6 +99,18 @@ struct ListLimits {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+enum BrowseLocator {
+    Absolute {
+        path: String,
+    },
+    Home {
+        #[serde(rename = "relativePath")]
+        relative_path: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(tag = "operation", rename_all = "lowercase", deny_unknown_fields)]
 enum Request {
     Probe {
@@ -132,6 +147,14 @@ enum Request {
         #[serde(rename = "maxBytes")]
         max_bytes: usize,
     },
+    Browse {
+        protocol: u8,
+        locator: BrowseLocator,
+        #[serde(rename = "maxEntries")]
+        max_entries: usize,
+        #[serde(rename = "maxResponseBytes")]
+        max_response_bytes: usize,
+    },
 }
 
 impl Request {
@@ -141,7 +164,8 @@ impl Request {
             | Self::Validate { protocol, .. }
             | Self::Stat { protocol, .. }
             | Self::List { protocol, .. }
-            | Self::Read { protocol, .. } => *protocol,
+            | Self::Read { protocol, .. }
+            | Self::Browse { protocol, .. } => *protocol,
         }
     }
 }
@@ -151,7 +175,7 @@ impl Request {
 struct ProbeResult {
     operation: &'static str,
     implementation: &'static str,
-    capabilities: [&'static str; 5],
+    capabilities: [&'static str; 6],
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -207,6 +231,22 @@ struct ReadResult {
     operation: &'static str,
     data_base64: String,
     byte_length: u64,
+    truncated: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct BrowseEntry {
+    name: String,
+    kind: EntryKind,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowseResult {
+    operation: &'static str,
+    directory_path: String,
+    parent_path: Option<String>,
+    entries: Vec<BrowseEntry>,
     truncated: bool,
 }
 
@@ -279,7 +319,7 @@ fn dispatch_argv(args: Vec<OsString>) -> HelperResult<(Value, usize)> {
         ));
     }
     match object.get("operation").and_then(Value::as_str) {
-        Some("probe" | "validate" | "stat" | "list" | "read") => {}
+        Some("probe" | "validate" | "stat" | "list" | "read" | "browse") => {}
         _ => {
             return Err(HelperError::new(
                 ErrorCode::UnsupportedOperation,
@@ -308,7 +348,7 @@ fn dispatch(request: Request) -> HelperResult<(Value, usize)> {
             ProbeResult {
                 operation: "probe",
                 implementation: "cocoa-workspace-helper-rust",
-                capabilities: ["probe", "validate", "stat", "list", "read"],
+                capabilities: ["probe", "validate", "stat", "list", "read", "browse"],
             },
             MAX_RESPONSE_BYTES,
         ),
@@ -372,7 +412,89 @@ fn dispatch(request: Request) -> HelperResult<(Value, usize)> {
             let result = read_file(&root.dir, &components, max_bytes)?;
             success_value(result, MAX_RESPONSE_BYTES)
         }
+        Request::Browse {
+            locator,
+            max_entries,
+            max_response_bytes,
+            ..
+        } => browse(locator, max_entries, max_response_bytes),
     }
+}
+
+fn browse(
+    locator: BrowseLocator,
+    max_entries: usize,
+    max_response_bytes: usize,
+) -> HelperResult<(Value, usize)> {
+    if max_entries == 0 || max_entries > MAX_BROWSE_ENTRIES {
+        return Err(HelperError::new(
+            ErrorCode::LimitExceeded,
+            "Invalid browse entry limit.",
+        ));
+    }
+    if max_response_bytes == 0 || max_response_bytes > MAX_BROWSE_RESPONSE_BYTES {
+        return Err(HelperError::new(
+            ErrorCode::LimitExceeded,
+            "Invalid browse response byte limit.",
+        ));
+    }
+
+    let (directory_path, components) = resolve_browse_locator(locator)?;
+    let ambient_root = Dir::open_ambient_dir("/", ambient_authority()).map_err(|_| {
+        HelperError::new(
+            ErrorCode::OperationFailed,
+            "Provider-host filesystem root could not be opened.",
+        )
+    })?;
+    let directory = open_owned_relative_directory(&ambient_root, &components)?;
+    let result = browse_directory(&directory, directory_path, max_entries)?;
+    let value = fit_browse_response(success_json(result)?, max_response_bytes)?;
+    Ok((value, max_response_bytes))
+}
+
+fn resolve_browse_locator(locator: BrowseLocator) -> HelperResult<(String, Vec<String>)> {
+    match locator {
+        BrowseLocator::Absolute { path } => {
+            let components = split_browse_absolute(&path, ErrorCode::InvalidPath)?;
+            Ok((path, components))
+        }
+        BrowseLocator::Home { relative_path } => {
+            let home = std::env::var("HOME").map_err(|_| {
+                HelperError::new(
+                    ErrorCode::InvalidRoot,
+                    "Provider-host home directory is unavailable.",
+                )
+            })?;
+            let mut components = split_browse_absolute(&home, ErrorCode::InvalidRoot)?;
+            let descendants = split_relative(&relative_path)?;
+            let directory_path = if relative_path.is_empty() {
+                home
+            } else if home == "/" {
+                format!("/{relative_path}")
+            } else {
+                format!("{home}/{relative_path}")
+            };
+            if directory_path.len() > MAX_PATH_BYTES {
+                return Err(HelperError::new(
+                    ErrorCode::InvalidPath,
+                    "Resolved browse path is too long.",
+                ));
+            }
+            components.extend(descendants.into_iter().map(str::to_owned));
+            Ok((directory_path, components))
+        }
+    }
+}
+
+fn split_browse_absolute(path: &str, code: ErrorCode) -> HelperResult<Vec<String>> {
+    split_root(path)
+        .map(|components| components.into_iter().map(str::to_owned).collect())
+        .map_err(|_| {
+            HelperError::new(
+                code,
+                "Browse path must be an absolute normalized POSIX path.",
+            )
+        })
 }
 
 fn validate_list_limits(limits: &ListLimits) -> HelperResult<()> {
@@ -770,6 +892,153 @@ fn validate_entry_name(name: &str) -> HelperResult<()> {
     Ok(())
 }
 
+fn browse_directory(
+    directory: &Dir,
+    directory_path: String,
+    max_entries: usize,
+) -> HelperResult<BrowseResult> {
+    let iterator = directory
+        .entries()
+        .map_err(|error| map_io_error(error, ErrorCode::PathNotDirectory))?;
+    let mut entries = Vec::with_capacity(max_entries.min(1_024));
+    let mut truncated = false;
+    for entry in iterator {
+        let entry = entry.map_err(|error| map_io_error(error, ErrorCode::OperationFailed))?;
+        if entries.len() == max_entries {
+            truncated = true;
+            break;
+        }
+        let name = decode_browse_entry_name(entry.file_name())?;
+        validate_browse_entry_name(&name)?;
+        let value = directory
+            .symlink_metadata(&name)
+            .map_err(|error| map_io_error(error, ErrorCode::OperationFailed))?;
+        entries.push(BrowseEntry {
+            name,
+            kind: entry_kind(&value),
+        });
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(BrowseResult {
+        operation: "browse",
+        parent_path: browse_parent(&directory_path),
+        directory_path,
+        entries,
+        truncated,
+    })
+}
+
+fn decode_browse_entry_name(name: OsString) -> HelperResult<String> {
+    name.into_string().map_err(|_| {
+        HelperError::new(
+            ErrorCode::OperationFailed,
+            "Directory contains a non-UTF-8 entry name.",
+        )
+    })
+}
+
+fn validate_browse_entry_name(name: &str) -> HelperResult<()> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name.chars().count() > MAX_ENTRY_NAME_CHARS
+    {
+        return Err(HelperError::new(
+            ErrorCode::OperationFailed,
+            "Directory contains an invalid browse entry name.",
+        ));
+    }
+    Ok(())
+}
+
+fn browse_parent(path: &str) -> Option<String> {
+    if path == "/" {
+        return None;
+    }
+    let separator = path.rfind('/').expect("normalized absolute path");
+    if separator == 0 {
+        Some("/".to_owned())
+    } else {
+        Some(path[..separator].to_owned())
+    }
+}
+
+fn fit_browse_response(value: Value, max_bytes: usize) -> HelperResult<Value> {
+    if ascii_json(&value)?.len() <= max_bytes {
+        return Ok(value);
+    }
+    let result = value
+        .get("result")
+        .and_then(Value::as_object)
+        .ok_or_else(internal_error)?;
+    let directory_path = result
+        .get("directoryPath")
+        .and_then(Value::as_str)
+        .ok_or_else(internal_error)?;
+    let parent_path = result
+        .get("parentPath")
+        .cloned()
+        .ok_or_else(internal_error)?;
+    let entries = result
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(internal_error)?;
+    let already_truncated = result
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .ok_or_else(internal_error)?;
+    let mut low = 0;
+    let mut high = if already_truncated {
+        entries.len()
+    } else {
+        entries.len().saturating_sub(1)
+    };
+    while low < high {
+        let middle = (low + high).div_ceil(2);
+        let candidate = browse_value(
+            directory_path,
+            parent_path.clone(),
+            entries[..middle].to_vec(),
+            true,
+        );
+        if ascii_json(&candidate)?.len() <= max_bytes {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    let candidate = browse_value(directory_path, parent_path, entries[..low].to_vec(), true);
+    if ascii_json(&candidate)?.len() > max_bytes {
+        return Err(HelperError::new(
+            ErrorCode::LimitExceeded,
+            "Browse response byte limit is too small.",
+        ));
+    }
+    Ok(candidate)
+}
+
+fn browse_value(
+    directory_path: &str,
+    parent_path: Value,
+    entries: Vec<Value>,
+    truncated: bool,
+) -> Value {
+    serde_json::json!({
+        "protocol": PROTOCOL,
+        "ok": true,
+        "result": {
+            "operation": "browse",
+            "directoryPath": directory_path,
+            "parentPath": parent_path,
+            "entries": entries,
+            "truncated": truncated,
+        }
+    })
+}
+
 fn fit_list_response(value: Value, max_bytes: usize) -> HelperResult<Value> {
     if ascii_json(&value)?.len() <= max_bytes {
         return Ok(value);
@@ -945,6 +1214,7 @@ fn internal_error() -> HelperError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::ffi::OsStringExt;
 
     #[test]
     fn relative_paths_are_strict_descendants() {
@@ -971,5 +1241,12 @@ mod tests {
             format!("{:x}", Sha256::digest(&frame[newline + 1..]))
         );
         assert!(frame.is_ascii());
+    }
+
+    #[test]
+    fn browse_entry_names_reject_non_utf8_bytes() {
+        let invalid = OsString::from_vec(vec![b'b', b'a', b'd', 0xff]);
+        let error = decode_browse_entry_name(invalid).unwrap_err();
+        assert!(matches!(error.code, ErrorCode::OperationFailed));
     }
 }
