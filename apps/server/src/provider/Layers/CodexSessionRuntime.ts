@@ -4,7 +4,7 @@ import {
   EventId,
   ProviderDriverKind,
   ProviderItemId,
-  type ProviderInstanceId,
+  ProviderInstanceId,
   type ProviderApprovalDecision,
   type ProviderEvent,
   type ProviderInteractionMode,
@@ -39,6 +39,13 @@ import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
+import type { CodexEndpointConnection } from "../codexEndpoint/CodexEndpointConnection.ts";
+import {
+  type CodexEndpointRouter,
+  type CodexEndpointSessionCallbacks,
+  type CodexEndpointSessionRegistration,
+  CodexEndpointRouterRegistrationError,
+} from "../codexEndpoint/CodexEndpointRouter.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
@@ -108,6 +115,24 @@ export interface CodexSessionRuntimeOptions {
   readonly appServerArgs?: ReadonlyArray<string>;
 }
 
+export type CodexEndpointSessionRuntimeOptions = Omit<
+  CodexSessionRuntimeOptions,
+  "binaryPath" | "homePath" | "launchArgs" | "environment" | "providerInstanceId"
+> & {
+  readonly providerInstanceId: ProviderInstanceId;
+};
+
+type CodexSessionRuntimeCoreOptions = Omit<
+  CodexSessionRuntimeOptions,
+  "binaryPath" | "homePath" | "launchArgs" | "environment"
+>;
+
+export interface MakeCodexEndpointSessionRuntimeInput {
+  readonly connection: CodexEndpointConnection["Service"];
+  readonly router: CodexEndpointRouter;
+  readonly options: CodexEndpointSessionRuntimeOptions;
+}
+
 export interface CodexSessionRuntimeSendTurnInput {
   readonly input?: string;
   readonly attachments?: ReadonlyArray<{
@@ -155,10 +180,37 @@ export interface CodexSessionRuntimeShape {
 
 export type CodexSessionRuntimeError =
   | CodexErrors.CodexAppServerError
+  | CodexSessionRuntimeEndpointInstanceMismatchError
+  | CodexEndpointRouterRegistrationError
+  | CodexSessionRuntimeEndpointMcpConfigurationError
   | CodexSessionRuntimePendingApprovalNotFoundError
   | CodexSessionRuntimePendingUserInputNotFoundError
   | CodexSessionRuntimeInvalidUserInputAnswersError
   | CodexSessionRuntimeThreadIdMissingError;
+
+export class CodexSessionRuntimeEndpointInstanceMismatchError extends Schema.TaggedErrorClass<CodexSessionRuntimeEndpointInstanceMismatchError>()(
+  "CodexSessionRuntimeEndpointInstanceMismatchError",
+  {
+    threadId: ThreadId,
+    configuredProviderInstanceId: ProviderInstanceId,
+    connectionProviderInstanceId: ProviderInstanceId,
+  },
+) {
+  override get message(): string {
+    return `Codex endpoint session '${this.threadId}' targets provider instance '${this.configuredProviderInstanceId}', but the initialized connection belongs to '${this.connectionProviderInstanceId}'.`;
+  }
+}
+
+export class CodexSessionRuntimeEndpointMcpConfigurationError extends Schema.TaggedErrorClass<CodexSessionRuntimeEndpointMcpConfigurationError>()(
+  "CodexSessionRuntimeEndpointMcpConfigurationError",
+  {
+    threadId: ThreadId,
+  },
+) {
+  override get message(): string {
+    return `Per-session Codex MCP app-server arguments are not supported by shared endpoint sessions for '${this.threadId}'.`;
+  }
+}
 
 export class CodexSessionRuntimePendingApprovalNotFoundError extends Schema.TaggedErrorClass<CodexSessionRuntimePendingApprovalNotFoundError>()(
   "CodexSessionRuntimePendingApprovalNotFoundError",
@@ -707,15 +759,27 @@ function parseThreadSnapshot(
   };
 }
 
-export const makeCodexSessionRuntime = (
-  options: CodexSessionRuntimeOptions,
-): Effect.Effect<
-  CodexSessionRuntimeShape,
-  CodexErrors.CodexAppServerError,
-  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
-> =>
+interface LegacyCodexSessionRuntimeTransport {
+  readonly mode: "legacy";
+  readonly client: CodexClient.CodexAppServerClient["Service"];
+  readonly child: ChildProcessSpawner.ChildProcessHandle;
+}
+
+interface EndpointCodexSessionRuntimeTransport {
+  readonly mode: "endpoint";
+  readonly client: CodexClient.CodexAppServerClient["Service"];
+  readonly router: CodexEndpointRouter;
+}
+
+type CodexSessionRuntimeTransport =
+  | LegacyCodexSessionRuntimeTransport
+  | EndpointCodexSessionRuntimeTransport;
+
+const makeCodexSessionRuntimeCore = (
+  options: CodexSessionRuntimeCoreOptions,
+  transport: CodexSessionRuntimeTransport,
+): Effect.Effect<CodexSessionRuntimeShape, CodexSessionRuntimeError, Crypto.Crypto | Scope.Scope> =>
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
     const crypto = yield* Crypto.Crypto;
     const events = yield* Queue.unbounded<ProviderEvent>();
@@ -725,48 +789,7 @@ export const makeCodexSessionRuntime = (
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
     const closedRef = yield* Ref.make(false);
 
-    // `~` is not shell-expanded when env vars are set via
-    // `child_process.spawn`; `expandHomePath` lets a configured
-    // `CODEX_HOME=~/.codex_work` reach codex as an absolute path.
-    const resolvedHomePath = options.homePath ? expandHomePath(options.homePath) : undefined;
-    const env = {
-      ...options.environment,
-      ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
-    };
-    const extendEnv = options.environment === undefined;
-    const appServerArgs = codexSessionAppServerArgs(options.appServerArgs, options.launchArgs);
-    const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, appServerArgs, {
-      env,
-      extendEnv,
-    });
-    const child = yield* spawner
-      .spawn(
-        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-          cwd: options.cwd,
-          env,
-          extendEnv,
-          forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
-          shell: spawnCommand.shell,
-        }),
-      )
-      .pipe(
-        Effect.provideService(Scope.Scope, runtimeScope),
-        Effect.mapError(
-          (cause) =>
-            new CodexErrors.CodexAppServerSpawnError({
-              command: `${options.binaryPath} app-server`,
-              cause,
-            }),
-        ),
-      );
-
-    const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
-      Layer.build,
-      Effect.provideService(Scope.Scope, runtimeScope),
-    );
-    const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
-      Effect.provide(clientContext),
-    );
+    const client = transport.client;
     const serverNotifications = yield* Queue.unbounded<CodexServerNotification>();
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = (purpose: CodexErrors.CodexAppServerIdentifierPurpose) =>
@@ -901,7 +924,9 @@ export const makeCodexSessionRuntime = (
 
     const currentSessionProviderThreadId = Effect.map(Ref.get(sessionRef), currentProviderThreadId);
 
-    yield* client.handleServerNotification("thread/started", (payload) =>
+    const handleThreadStarted = (
+      payload: CodexRpc.ServerNotificationParamsByMethod["thread/started"],
+    ) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.thread.id !== providerThreadId) {
@@ -911,10 +936,11 @@ export const makeCodexSessionRuntime = (
             resumeCursor: { threadId: payload.thread.id },
           });
         }),
-      ),
-    );
+      );
 
-    yield* client.handleServerNotification("turn/started", (payload) =>
+    const handleTurnStarted = (
+      payload: CodexRpc.ServerNotificationParamsByMethod["turn/started"],
+    ) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.threadId !== providerThreadId) {
@@ -925,10 +951,11 @@ export const makeCodexSessionRuntime = (
             activeTurnId: TurnId.make(payload.turn.id),
           });
         }),
-      ),
-    );
+      );
 
-    yield* client.handleServerNotification("turn/completed", (payload) =>
+    const handleTurnCompleted = (
+      payload: CodexRpc.ServerNotificationParamsByMethod["turn/completed"],
+    ) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           if (providerThreadId && payload.threadId !== providerThreadId) {
@@ -944,10 +971,9 @@ export const makeCodexSessionRuntime = (
             ...(lastError ? { lastError } : {}),
           });
         }),
-      ),
-    );
+      );
 
-    yield* client.handleServerNotification("error", (payload) =>
+    const handleError = (payload: CodexRpc.ServerNotificationParamsByMethod["error"]) =>
       currentSessionProviderThreadId.pipe(
         Effect.flatMap((providerThreadId) => {
           const payloadThreadId = payload.threadId;
@@ -961,10 +987,11 @@ export const makeCodexSessionRuntime = (
             ...(errorMessage ? { lastError: errorMessage } : {}),
           });
         }),
-      ),
-    );
+      );
 
-    yield* client.handleServerRequest("item/commandExecution/requestApproval", (payload) =>
+    const handleCommandApproval = (
+      payload: CodexRpc.ServerRequestParamsByMethod["item/commandExecution/requestApproval"],
+    ) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("command-approval-request"));
         const turnId = TurnId.make(payload.turnId);
@@ -1017,10 +1044,11 @@ export const makeCodexSessionRuntime = (
         return {
           decision: resolved,
         } satisfies EffectCodexSchema.CommandExecutionRequestApprovalResponse;
-      }),
-    );
+      });
 
-    yield* client.handleServerRequest("item/fileChange/requestApproval", (payload) =>
+    const handleFileChangeApproval = (
+      payload: CodexRpc.ServerRequestParamsByMethod["item/fileChange/requestApproval"],
+    ) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(
           yield* randomUUIDv4("file-change-approval-request"),
@@ -1075,10 +1103,11 @@ export const makeCodexSessionRuntime = (
         return {
           decision: resolved,
         } satisfies EffectCodexSchema.FileChangeRequestApprovalResponse;
-      }),
-    );
+      });
 
-    yield* client.handleServerRequest("item/tool/requestUserInput", (payload) =>
+    const handleUserInputRequest = (
+      payload: CodexRpc.ServerRequestParamsByMethod["item/tool/requestUserInput"],
+    ) =>
       Effect.gen(function* () {
         const requestId = ApprovalRequestId.make(yield* randomUUIDv4("user-input-request"));
         const turnId = TurnId.make(payload.turnId);
@@ -1125,99 +1154,185 @@ export const makeCodexSessionRuntime = (
             ),
           ),
         } satisfies EffectCodexSchema.ToolRequestUserInputResponse;
-      }),
-    );
+      });
 
-    yield* client.handleUnknownServerRequest((method) =>
-      Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound(method)),
-    );
+    const handleKnownNotification = <M extends CodexRpc.ServerNotificationMethod>(
+      method: M,
+      params: CodexRpc.ServerNotificationParamsByMethod[M],
+    ) =>
+      Effect.gen(function* () {
+        switch (method) {
+          case "thread/started":
+            yield* handleThreadStarted(
+              params as CodexRpc.ServerNotificationParamsByMethod["thread/started"],
+            );
+            break;
+          case "turn/started":
+            yield* handleTurnStarted(
+              params as CodexRpc.ServerNotificationParamsByMethod["turn/started"],
+            );
+            break;
+          case "turn/completed":
+            yield* handleTurnCompleted(
+              params as CodexRpc.ServerNotificationParamsByMethod["turn/completed"],
+            );
+            break;
+          case "error":
+            yield* handleError(params as CodexRpc.ServerNotificationParamsByMethod["error"]);
+            break;
+        }
+        yield* Queue.offer(serverNotifications, makeCodexServerNotification(method, params));
+      }).pipe(Effect.asVoid);
 
-    const registerServerNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>
-      client.handleServerNotification(method, (params) =>
-        Queue.offer(serverNotifications, makeCodexServerNotification(method, params)).pipe(
-          Effect.asVoid,
-        ),
+    const handleUnknownNotification = (method: string, params: unknown) =>
+      emitEvent({
+        kind: "notification",
+        threadId: options.threadId,
+        method,
+        ...(params !== undefined ? { payload: params } : {}),
+      });
+
+    const handleInteractiveRequest: CodexEndpointSessionCallbacks["onRequest"] = (
+      method,
+      params,
+    ) => {
+      switch (method) {
+        case "item/commandExecution/requestApproval":
+          return handleCommandApproval(
+            params as CodexRpc.ServerRequestParamsByMethod["item/commandExecution/requestApproval"],
+          ) as never;
+        case "item/fileChange/requestApproval":
+          return handleFileChangeApproval(
+            params as CodexRpc.ServerRequestParamsByMethod["item/fileChange/requestApproval"],
+          ) as never;
+        case "item/tool/requestUserInput":
+          return handleUserInputRequest(
+            params as CodexRpc.ServerRequestParamsByMethod["item/tool/requestUserInput"],
+          ) as never;
+      }
+    };
+
+    let endpointRegistration: CodexEndpointSessionRegistration | undefined;
+    if (transport.mode === "endpoint") {
+      endpointRegistration = yield* transport.router.registerSession({
+        threadId: options.threadId,
+        callbacks: {
+          onNotification: handleKnownNotification,
+          onUnknownNotification: handleUnknownNotification,
+          onRequest: handleInteractiveRequest,
+        },
+      });
+    } else {
+      yield* client.handleServerRequest(
+        "item/commandExecution/requestApproval",
+        handleCommandApproval,
+      );
+      yield* client.handleServerRequest(
+        "item/fileChange/requestApproval",
+        handleFileChangeApproval,
+      );
+      yield* client.handleServerRequest("item/tool/requestUserInput", handleUserInputRequest);
+      yield* client.handleUnknownServerRequest((method) =>
+        Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound(method)),
       );
 
-    yield* Effect.forEach(
-      Object.values(
-        CodexRpc.SERVER_NOTIFICATION_METHODS,
-      ) as ReadonlyArray<CodexRpc.ServerNotificationMethod>,
-      registerServerNotification,
-      { concurrency: 1, discard: true },
-    );
+      const registerServerNotification = <M extends CodexRpc.ServerNotificationMethod>(method: M) =>
+        client.handleServerNotification(method, (params) =>
+          handleKnownNotification(method, params),
+        );
+      yield* Effect.forEach(
+        Object.values(
+          CodexRpc.SERVER_NOTIFICATION_METHODS,
+        ) as ReadonlyArray<CodexRpc.ServerNotificationMethod>,
+        registerServerNotification,
+        { concurrency: 1, discard: true },
+      );
+    }
 
     yield* Stream.fromQueue(serverNotifications).pipe(
       Stream.runForEach(handleRawNotification),
       Effect.forkIn(runtimeScope),
     );
 
-    const stderrRemainderRef = yield* Ref.make("");
-    yield* child.stderr.pipe(
-      Stream.decodeText(),
-      Stream.runForEach((chunk) =>
-        Ref.modify(stderrRemainderRef, (current) => {
-          const combined = current + chunk;
-          const lines = combined.split("\n");
-          const remainder = lines.pop() ?? "";
-          return [lines.map((line) => line.replace(/\r$/, "")), remainder] as const;
-        }).pipe(
-          Effect.flatMap((lines) =>
-            Effect.forEach(
-              lines,
-              (line) => {
-                const classified = classifyCodexStderrLine(line);
-                if (!classified) {
-                  return Effect.void;
-                }
-                return emitEvent({
-                  kind: "notification",
-                  threadId: options.threadId,
-                  method: "process/stderr",
-                  message: classified.message,
-                });
-              },
-              { discard: true },
+    if (transport.mode === "legacy") {
+      const stderrRemainderRef = yield* Ref.make("");
+      yield* transport.child.stderr.pipe(
+        Stream.decodeText(),
+        Stream.runForEach((chunk) =>
+          Ref.modify(stderrRemainderRef, (current) => {
+            const combined = current + chunk;
+            const lines = combined.split("\n");
+            const remainder = lines.pop() ?? "";
+            return [lines.map((line) => line.replace(/\r$/, "")), remainder] as const;
+          }).pipe(
+            Effect.flatMap((lines) =>
+              Effect.forEach(
+                lines,
+                (line) => {
+                  const classified = classifyCodexStderrLine(line);
+                  if (!classified) {
+                    return Effect.void;
+                  }
+                  return emitEvent({
+                    kind: "notification",
+                    threadId: options.threadId,
+                    method: "process/stderr",
+                    message: classified.message,
+                  });
+                },
+                { discard: true },
+              ),
             ),
           ),
         ),
-      ),
-      Effect.forkIn(runtimeScope),
-    );
+        Effect.forkIn(runtimeScope),
+      );
 
-    yield* child.exitCode.pipe(
-      Effect.flatMap((exitCode) =>
-        Ref.get(closedRef).pipe(
-          Effect.flatMap((closed) => {
-            if (closed) {
-              return Effect.void;
-            }
-            const nextStatus = exitCode === 0 ? "closed" : "error";
-            return updateSession(sessionRef, {
-              status: nextStatus,
-              activeTurnId: undefined,
-            }).pipe(
-              Effect.andThen(
-                emitSessionEvent(
-                  "session/exited",
-                  exitCode === 0
-                    ? "Codex App Server exited."
-                    : `Codex App Server exited with code ${exitCode}.`,
+      yield* transport.child.exitCode.pipe(
+        Effect.flatMap((exitCode) =>
+          Ref.get(closedRef).pipe(
+            Effect.flatMap((closed) => {
+              if (closed) {
+                return Effect.void;
+              }
+              const nextStatus = exitCode === 0 ? "closed" : "error";
+              return updateSession(sessionRef, {
+                status: nextStatus,
+                activeTurnId: undefined,
+              }).pipe(
+                Effect.andThen(
+                  emitSessionEvent(
+                    "session/exited",
+                    exitCode === 0
+                      ? "Codex App Server exited."
+                      : `Codex App Server exited with code ${exitCode}.`,
+                  ),
                 ),
-              ),
-            );
-          }),
+              );
+            }),
+          ),
         ),
-      ),
-      Effect.forkIn(runtimeScope),
-    );
+        Effect.forkIn(runtimeScope),
+      );
+    }
 
     const start = Effect.fn("CodexSessionRuntime.start")(function* () {
-      yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
-      yield* client.request("initialize", buildCodexInitializeParams());
-      yield* client.notify("initialized", undefined);
+      yield* emitSessionEvent(
+        "session/connecting",
+        transport.mode === "endpoint"
+          ? "Opening Codex endpoint session."
+          : "Starting Codex App Server session.",
+      );
+      if (transport.mode === "legacy") {
+        yield* client.request("initialize", buildCodexInitializeParams());
+        yield* client.notify("initialized", undefined);
+      }
 
       const requestedModel = normalizeCodexModelSlug(options.model);
+      const resumeThreadId = readResumeCursorThreadId(options.resumeCursor);
+      if (endpointRegistration && resumeThreadId !== undefined) {
+        yield* endpointRegistration.bindNativeThreadId(resumeThreadId);
+      }
 
       const opened = yield* openCodexThread({
         client,
@@ -1226,10 +1341,17 @@ export const makeCodexSessionRuntime = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
-        resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        resumeThreadId,
       });
 
       const providerThreadId = opened.thread.id;
+      if (endpointRegistration) {
+        if (resumeThreadId !== undefined && resumeThreadId !== providerThreadId) {
+          yield* endpointRegistration.rebindNativeThreadId(providerThreadId);
+        } else {
+          yield* endpointRegistration.bindNativeThreadId(providerThreadId);
+        }
+      }
       const session = {
         ...(yield* Ref.get(sessionRef)),
         status: "ready",
@@ -1421,3 +1543,91 @@ export const makeCodexSessionRuntime = (
       close,
     } satisfies CodexSessionRuntimeShape;
   });
+
+export const makeCodexSessionRuntime = (
+  options: CodexSessionRuntimeOptions,
+): Effect.Effect<
+  CodexSessionRuntimeShape,
+  CodexSessionRuntimeError,
+  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const runtimeScope = yield* Scope.Scope;
+
+    // `~` is not shell-expanded when env vars are set via
+    // `child_process.spawn`; expand CODEX_HOME before invoking the legacy
+    // per-session process while that compatibility path remains.
+    const resolvedHomePath = options.homePath ? expandHomePath(options.homePath) : undefined;
+    const env = {
+      ...options.environment,
+      ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
+    };
+    const extendEnv = options.environment === undefined;
+    const appServerArgs = codexSessionAppServerArgs(options.appServerArgs, options.launchArgs);
+    const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, appServerArgs, {
+      env,
+      extendEnv,
+    });
+    const child = yield* spawner
+      .spawn(
+        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+          cwd: options.cwd,
+          env,
+          extendEnv,
+          forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
+          shell: spawnCommand.shell,
+        }),
+      )
+      .pipe(
+        Effect.provideService(Scope.Scope, runtimeScope),
+        Effect.mapError(
+          (cause) =>
+            new CodexErrors.CodexAppServerSpawnError({
+              command: `${options.binaryPath} app-server`,
+              cause,
+            }),
+        ),
+      );
+
+    const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
+      Layer.build,
+      Effect.provideService(Scope.Scope, runtimeScope),
+    );
+    const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
+      Effect.provide(clientContext),
+    );
+    return yield* makeCodexSessionRuntimeCore(options, {
+      mode: "legacy",
+      client,
+      child,
+    });
+  });
+
+export const makeCodexEndpointSessionRuntime = Effect.fn("CodexSessionRuntime.makeEndpoint")(
+  function* (
+    input: MakeCodexEndpointSessionRuntimeInput,
+  ): Effect.fn.Return<
+    CodexSessionRuntimeShape,
+    CodexSessionRuntimeError,
+    Crypto.Crypto | Scope.Scope
+  > {
+    if (input.options.providerInstanceId !== input.connection.identity.providerInstanceId) {
+      return yield* new CodexSessionRuntimeEndpointInstanceMismatchError({
+        threadId: input.options.threadId,
+        configuredProviderInstanceId: input.options.providerInstanceId,
+        connectionProviderInstanceId: input.connection.identity.providerInstanceId,
+      });
+    }
+    if (hasConfiguredMcpServer(input.options.appServerArgs)) {
+      return yield* new CodexSessionRuntimeEndpointMcpConfigurationError({
+        threadId: input.options.threadId,
+      });
+    }
+    return yield* makeCodexSessionRuntimeCore(input.options, {
+      mode: "endpoint",
+      client: input.connection.client,
+      router: input.router,
+    });
+  },
+);

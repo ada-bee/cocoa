@@ -111,6 +111,10 @@ export interface CodexEndpointSessionRegistration {
   readonly bindNativeThreadId: (
     nativeThreadId: string,
   ) => Effect.Effect<void, CodexEndpointRouterRegistrationError>;
+  /** Atomically move this session from its current native thread to a fresh one. */
+  readonly rebindNativeThreadId: (
+    nativeThreadId: string,
+  ) => Effect.Effect<void, CodexEndpointRouterRegistrationError>;
 }
 
 export interface CodexEndpointRouter {
@@ -369,7 +373,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
       Effect.forkScoped,
     );
 
-    const bindNativeThreadId = (nativeThreadId: string) =>
+    const bindNativeThreadIdInternal = (nativeThreadId: string, allowRebind: boolean) =>
       routingLock.withPermits(1)(
         Effect.gen(function* () {
           if (state.sessions.get(session.threadId) !== session) {
@@ -379,7 +383,11 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
               nativeThreadId,
             });
           }
-          if (session.nativeThreadId !== undefined && session.nativeThreadId !== nativeThreadId) {
+          if (
+            !allowRebind &&
+            session.nativeThreadId !== undefined &&
+            session.nativeThreadId !== nativeThreadId
+          ) {
             return yield* new CodexEndpointRouterRegistrationError({
               reason: "session-already-bound",
               threadId: session.threadId,
@@ -393,6 +401,10 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
               threadId: session.threadId,
               nativeThreadId,
             });
+          }
+          const previousNativeThreadId = session.nativeThreadId;
+          if (previousNativeThreadId !== undefined && previousNativeThreadId !== nativeThreadId) {
+            state.sessionsByNativeThreadId.delete(previousNativeThreadId);
           }
           session.nativeThreadId = nativeThreadId;
           state.sessionsByNativeThreadId.set(nativeThreadId, session);
@@ -414,7 +426,10 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
         }),
       );
 
-    return { bindNativeThreadId };
+    return {
+      bindNativeThreadId: (nativeThreadId) => bindNativeThreadIdInternal(nativeThreadId, false),
+      rebindNativeThreadId: (nativeThreadId) => bindNativeThreadIdInternal(nativeThreadId, true),
+    };
   });
 
   return { registerSession };

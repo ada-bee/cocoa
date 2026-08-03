@@ -327,3 +327,74 @@ it.effect("keeps the newest notifications when the pre-bind backlog is full", ()
     assert.equal(yield* Queue.size(delivered), 0);
   }),
 );
+
+it.effect("atomically rebinds a session and drains only the new native-thread backlog", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client);
+    const delivered = yield* Queue.unbounded<string>();
+    const registration = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-thread"),
+      callbacks: makeCallbacks({
+        onNotification: (_method, params) =>
+          Queue.offer(delivered, (params as { threadId: string }).threadId).pipe(Effect.asVoid),
+      }),
+    });
+    yield* registration.bindNativeThreadId("stale-native-thread");
+    yield* fake.emitNotification("thread/status/changed", {
+      threadId: "fresh-native-thread",
+    });
+
+    yield* registration.rebindNativeThreadId("fresh-native-thread");
+    assert.equal(yield* Queue.take(delivered), "fresh-native-thread");
+
+    yield* fake.emitNotification("thread/status/changed", {
+      threadId: "stale-native-thread",
+    });
+    yield* fake.emitNotification("thread/status/changed", {
+      threadId: "fresh-native-thread",
+    });
+    assert.equal(yield* Queue.take(delivered), "fresh-native-thread");
+    assert.equal(yield* Queue.size(delivered), 0);
+  }),
+);
+
+it.effect("rejects rebinding onto another session without disturbing either owner", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client);
+    const firstDelivered = yield* Queue.unbounded<string>();
+    const secondDelivered = yield* Queue.unbounded<string>();
+    const first = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-first"),
+      callbacks: makeCallbacks({
+        onNotification: (_method, params) =>
+          Queue.offer(firstDelivered, (params as { threadId: string }).threadId).pipe(
+            Effect.asVoid,
+          ),
+      }),
+    });
+    const second = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-second"),
+      callbacks: makeCallbacks({
+        onNotification: (_method, params) =>
+          Queue.offer(secondDelivered, (params as { threadId: string }).threadId).pipe(
+            Effect.asVoid,
+          ),
+      }),
+    });
+    yield* first.bindNativeThreadId("native-first");
+    yield* second.bindNativeThreadId("native-second");
+
+    const result = yield* first.rebindNativeThreadId("native-second").pipe(Effect.result);
+    assert.equal(result._tag, "Failure");
+    if (result._tag === "Failure") {
+      assert.equal(result.failure.reason, "native-thread-already-bound");
+    }
+
+    yield* fake.emitNotification("thread/status/changed", { threadId: "native-first" });
+    yield* fake.emitNotification("thread/status/changed", { threadId: "native-second" });
+    assert.equal(yield* Queue.take(firstDelivered), "native-first");
+    assert.equal(yield* Queue.take(secondDelivered), "native-second");
+  }),
+);
