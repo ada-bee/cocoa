@@ -398,3 +398,233 @@ it.effect("rejects rebinding onto another session without disturbing either owne
     assert.equal(yield* Queue.take(secondDelivered), "native-second");
   }),
 );
+
+it.effect("aliases a collaboration child for notifications and requests until it closes", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client);
+    const delivered = yield* Queue.unbounded<string>();
+    const registration = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-parent"),
+      callbacks: makeCallbacks({
+        onNotification: (method, params) => {
+          const value = params as { thread?: { id: string }; threadId?: string };
+          return Queue.offer(delivered, `${method}:${value.thread?.id ?? value.threadId}`).pipe(
+            Effect.asVoid,
+          );
+        },
+        onRequest: () => Effect.succeed({ decision: "accept" }),
+      }),
+    });
+    yield* registration.bindNativeThreadId("native-parent");
+
+    yield* fake.emitNotification("thread/started", {
+      thread: { id: "native-child", parentThreadId: "native-parent" },
+    });
+    assert.equal(yield* Queue.take(delivered), "thread/started:native-child");
+    yield* fake.emitNotification("thread/status/changed", { threadId: "native-child" });
+    assert.equal(yield* Queue.take(delivered), "thread/status/changed:native-child");
+    assert.deepEqual(
+      yield* fake.request("item/commandExecution/requestApproval", {
+        itemId: "item-1",
+        startedAtMs: 1,
+        threadId: "native-child",
+        turnId: "turn-1",
+      }),
+      { decision: "accept" },
+    );
+
+    yield* registration.rebindNativeThreadId("native-parent-rebound");
+    yield* fake.emitNotification("thread/status/changed", { threadId: "native-child" });
+    assert.equal(yield* Queue.take(delivered), "thread/status/changed:native-child");
+
+    yield* fake.emitNotification("thread/closed", { threadId: "native-child" });
+    assert.equal(yield* Queue.take(delivered), "thread/closed:native-child");
+    const closedChildRequest = yield* fake
+      .request("item/fileChange/requestApproval", {
+        itemId: "item-2",
+        startedAtMs: 1,
+        threadId: "native-child",
+        turnId: "turn-2",
+      })
+      .pipe(Effect.result);
+    assert.equal(closedChildRequest._tag, "Failure");
+  }),
+);
+
+it.effect("aliases nested collaboration children through a parent alias", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client);
+    const delivered = yield* Queue.unbounded<string>();
+    const registration = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-parent"),
+      callbacks: makeCallbacks({
+        onNotification: (method, params) => {
+          const value = params as { thread?: { id: string }; threadId?: string };
+          return Queue.offer(delivered, `${method}:${value.thread?.id ?? value.threadId}`).pipe(
+            Effect.asVoid,
+          );
+        },
+      }),
+    });
+    yield* registration.bindNativeThreadId("native-root");
+    yield* fake.emitNotification("thread/started", {
+      thread: { id: "native-child", parentThreadId: "native-root" },
+    });
+    assert.equal(yield* Queue.take(delivered), "thread/started:native-child");
+
+    yield* fake.emitNotification("thread/started", {
+      thread: {
+        id: "native-grandchild",
+        source: { subAgent: { parent_thread_id: "native-child" } },
+      },
+    });
+    assert.equal(yield* Queue.take(delivered), "thread/started:native-grandchild");
+    yield* fake.emitNotification("thread/status/changed", {
+      threadId: "native-grandchild",
+    });
+    assert.equal(yield* Queue.take(delivered), "thread/status/changed:native-grandchild");
+  }),
+);
+
+it.effect("does not let a collaboration alias steal another session's direct primary", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client);
+    const childOwnerDelivered = yield* Queue.unbounded<string>();
+    const parentOwnerDelivered = yield* Queue.unbounded<string>();
+    const childOwner = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-child-owner"),
+      callbacks: makeCallbacks({
+        onNotification: (method) => Queue.offer(childOwnerDelivered, method).pipe(Effect.asVoid),
+      }),
+    });
+    const parentOwner = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-parent-owner"),
+      callbacks: makeCallbacks({
+        onNotification: (method) => Queue.offer(parentOwnerDelivered, method).pipe(Effect.asVoid),
+      }),
+    });
+    yield* childOwner.bindNativeThreadId("native-child");
+    yield* parentOwner.bindNativeThreadId("native-parent");
+
+    yield* fake.emitNotification("thread/started", {
+      thread: { id: "native-child", parentThreadId: "native-parent" },
+    });
+    assert.equal(yield* Queue.take(childOwnerDelivered), "thread/started");
+    assert.equal(yield* Queue.size(parentOwnerDelivered), 0);
+  }),
+);
+
+it.effect("removes every collaboration alias when the session scope closes", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client);
+    const delivered = yield* Queue.unbounded<string>();
+    const sessionScope = yield* Scope.make();
+    const registration = yield* registerInScope(
+      router,
+      {
+        threadId: ThreadId.make("cocoa-parent"),
+        callbacks: makeCallbacks({
+          onNotification: (method) => Queue.offer(delivered, method).pipe(Effect.asVoid),
+        }),
+      },
+      sessionScope,
+    );
+    yield* registration.bindNativeThreadId("native-parent");
+    yield* fake.emitNotification("thread/started", {
+      thread: { id: "native-child", parentThreadId: "native-parent" },
+    });
+    yield* Queue.take(delivered);
+    yield* Scope.close(sessionScope, Exit.void);
+
+    yield* fake.emitNotification("thread/status/changed", { threadId: "native-child" });
+    assert.equal(yield* Queue.size(delivered), 0);
+    const request = yield* fake
+      .request("item/tool/requestUserInput", {
+        itemId: "item-1",
+        questions: [],
+        threadId: "native-child",
+        turnId: "turn-1",
+      })
+      .pipe(Effect.result);
+    assert.equal(request._tag, "Failure");
+  }),
+);
+
+it.effect("evicts only the oldest collaboration alias when the session bound is full", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client, {
+      collaborationChildAliasCapacity: 2,
+    });
+    const delivered = yield* Queue.unbounded<string>();
+    const registration = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-parent"),
+      callbacks: makeCallbacks({
+        onNotification: (_method, params) => {
+          const value = params as { thread?: { id: string }; threadId?: string };
+          return Queue.offer(delivered, value.thread?.id ?? value.threadId ?? "missing").pipe(
+            Effect.asVoid,
+          );
+        },
+        onRequest: () => Effect.succeed({ decision: "accept" }),
+      }),
+    });
+    yield* registration.bindNativeThreadId("native-parent");
+    for (const child of ["child-1", "child-2", "child-3"]) {
+      yield* fake.emitNotification("thread/started", {
+        thread: { id: child, parentThreadId: "native-parent" },
+      });
+      assert.equal(yield* Queue.take(delivered), child);
+    }
+
+    yield* fake.emitNotification("thread/status/changed", { threadId: "child-1" });
+    yield* fake.emitNotification("thread/status/changed", { threadId: "child-2" });
+    yield* fake.emitNotification("thread/status/changed", { threadId: "child-3" });
+    assert.equal(yield* Queue.take(delivered), "child-2");
+    assert.equal(yield* Queue.take(delivered), "child-3");
+    assert.equal(yield* Queue.size(delivered), 0);
+
+    const evicted = yield* fake
+      .request("item/fileChange/requestApproval", {
+        itemId: "item-1",
+        startedAtMs: 1,
+        threadId: "child-1",
+        turnId: "turn-1",
+      })
+      .pipe(Effect.result);
+    assert.equal(evicted._tag, "Failure");
+    assert.deepEqual(
+      yield* fake.request("item/fileChange/requestApproval", {
+        itemId: "item-2",
+        startedAtMs: 1,
+        threadId: "child-2",
+        turnId: "turn-2",
+      }),
+      { decision: "accept" },
+    );
+  }),
+);
+
+it.effect("keeps an unowned collaboration child in the existing pre-bind backlog", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client);
+    yield* fake.emitNotification("thread/started", {
+      thread: { id: "native-child", parentThreadId: "missing-parent" },
+    });
+
+    const delivered = yield* Queue.unbounded<string>();
+    const registration = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-child"),
+      callbacks: makeCallbacks({
+        onNotification: (method) => Queue.offer(delivered, method).pipe(Effect.asVoid),
+      }),
+    });
+    yield* registration.bindNativeThreadId("native-child");
+    assert.equal(yield* Queue.take(delivered), "thread/started");
+  }),
+);

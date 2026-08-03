@@ -21,6 +21,7 @@ import * as CodexRpc from "effect-codex-app-server/rpc";
 const DEFAULT_UNBOUND_NOTIFICATION_BACKLOG_CAPACITY = 32;
 const DEFAULT_UNBOUND_NATIVE_THREAD_CAPACITY = 128;
 const DEFAULT_SESSION_NOTIFICATION_CAPACITY = 256;
+const DEFAULT_COLLABORATION_CHILD_ALIAS_CAPACITY = 256;
 
 export const CODEX_INTERACTIVE_SERVER_REQUEST_METHODS = [
   "item/commandExecution/requestApproval",
@@ -72,6 +73,11 @@ export interface CodexEndpointRouterOptions {
   readonly unboundNativeThreadCapacity?: number;
   /** Per-session delivery mailbox. New notifications are dropped when a slow callback fills it. */
   readonly sessionNotificationCapacity?: number;
+  /**
+   * Maximum collaboration-child aliases retained per session. The oldest alias is evicted when
+   * full; the session's directly bound primary native thread is never evicted.
+   */
+  readonly collaborationChildAliasCapacity?: number;
 }
 
 export class CodexEndpointRouterRegistrationError extends Schema.TaggedErrorClass<CodexEndpointRouterRegistrationError>()(
@@ -98,6 +104,7 @@ interface SessionEntry {
   readonly threadId: ThreadId;
   readonly callbacks: CodexEndpointSessionCallbacks;
   readonly notifications: Queue.Queue<RoutedNotification>;
+  readonly childAliases: Set<string>;
   nativeThreadId: string | undefined;
 }
 
@@ -145,6 +152,45 @@ function readNotificationThreadId(notification: RoutedNotification): string | un
       : undefined;
   }
   return "threadId" in params && typeof params.threadId === "string" ? params.threadId : undefined;
+}
+
+function readThreadStartedParentId(notification: RoutedNotification): string | undefined {
+  if (notification.method !== "thread/started") return undefined;
+  const params = notification.params;
+  if (
+    typeof params !== "object" ||
+    params === null ||
+    !("thread" in params) ||
+    typeof params.thread !== "object" ||
+    params.thread === null
+  ) {
+    return undefined;
+  }
+  const thread = params.thread;
+  if ("parentThreadId" in thread && typeof thread.parentThreadId === "string") {
+    return thread.parentThreadId;
+  }
+  if (!("source" in thread) || typeof thread.source !== "object" || thread.source === null) {
+    return undefined;
+  }
+  const source = thread.source;
+  if (!("subAgent" in source) || typeof source.subAgent !== "object" || source.subAgent === null) {
+    return undefined;
+  }
+  const subAgent = source.subAgent;
+  if ("parent_thread_id" in subAgent && typeof subAgent.parent_thread_id === "string") {
+    return subAgent.parent_thread_id;
+  }
+  if (
+    "thread_spawn" in subAgent &&
+    typeof subAgent.thread_spawn === "object" &&
+    subAgent.thread_spawn !== null &&
+    "parent_thread_id" in subAgent.thread_spawn &&
+    typeof subAgent.thread_spawn.parent_thread_id === "string"
+  ) {
+    return subAgent.thread_spawn.parent_thread_id;
+  }
+  return undefined;
 }
 
 function makeNotification<M extends CodexRpc.ServerNotificationMethod>(
@@ -209,6 +255,11 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
     DEFAULT_SESSION_NOTIFICATION_CAPACITY,
     1,
   );
+  const collaborationChildAliasCapacity = normalizeCapacity(
+    options.collaborationChildAliasCapacity,
+    DEFAULT_COLLABORATION_CHILD_ALIAS_CAPACITY,
+    0,
+  );
   const routingLock = yield* Semaphore.make(1);
   const state: RouterState = {
     sessions: new Map(),
@@ -238,6 +289,55 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
     backlog.push(notification);
   };
 
+  const removeChildAlias = (session: SessionEntry, nativeThreadId: string): void => {
+    if (!session.childAliases.delete(nativeThreadId)) return;
+    if (state.sessionsByNativeThreadId.get(nativeThreadId) === session) {
+      state.sessionsByNativeThreadId.delete(nativeThreadId);
+    }
+  };
+
+  const aliasCollaborationChild = Effect.fn("CodexEndpointRouter.aliasCollaborationChild")(
+    function* (
+      childNativeThreadId: string,
+      parentNativeThreadId: string,
+    ): Effect.fn.Return<SessionEntry | undefined> {
+      const childOwner = state.sessionsByNativeThreadId.get(childNativeThreadId);
+      if (childOwner !== undefined) {
+        const parentOwner = state.sessionsByNativeThreadId.get(parentNativeThreadId);
+        if (parentOwner !== undefined && parentOwner !== childOwner) {
+          yield* Effect.logWarning("ignored conflicting Codex collaboration-child alias", {
+            childNativeThreadId,
+            parentNativeThreadId,
+            childOwnerThreadId: childOwner.threadId,
+            parentOwnerThreadId: parentOwner.threadId,
+          });
+        }
+        return childOwner;
+      }
+      const parentOwner = state.sessionsByNativeThreadId.get(parentNativeThreadId);
+      if (parentOwner === undefined || collaborationChildAliasCapacity === 0) return undefined;
+      if (parentOwner.childAliases.size >= collaborationChildAliasCapacity) {
+        const oldestAlias = parentOwner.childAliases.values().next().value;
+        if (oldestAlias !== undefined) {
+          removeChildAlias(parentOwner, oldestAlias);
+          yield* Effect.logWarning("evicted oldest Codex collaboration-child alias", {
+            threadId: parentOwner.threadId,
+            nativeThreadId: oldestAlias,
+            capacity: collaborationChildAliasCapacity,
+          });
+        }
+      }
+      parentOwner.childAliases.add(childNativeThreadId);
+      state.sessionsByNativeThreadId.set(childNativeThreadId, parentOwner);
+      const backlog = state.notificationBacklogs.get(childNativeThreadId) ?? [];
+      state.notificationBacklogs.delete(childNativeThreadId);
+      for (const notification of backlog) {
+        yield* Queue.offer(parentOwner.notifications, notification);
+      }
+      return parentOwner;
+    },
+  );
+
   const routeNotification = <M extends CodexRpc.ServerNotificationMethod>(
     method: M,
     params: CodexRpc.ServerNotificationParamsByMethod[M],
@@ -250,7 +350,11 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
         };
         const nativeThreadId = readNotificationThreadId(notification);
         if (nativeThreadId === undefined) return;
-        const session = state.sessionsByNativeThreadId.get(nativeThreadId);
+        const parentNativeThreadId = readThreadStartedParentId(notification);
+        const session =
+          parentNativeThreadId === undefined
+            ? state.sessionsByNativeThreadId.get(nativeThreadId)
+            : yield* aliasCollaborationChild(nativeThreadId, parentNativeThreadId);
         if (!session) {
           appendNotificationBacklog(nativeThreadId, notification);
           return;
@@ -262,6 +366,9 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
             nativeThreadId,
             method,
           });
+        }
+        if (method === "thread/closed" && session.childAliases.has(nativeThreadId)) {
+          removeChildAlias(session, nativeThreadId);
         }
       }),
     );
@@ -320,6 +427,12 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
           if (nativeThreadId !== undefined) {
             state.sessionsByNativeThreadId.delete(nativeThreadId);
           }
+          for (const childAlias of session.childAliases) {
+            if (state.sessionsByNativeThreadId.get(childAlias) === session) {
+              state.sessionsByNativeThreadId.delete(childAlias);
+            }
+          }
+          session.childAliases.clear();
         }),
       )
       .pipe(Effect.andThen(Queue.shutdown(session.notifications)), Effect.asVoid);
@@ -337,6 +450,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
       threadId: input.threadId,
       callbacks: input.callbacks,
       notifications,
+      childAliases: new Set(),
       nativeThreadId: undefined,
     };
 
@@ -406,6 +520,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
           if (previousNativeThreadId !== undefined && previousNativeThreadId !== nativeThreadId) {
             state.sessionsByNativeThreadId.delete(previousNativeThreadId);
           }
+          removeChildAlias(session, nativeThreadId);
           session.nativeThreadId = nativeThreadId;
           state.sessionsByNativeThreadId.set(nativeThreadId, session);
           const backlog = state.notificationBacklogs.get(nativeThreadId) ?? [];
