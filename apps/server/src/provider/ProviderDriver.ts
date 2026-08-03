@@ -27,6 +27,7 @@ import type {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
+import type * as PubSub from "effect/PubSub";
 import type * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
@@ -74,12 +75,45 @@ export interface ProviderInstance {
    * behavior for upstream and third-party drivers.
    */
   readonly gatewayMcpMode?: GatewayMcpMode;
+  /**
+   * Optional generation-aware readiness source for provider instances whose
+   * transport can reconnect. Consumers subscribe first and then read
+   * `getCurrent`, closing the initial-ready race without replaying a lossy
+   * process-global event stream.
+   */
+  readonly generationLifecycle?: ProviderInstanceGenerationLifecycle;
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
 }
 
 export type GatewayMcpMode = "inject" | "unavailable";
+
+export type ProviderInstanceGenerationState =
+  | {
+      readonly _tag: "Unavailable";
+      readonly providerInstanceId: ProviderInstanceId;
+    }
+  | {
+      readonly _tag: "Ready";
+      readonly providerInstanceId: ProviderInstanceId;
+      /**
+       * Monotonic only for this `ProviderInstanceGenerationLifecycle` object.
+       * Consumers must discard generation state when the registry replaces the
+       * materialized instance; `(providerInstanceId, generationId)` is not a
+       * process-global identity.
+       */
+      readonly generationId: number;
+    };
+
+export interface ProviderInstanceGenerationLifecycle {
+  readonly getCurrent: Effect.Effect<ProviderInstanceGenerationState>;
+  readonly subscribeChanges: Effect.Effect<
+    PubSub.Subscription<ProviderInstanceGenerationState>,
+    never,
+    Scope.Scope
+  >;
+}
 
 export interface ProviderContinuationIdentity {
   readonly driverKind: ProviderDriverKind;

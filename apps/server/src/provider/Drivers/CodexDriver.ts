@@ -9,9 +9,10 @@
  *     unavailable service when the remote endpoint does not expose it.
  *
  * Each call to `create()` captures the typed config in closures owned by the
- * returned instance. Endpoint-backed instances own exactly one initialized
- * connection and one notification router for their whole driver scope;
- * legacy instances retain their isolated local app-server behavior.
+ * returned instance. Endpoint-backed instances own one supervisor whose
+ * immutable connection/router generation is replaced after transient
+ * termination; legacy instances retain their isolated local app-server
+ * behavior.
  *
  * Resource lifecycle: `create()` runs in a scope handed in by the registry.
  * Closing that scope releases the endpoint transport (or legacy adapter child
@@ -24,6 +25,7 @@
 import {
   CodexSettings,
   ProviderDriverKind,
+  ThreadId,
   TextGenerationError,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -31,8 +33,10 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -48,22 +52,22 @@ import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
 } from "../Layers/CodexProvider.ts";
-import {
-  CodexSessionRuntimeEndpointUnavailableError,
-  makeCodexEndpointSessionRuntime,
-} from "../Layers/CodexSessionRuntime.ts";
+import { makeCodexEndpointSessionRuntime } from "../Layers/CodexSessionRuntime.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
   type ProviderInstance,
+  type ProviderInstanceGenerationState,
 } from "../ProviderDriver.ts";
 import * as CodexEndpointFactory from "../codexEndpoint/CodexEndpointFactory.ts";
 import { makeCodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
+import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
+  createProviderVersionAdvisory,
   enrichProviderSnapshotWithVersionAdvisory,
   makeManualOnlyProviderMaintenanceCapabilities,
   makePackageManagedProviderMaintenanceResolver,
@@ -115,6 +119,7 @@ const makeUnavailableEndpointTextGeneration = (
 };
 
 export interface CodexDriverDependencies {
+  readonly makeEndpointSupervisor: typeof CodexEndpointSupervisor.make;
   readonly makeEndpoint: typeof CodexEndpointFactory.make;
   readonly makeEndpointRouter: typeof makeCodexEndpointRouter;
   readonly makeEndpointRuntime: typeof makeCodexEndpointSessionRuntime;
@@ -127,6 +132,7 @@ export interface CodexDriverDependencies {
 }
 
 const defaultDependencies: CodexDriverDependencies = {
+  makeEndpointSupervisor: CodexEndpointSupervisor.make,
   makeEndpoint: CodexEndpointFactory.make,
   makeEndpointRouter: makeCodexEndpointRouter,
   makeEndpointRuntime: makeCodexEndpointSessionRuntime,
@@ -266,18 +272,138 @@ export const makeCodexDriver = (
             } satisfies ProviderInstance;
           }
 
-          const connection = yield* dependencies
-            .makeEndpoint({
-              providerInstanceId: instanceId,
-              transport: config.endpointTransport,
-            })
-            .pipe(
-              Effect.mapError((cause) =>
-                mapDriverError(`Failed to connect Codex endpoint: ${cause.message}`, cause),
-              ),
-            );
-          const router = yield* dependencies.makeEndpointRouter(connection.client);
-          const generationAvailable = yield* Ref.make(true);
+          const supervisor = yield* dependencies.makeEndpointSupervisor({
+            providerInstanceId: instanceId,
+            transport: config.endpointTransport,
+            dependencies: {
+              makeEndpoint: dependencies.makeEndpoint,
+              makeRouter: dependencies.makeEndpointRouter,
+            },
+          });
+          const supervisorChanges = yield* supervisor.subscribeChanges;
+          const generationChanges = yield* Effect.acquireRelease(
+            PubSub.unbounded<ProviderInstanceGenerationState>(),
+            PubSub.shutdown,
+          );
+          const toGenerationState = (
+            state: CodexEndpointSupervisor.CodexEndpointSupervisorState,
+          ): ProviderInstanceGenerationState =>
+            state._tag === "Ready"
+              ? {
+                  _tag: "Ready",
+                  providerInstanceId: instanceId,
+                  generationId: state.generationId,
+                }
+              : { _tag: "Unavailable", providerInstanceId: instanceId };
+          const generationLifecycle = {
+            getCurrent: supervisor.getState.pipe(Effect.map(toGenerationState)),
+            subscribeChanges: PubSub.subscribe(generationChanges),
+          } as const;
+          const lastReadySnapshot = yield* Ref.make<ServerProviderDraft | null>(null);
+          const observedServerVersion = yield* Ref.make<string | null>(null);
+
+          const withEndpointVersionAdvisory = (
+            draft: ServerProviderDraft,
+          ): ServerProviderDraft => ({
+            ...draft,
+            versionAdvisory: createProviderVersionAdvisory({
+              driver: DRIVER_KIND,
+              currentVersion: draft.version,
+              checkedAt: draft.checkedAt,
+              maintenanceCapabilities,
+            }),
+          });
+
+          const makeLifecycleSnapshot = Effect.fn("CodexDriver.makeEndpointLifecycleSnapshot")(
+            function* (state: CodexEndpointSupervisor.CodexEndpointSupervisorState) {
+              const previous = yield* Ref.get(lastReadySnapshot);
+              const pending = previous ?? (yield* makePendingCodexProvider(effectiveConfig));
+              const observedVersion =
+                state._tag === "Ready"
+                  ? (state.compatibility.serverVersion ?? (yield* Ref.get(observedServerVersion)))
+                  : yield* Ref.get(observedServerVersion);
+              const presentation = (() => {
+                switch (state._tag) {
+                  case "Connecting":
+                    return {
+                      status: "warning" as const,
+                      message: `Connecting to the Codex endpoint (attempt ${state.attempt}).`,
+                    };
+                  case "Retrying":
+                    return {
+                      status: "error" as const,
+                      message: `The Codex endpoint connection was interrupted and will retry (attempt ${state.attempt}).`,
+                    };
+                  case "Blocked":
+                    return {
+                      status: "error" as const,
+                      message:
+                        "The Codex endpoint connection is blocked by its configuration or authentication. Update the provider settings to retry.",
+                    };
+                  case "Closed":
+                    return {
+                      status: "error" as const,
+                      message: "The Codex endpoint connection is closed.",
+                    };
+                  case "Ready":
+                    return {
+                      status: "warning" as const,
+                      message: "The Codex endpoint is ready; provider status is being refreshed.",
+                    };
+                }
+              })();
+              return withEndpointVersionAdvisory({
+                ...pending,
+                enabled: true,
+                installed: true,
+                version: observedVersion,
+                status: presentation.status,
+                message: presentation.message,
+              });
+            },
+          );
+
+          const checkProvider = Effect.fn("CodexDriver.checkEndpointSupervisorStatus")(
+            function* () {
+              for (let staleAttempts = 0; staleAttempts < 3; staleAttempts += 1) {
+                const state = yield* supervisor.getState;
+                if (state._tag !== "Ready") {
+                  return yield* makeLifecycleSnapshot(state);
+                }
+                if (state.compatibility.serverVersion !== undefined) {
+                  yield* Ref.set(observedServerVersion, state.compatibility.serverVersion);
+                }
+                const borrowed = yield* supervisor
+                  .borrow(ThreadId.make(`provider-status:${instanceId}`))
+                  .pipe(Effect.result);
+                if (borrowed._tag === "Failure") {
+                  yield* Effect.yieldNow;
+                  continue;
+                }
+                const currentBeforeCheck = yield* borrowed.success.ensureCurrent.pipe(
+                  Effect.result,
+                );
+                if (currentBeforeCheck._tag === "Failure") {
+                  yield* Effect.yieldNow;
+                  continue;
+                }
+                const readySnapshot = yield* dependencies.checkEndpointProviderStatus(
+                  effectiveConfig,
+                  borrowed.success.connection,
+                );
+                const currentAfterCheck = yield* borrowed.success.ensureCurrent.pipe(Effect.result);
+                if (currentAfterCheck._tag === "Failure") {
+                  yield* Effect.yieldNow;
+                  continue;
+                }
+                const advisorySnapshot = withEndpointVersionAdvisory(readySnapshot);
+                yield* Ref.set(lastReadySnapshot, advisorySnapshot);
+                return advisorySnapshot;
+              }
+              return yield* makeLifecycleSnapshot(yield* supervisor.getState);
+            },
+          );
+
           const adapter = yield* dependencies.makeAdapter(effectiveConfig, {
             instanceId,
             enabled: true,
@@ -291,49 +417,57 @@ export const makeCodexDriver = (
                 providerInstanceId: _providerInstanceId,
                 ...endpointOptions
               } = runtimeOptions;
-              const ensureGenerationAvailable = Ref.get(generationAvailable).pipe(
-                Effect.flatMap((available) =>
-                  available
-                    ? Effect.void
-                    : Effect.fail(
-                        new CodexSessionRuntimeEndpointUnavailableError({
-                          threadId: runtimeOptions.threadId,
-                          providerInstanceId: instanceId,
+              return Effect.suspend(() => supervisor.borrow(runtimeOptions.threadId)).pipe(
+                Effect.flatMap((borrowed) =>
+                  borrowed.ensureCurrent.pipe(
+                    Effect.andThen(
+                      Effect.suspend(() =>
+                        dependencies.makeEndpointRuntime({
+                          connection: borrowed.connection,
+                          router: borrowed.router,
+                          options: {
+                            ...endpointOptions,
+                            providerInstanceId: instanceId,
+                          },
                         }),
                       ),
-                ),
-              );
-              return ensureGenerationAvailable.pipe(
-                Effect.andThen(
-                  Effect.suspend(() =>
-                    dependencies.makeEndpointRuntime({
-                      connection,
-                      router,
-                      options: {
-                        ...endpointOptions,
-                        providerInstanceId: instanceId,
-                      },
-                    }),
-                  ),
-                ),
-                Effect.map((runtime) => ({
-                  ...runtime,
-                  start: () =>
-                    ensureGenerationAvailable.pipe(
-                      Effect.andThen(runtime.start()),
-                      Effect.flatMap((session) =>
-                        ensureGenerationAvailable.pipe(Effect.as(session)),
+                    ),
+                    Effect.flatMap((runtime) =>
+                      borrowed.ensureCurrent.pipe(
+                        Effect.as({
+                          ...runtime,
+                          start: () =>
+                            borrowed.ensureCurrent.pipe(
+                              Effect.andThen(runtime.start()),
+                              Effect.flatMap((session) =>
+                                borrowed.ensureCurrent.pipe(Effect.as(session)),
+                              ),
+                            ),
+                        }),
                       ),
                     ),
-                })),
+                  ),
+                ),
               );
             },
             ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
           });
 
-          const checkProvider = dependencies
-            .checkEndpointProviderStatus(effectiveConfig, connection)
-            .pipe(Effect.map(stampIdentity));
+          yield* supervisor.start({
+            onGenerationInvalidated: ({ generationId, error }) =>
+              adapter.stopAll().pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Failed to stop invalidated Codex endpoint sessions", {
+                    providerInstanceId: instanceId,
+                    generationId,
+                    endpointErrorTag: error._tag,
+                    cause,
+                  }),
+                ),
+              ),
+          });
+
+          const stampedCheckProvider = checkProvider().pipe(Effect.map(stampIdentity));
           const snapshotSettings = makeProviderSnapshotSettingsSource(
             effectiveConfig,
             serverSettings,
@@ -345,9 +479,8 @@ export const makeCodexDriver = (
             getSettings: snapshotSettings.getSettings,
             streamSettings: snapshotSettings.streamSettings,
             haveSettingsChanged: haveProviderSnapshotSettingsChanged,
-            initialSnapshot: (settings) =>
-              makePendingCodexProvider(settings.provider).pipe(Effect.map(stampIdentity)),
-            checkProvider,
+            initialSnapshot: () => stampedCheckProvider,
+            checkProvider: stampedCheckProvider,
           }).pipe(
             Effect.mapError((cause) =>
               mapDriverError(
@@ -357,46 +490,21 @@ export const makeCodexDriver = (
             ),
           );
 
-          // A connection and router form one immutable generation. This first
-          // endpoint slice deliberately fails closed: termination invalidates
-          // the generation and stops every borrower once. Reconciliation may
-          // construct a fresh driver scope later; sessions never swap clients
-          // or replay mutations here. Refresh after invalidation so consumers
-          // promptly observe the endpoint's error state.
-          yield* connection.awaitTermination.pipe(
-            Effect.catch((cause) =>
-              Ref.getAndSet(generationAvailable, false).pipe(
-                Effect.flatMap((wasAvailable) =>
-                  wasAvailable
-                    ? adapter.stopAll().pipe(
-                        Effect.catch((stopCause) =>
-                          Effect.logWarning("Failed to stop Codex endpoint sessions", {
-                            providerInstanceId: instanceId,
-                            cause: stopCause,
-                          }),
-                        ),
-                        Effect.andThen(
-                          snapshot.refresh.pipe(
-                            Effect.catchCause((refreshCause) =>
-                              Effect.logWarning(
-                                "Failed to refresh terminated Codex endpoint snapshot",
-                                {
-                                  providerInstanceId: instanceId,
-                                  cause: refreshCause,
-                                },
-                              ),
-                            ),
-                          ),
-                        ),
-                      )
-                    : Effect.void,
-                ),
-                Effect.tap(() =>
-                  Effect.logWarning("Codex endpoint generation terminated", {
+          // The supervisor subscription was acquired before `start`, so the
+          // initial Ready/Retrying/Blocked transition is buffered even though
+          // this bridge starts only after the managed snapshot exists.
+          yield* Stream.fromSubscription(supervisorChanges).pipe(
+            Stream.runForEach((state) =>
+              snapshot.refresh.pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Failed to refresh Codex endpoint lifecycle snapshot", {
                     providerInstanceId: instanceId,
+                    supervisorState: state._tag,
                     cause,
                   }),
                 ),
+                Effect.andThen(PubSub.publish(generationChanges, toGenerationState(state))),
+                Effect.asVoid,
               ),
             ),
             Effect.forkScoped,
@@ -410,6 +518,7 @@ export const makeCodexDriver = (
             accentColor,
             enabled,
             gatewayMcpMode: "unavailable",
+            generationLifecycle,
             snapshot,
             adapter,
             textGeneration,
