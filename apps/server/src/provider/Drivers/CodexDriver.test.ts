@@ -28,6 +28,10 @@ import type {
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { buildServerProvider } from "../providerSnapshot.ts";
+import type {
+  ProviderTerminalAdapter,
+  ProviderTerminalSession,
+} from "../ProviderTerminalAdapter.ts";
 import * as CodexEndpointConnection from "../codexEndpoint/CodexEndpointConnection.ts";
 import type { CodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
@@ -52,6 +56,27 @@ const WORKSPACE_ENDPOINT_CONFIG = decodeCodexSettings({
     url: "ws://127.0.0.1:7777",
     authentication: { type: "none" },
   },
+  workspaceHelper: {
+    type: "cocoa-workspace-helper-v1",
+    executablePath: "/run/current-system/sw/bin/cocoa-workspace-helper",
+    expectedProtocol: 1,
+  },
+});
+const TERMINAL_ENDPOINT_CONFIG = decodeCodexSettings({
+  endpointTransport: {
+    type: "direct-websocket",
+    url: "ws://127.0.0.1:7777",
+    authentication: { type: "none" },
+  },
+  endpointTerminal: { enabled: true, sandboxMode: "workspaceWrite" },
+});
+const TERMINAL_WORKSPACE_ENDPOINT_CONFIG = decodeCodexSettings({
+  endpointTransport: {
+    type: "direct-websocket",
+    url: "ws://127.0.0.1:7777",
+    authentication: { type: "none" },
+  },
+  endpointTerminal: { enabled: true, sandboxMode: "dangerFullAccess" },
   workspaceHelper: {
     type: "cocoa-workspace-helper-v1",
     executablePath: "/run/current-system/sw/bin/cocoa-workspace-helper",
@@ -212,6 +237,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             registerSession: () => Effect.die("unused"),
             registerInternalOperation: () => Effect.die("unused"),
           } as CodexEndpointRouter;
+
           const adapter = {
             stopAll: () =>
               Effect.sync(() => {
@@ -457,6 +483,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             Effect.die(
               "workspace factory called without helper",
             )) as unknown as CodexDriverDependencies["makeEndpointWorkspace"],
+          makeEndpointTerminal: (() =>
+            Effect.die(
+              "terminal factory called while disabled by default",
+            )) as CodexDriverDependencies["makeEndpointTerminal"],
           checkEndpointProviderStatus: ((_config: CodexSettings, connection: unknown) => {
             assert.strictEqual(connection, endpoint.connection);
             return Effect.succeed(providerDraft("ready", "0.1.0"));
@@ -477,10 +507,174 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         assert.isAbove(connectionBorrowCalls, 0);
         assert.deepStrictEqual(fabricatedThreadIds, []);
         assert.isUndefined(instance.workspace);
+        assert.isUndefined(instance.terminal);
         assert.equal((yield* instance.snapshot.getSnapshot).status, "ready");
         yield* Scope.close(instanceScope, Exit.void);
       }),
     ),
+  );
+
+  it.effect(
+    "uses an eagerly started isolated endpoint supervisor for explicit terminal access",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const instanceScope = yield* Scope.make();
+          const conversationOne = yield* makeTerminationConnection(INSTANCE_ID, 1);
+          const conversationTwo = yield* makeTerminationConnection(INSTANCE_ID, 2);
+          const terminalConnection = yield* makeTerminationConnection(INSTANCE_ID, 101);
+          const transports: Array<unknown> = [];
+          const startOrder: Array<string> = [];
+          const releaseOrder: Array<string> = [];
+          const terminalStartConnections: Array<unknown> = [];
+          let supervisorCount = 0;
+          let conversationCurrent = conversationOne.connection;
+          let conversationStopCalls = 0;
+          let invalidateConversation:
+            | ((
+                event: CodexEndpointSupervisor.CodexEndpointGenerationInvalidated,
+              ) => Effect.Effect<void>)
+            | undefined;
+          let invalidateTerminal:
+            | ((
+                event: CodexEndpointSupervisor.CodexEndpointGenerationInvalidated,
+              ) => Effect.Effect<void>)
+            | undefined;
+          let terminalFactoryInput:
+            | {
+                readonly providerInstanceId: ProviderInstanceId;
+                readonly sandboxMode: "workspaceWrite" | "dangerFullAccess";
+              }
+            | undefined;
+
+          const adapter = {
+            stopAll: () =>
+              Effect.sync(() => {
+                conversationStopCalls += 1;
+              }),
+          } as unknown as CodexAdapterShape;
+          const terminalSession: ProviderTerminalSession = {
+            write: () => Effect.void,
+            resize: () => Effect.void,
+            terminate: Effect.void,
+          };
+
+          const driver = makeCodexDriver({
+            makeEndpointSupervisor: ((options) =>
+              Effect.gen(function* () {
+                const label = supervisorCount++ === 0 ? "conversation" : "terminal";
+                transports.push(options.transport);
+                const changes =
+                  yield* PubSub.unbounded<CodexEndpointSupervisor.CodexEndpointSupervisorState>();
+                yield* Effect.addFinalizer(() =>
+                  PubSub.shutdown(changes).pipe(
+                    Effect.andThen(
+                      Effect.sync(() => {
+                        releaseOrder.push(label);
+                      }),
+                    ),
+                  ),
+                );
+                const currentConnection = () =>
+                  label === "conversation" ? conversationCurrent : terminalConnection.connection;
+
+                return {
+                  start: (startOptions) =>
+                    Effect.sync(() => {
+                      startOrder.push(label);
+                      const invalidate = (
+                        event: CodexEndpointSupervisor.CodexEndpointGenerationInvalidated,
+                      ) => startOptions.onGenerationInvalidated(event).pipe(Effect.ignore);
+                      if (label === "conversation") invalidateConversation = invalidate;
+                      else invalidateTerminal = invalidate;
+                    }),
+                  borrow: () => Effect.die("session borrow unused"),
+                  borrowConnection: Effect.sync(() => ({
+                    generationId: label === "conversation" ? 1 : 101,
+                    connection: currentConnection(),
+                    ensureCurrent: Effect.void,
+                  })),
+                  borrowRoutedConnection: Effect.die("routed borrow unused"),
+                  getState: Effect.sync(() => ({
+                    _tag: "Ready" as const,
+                    generationId: label === "conversation" ? 1 : 101,
+                    compatibility: currentConnection().compatibility,
+                  })),
+                  subscribeChanges: PubSub.subscribe(changes),
+                } satisfies CodexEndpointSupervisor.CodexEndpointSupervisor;
+              })) as CodexDriverDependencies["makeEndpointSupervisor"],
+            makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],
+            makeEndpointTerminal: ((options) => {
+              terminalFactoryInput = options;
+              return Effect.succeed({
+                start: () =>
+                  options.borrowConnection.pipe(
+                    Effect.tap((borrowed) =>
+                      Effect.sync(() => {
+                        terminalStartConnections.push(borrowed.connection);
+                      }),
+                    ),
+                    Effect.as(terminalSession),
+                    Effect.orDie,
+                  ),
+              } satisfies ProviderTerminalAdapter);
+            }) as CodexDriverDependencies["makeEndpointTerminal"],
+            makeEndpointWorkspace: (() =>
+              Effect.die(
+                "workspace factory called without helper",
+              )) as unknown as CodexDriverDependencies["makeEndpointWorkspace"],
+            checkEndpointProviderStatus: ((_config: CodexSettings, connection: unknown) => {
+              assert.strictEqual(connection, conversationOne.connection);
+              return Effect.succeed(providerDraft("ready", "0.1.0"));
+            }) as CodexDriverDependencies["checkEndpointProviderStatus"],
+          });
+
+          const instance = yield* driver
+            .create({
+              instanceId: INSTANCE_ID,
+              displayName: undefined,
+              accentColor: undefined,
+              environment: [],
+              enabled: true,
+              config: TERMINAL_ENDPOINT_CONFIG,
+            })
+            .pipe(Effect.provideService(Scope.Scope, instanceScope));
+
+          assert.equal(supervisorCount, 2);
+          assert.deepStrictEqual(startOrder, ["conversation", "terminal"]);
+          assert.strictEqual(transports[0], TERMINAL_ENDPOINT_CONFIG.endpointTransport);
+          assert.strictEqual(transports[1], TERMINAL_ENDPOINT_CONFIG.endpointTransport);
+          assert.equal(terminalFactoryInput?.providerInstanceId, INSTANCE_ID);
+          assert.equal(terminalFactoryInput?.sandboxMode, "workspaceWrite");
+          assert.isDefined(instance.terminal);
+
+          const terminalFailure = new CodexEndpointWebSocketOpenError({
+            url: "ws://127.0.0.1:7777",
+            cause: new Error("terminal transport failed"),
+          });
+          yield* invalidateTerminal!({ generationId: 101, error: terminalFailure });
+          assert.equal(conversationStopCalls, 0);
+          assert.equal((yield* instance.snapshot.getSnapshot).status, "ready");
+          assert.deepStrictEqual(yield* instance.generationLifecycle!.getCurrent, {
+            _tag: "Ready",
+            providerInstanceId: INSTANCE_ID,
+            generationId: 1,
+          });
+
+          yield* instance.terminal!.start({} as never, () => Effect.void).pipe(Effect.scoped);
+          conversationCurrent = conversationTwo.connection;
+          yield* invalidateConversation!({ generationId: 1, error: terminalFailure });
+          yield* instance.terminal!.start({} as never, () => Effect.void).pipe(Effect.scoped);
+          assert.equal(conversationStopCalls, 1);
+          assert.deepStrictEqual(terminalStartConnections, [
+            terminalConnection.connection,
+            terminalConnection.connection,
+          ]);
+
+          yield* Scope.close(instanceScope, Exit.void);
+          assert.deepStrictEqual(releaseOrder, ["terminal", "conversation"]);
+        }),
+      ),
   );
 
   it.effect("does not connect or invoke local seams for a disabled endpoint instance", () =>
@@ -488,6 +682,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
       Effect.gen(function* () {
         let endpointCalls = 0;
         let localCalls = 0;
+        let terminalCalls = 0;
         let workspaceCalls = 0;
         const adapter = { stopAll: () => Effect.void } as unknown as CodexAdapterShape;
         const driver = makeCodexDriver({
@@ -500,6 +695,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             workspaceCalls += 1;
             throw new Error("disabled endpoint created workspace adapter");
           }) as CodexDriverDependencies["makeEndpointWorkspace"],
+          makeEndpointTerminal: (() => {
+            terminalCalls += 1;
+            return Effect.die("disabled endpoint created terminal adapter");
+          }) as CodexDriverDependencies["makeEndpointTerminal"],
           resolveHomeLayout: (() => {
             localCalls += 1;
             return Effect.die("disabled endpoint resolved local home");
@@ -524,12 +723,14 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           accentColor: undefined,
           environment: [],
           enabled: false,
-          config: WORKSPACE_ENDPOINT_CONFIG,
+          config: TERMINAL_WORKSPACE_ENDPOINT_CONFIG,
         });
         assert.equal(endpointCalls, 0);
         assert.equal(localCalls, 0);
+        assert.equal(terminalCalls, 0);
         assert.equal(workspaceCalls, 0);
         assert.isUndefined(instance.workspace);
+        assert.isUndefined(instance.terminal);
         assert.isFalse(instance.enabled);
         assert.equal(instance.gatewayMcpMode, "unavailable");
         assert.isNull(instance.snapshot.maintenanceCapabilities.update);
@@ -752,6 +953,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         const localCalls: Array<string> = [];
         const endpointCalls: Array<string> = [];
         let workspaceCalls = 0;
+        let terminalCalls = 0;
         const adapter = { stopAll: () => Effect.void } as unknown as CodexAdapterShape;
         const driver = makeCodexDriver({
           makeEndpoint: (() => {
@@ -770,6 +972,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             workspaceCalls += 1;
             throw new Error("legacy branch created workspace adapter");
           }) as CodexDriverDependencies["makeEndpointWorkspace"],
+          makeEndpointTerminal: (() => {
+            terminalCalls += 1;
+            return Effect.die("legacy branch created terminal adapter");
+          }) as CodexDriverDependencies["makeEndpointTerminal"],
           makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],
           resolveHomeLayout: (() => {
             localCalls.push("home");
@@ -802,6 +1008,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           enabled: false,
           config: decodeCodexSettings({
             enabled: false,
+            endpointTerminal: { enabled: true, sandboxMode: "workspaceWrite" },
             homePath: "/legacy/.codex",
             workspaceHelper: {
               type: "cocoa-workspace-helper-v1",
@@ -813,7 +1020,9 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
 
         assert.deepStrictEqual(endpointCalls, []);
         assert.equal(workspaceCalls, 0);
+        assert.equal(terminalCalls, 0);
         assert.isUndefined(instance.workspace);
+        assert.isUndefined(instance.terminal);
         assert.deepStrictEqual(localCalls, ["home", "materialize", "text-generation", "probe"]);
         assert.equal(instance.continuationIdentity.continuationKey, "codex:home:/legacy/.codex");
         assert.isUndefined(instance.gatewayMcpMode);

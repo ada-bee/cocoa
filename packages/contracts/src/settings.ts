@@ -196,6 +196,24 @@ export function makeProviderSettingsSchema<const Fields extends Schema.Struct.Fi
   );
 }
 
+export const CodexEndpointTerminalSandboxMode = Schema.Literals([
+  "workspaceWrite",
+  "dangerFullAccess",
+]);
+export type CodexEndpointTerminalSandboxMode = typeof CodexEndpointTerminalSandboxMode.Type;
+
+export const CodexEndpointTerminalConfig = Schema.Union(
+  [
+    Schema.Struct({ enabled: Schema.Literal(false) }),
+    Schema.Struct({
+      enabled: Schema.Literal(true),
+      sandboxMode: CodexEndpointTerminalSandboxMode,
+    }),
+  ],
+  { mode: "oneOf" },
+);
+export type CodexEndpointTerminalConfig = typeof CodexEndpointTerminalConfig.Type;
+
 export const CodexSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
@@ -207,6 +225,15 @@ export const CodexSettings = makeProviderSettingsSchema(
         title: "Endpoint transport",
         description:
           "Internal Cocoa transition field for an externally managed Codex app-server endpoint. When present, the gateway runtime will prefer it over the legacy local-process fields after remote transport integration lands.",
+        providerSettingsForm: { hidden: true },
+      }),
+    ),
+    endpointTerminal: CodexEndpointTerminalConfig.pipe(
+      Schema.withDecodingDefault(Effect.succeed({ enabled: false as const })),
+      Schema.annotateKey({
+        title: "Endpoint terminal",
+        description:
+          "Provider-host terminal capability on a dedicated Codex endpoint connection. Enabling it requires an explicit sandbox mode.",
         providerSettingsForm: { hidden: true },
       }),
     ),
@@ -606,6 +633,7 @@ const ModelSelectionPatch = Schema.Struct({
 export const CodexSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   endpointTransport: Schema.optionalKey(CodexEndpointTransport),
+  endpointTerminal: Schema.optionalKey(CodexEndpointTerminalConfig),
   workspaceHelper: Schema.optionalKey(CodexWorkspaceHelperConfig),
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),

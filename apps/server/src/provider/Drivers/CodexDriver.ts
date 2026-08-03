@@ -9,10 +9,10 @@
  *     unavailable service when the remote endpoint does not expose it.
  *
  * Each call to `create()` captures the typed config in closures owned by the
- * returned instance. Endpoint-backed instances own one supervisor whose
- * immutable connection/router generation is replaced after transient
- * termination; legacy instances retain their isolated local app-server
- * behavior.
+ * returned instance. Endpoint-backed instances own a conversation supervisor
+ * whose immutable connection/router generation is replaced after transient
+ * termination. When explicitly enabled, terminal work owns a second isolated
+ * supervisor; legacy instances retain their isolated local app-server behavior.
  *
  * Resource lifecycle: `create()` runs in a scope handed in by the registry.
  * Closing that scope releases the endpoint transport (or legacy adapter child
@@ -63,6 +63,7 @@ import {
 import * as CodexEndpointFactory from "../codexEndpoint/CodexEndpointFactory.ts";
 import { makeCodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
+import { makeCodexTerminalAdapter } from "../codexTerminal/CodexTerminalAdapter.ts";
 import { makeCodexWorkspaceAdapter } from "../codexWorkspace/CodexWorkspaceAdapter.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
@@ -123,6 +124,7 @@ export interface CodexDriverDependencies {
   readonly makeEndpoint: typeof CodexEndpointFactory.make;
   readonly makeEndpointRouter: typeof makeCodexEndpointRouter;
   readonly makeEndpointRuntime: typeof makeCodexEndpointSessionRuntime;
+  readonly makeEndpointTerminal: typeof makeCodexTerminalAdapter;
   readonly makeEndpointWorkspace: typeof makeCodexWorkspaceAdapter;
   readonly makeAdapter: typeof makeCodexAdapter;
   readonly makeLocalTextGeneration: typeof makeCodexTextGeneration;
@@ -137,6 +139,7 @@ const defaultDependencies: CodexDriverDependencies = {
   makeEndpoint: CodexEndpointFactory.make,
   makeEndpointRouter: makeCodexEndpointRouter,
   makeEndpointRuntime: makeCodexEndpointSessionRuntime,
+  makeEndpointTerminal: makeCodexTerminalAdapter,
   makeEndpointWorkspace: makeCodexWorkspaceAdapter,
   makeAdapter: makeCodexAdapter,
   makeLocalTextGeneration: makeCodexTextGeneration,
@@ -282,6 +285,29 @@ export const makeCodexDriver = (
               makeRouter: dependencies.makeEndpointRouter,
             },
           });
+          const terminalConfig = effectiveConfig.endpointTerminal;
+          const terminalCapability =
+            terminalConfig.enabled === false
+              ? undefined
+              : {
+                  supervisor: yield* dependencies.makeEndpointSupervisor({
+                    providerInstanceId: instanceId,
+                    transport: config.endpointTransport,
+                    dependencies: {
+                      makeEndpoint: dependencies.makeEndpoint,
+                      makeRouter: dependencies.makeEndpointRouter,
+                    },
+                  }),
+                  sandboxMode: terminalConfig.sandboxMode,
+                };
+          const terminal =
+            terminalCapability === undefined
+              ? undefined
+              : yield* dependencies.makeEndpointTerminal({
+                  providerInstanceId: instanceId,
+                  sandboxMode: terminalCapability.sandboxMode,
+                  borrowConnection: terminalCapability.supervisor.borrowConnection,
+                });
           const workspace =
             config.workspaceHelper === undefined
               ? undefined
@@ -474,6 +500,17 @@ export const makeCodexDriver = (
                 ),
               ),
           });
+          if (terminalCapability !== undefined) {
+            // Eagerly settle the terminal supervisor's first connection
+            // attempt before advertising the capability. Its retry lifecycle
+            // remains wholly separate from conversation/provider health.
+            yield* terminalCapability.supervisor.start({
+              // Terminal sessions are permanently bound to their captured
+              // connection generation. Their invalidation is deliberately
+              // independent from conversation session cleanup.
+              onGenerationInvalidated: () => Effect.void,
+            });
+          }
 
           const stampedCheckProvider = checkProvider().pipe(Effect.map(stampIdentity));
           const snapshotSettings = makeProviderSnapshotSettingsSource(
@@ -530,6 +567,7 @@ export const makeCodexDriver = (
             snapshot,
             adapter,
             ...(workspace === undefined ? {} : { workspace }),
+            ...(terminal === undefined ? {} : { terminal }),
             textGeneration,
           } satisfies ProviderInstance;
         }

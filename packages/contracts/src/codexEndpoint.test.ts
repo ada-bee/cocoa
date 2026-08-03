@@ -10,6 +10,7 @@ import { CodexSettings, ServerSettingsPatch } from "./settings.ts";
 
 const decodeTransport = Schema.decodeUnknownSync(CodexEndpointTransport);
 const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
+const encodeCodexSettings = Schema.encodeSync(CodexSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 describe("CodexEndpointTransport", () => {
@@ -179,8 +180,26 @@ describe("CodexSettings endpoint transition", () => {
   it("keeps legacy local settings decodable while the remote runtime is introduced", () => {
     const decoded = decodeCodexSettings({ binaryPath: "/opt/codex", homePath: "/tmp/codex" });
     expect(decoded.endpointTransport).toBeUndefined();
+    expect(decoded.endpointTerminal).toEqual({ enabled: false });
     expect(decoded.binaryPath).toBe("/opt/codex");
   });
+
+  it("requires an explicit sandbox mode when endpoint terminals are enabled", () => {
+    expect(() => decodeCodexSettings({ endpointTerminal: { enabled: true } })).toThrow(
+      /sandboxMode/,
+    );
+  });
+
+  it.each(["workspaceWrite", "dangerFullAccess"] as const)(
+    "roundtrips the explicit %s endpoint terminal mode",
+    (sandboxMode) => {
+      const decoded = decodeCodexSettings({
+        endpointTerminal: { enabled: true, sandboxMode },
+      });
+
+      expect(decodeCodexSettings(encodeCodexSettings(decoded))).toEqual(decoded);
+    },
+  );
 
   it("decodes endpoint transport alongside the legacy fields", () => {
     const decoded = decodeCodexSettings({
@@ -216,5 +235,25 @@ describe("CodexSettings endpoint transition", () => {
       host: "rigatoni-alfredo",
       user: "ada",
     });
+  });
+
+  it("decodes only complete endpoint terminal settings patches", () => {
+    const decoded = decodeServerSettingsPatch({
+      providers: {
+        codex: {
+          endpointTerminal: { enabled: true, sandboxMode: "workspaceWrite" },
+        },
+      },
+    });
+
+    expect(decoded.providers?.codex?.endpointTerminal).toEqual({
+      enabled: true,
+      sandboxMode: "workspaceWrite",
+    });
+    expect(() =>
+      decodeServerSettingsPatch({
+        providers: { codex: { endpointTerminal: { enabled: true } } },
+      }),
+    ).toThrow(/sandboxMode/);
   });
 });

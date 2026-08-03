@@ -178,6 +178,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       assert.deepEqual(next.providers.codex, {
         enabled: true,
+        endpointTerminal: { enabled: false },
         binaryPath: "/opt/homebrew/bin/codex",
         homePath: "/Users/julius/.codex",
         shadowHomePath: "",
@@ -510,6 +511,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
 
       assert.deepEqual(next.providers.codex, {
         enabled: true,
+        endpointTerminal: { enabled: false },
         binaryPath: "/opt/homebrew/bin/codex",
         homePath: "",
         shadowHomePath: "",
