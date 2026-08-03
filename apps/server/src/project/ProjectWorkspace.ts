@@ -16,8 +16,9 @@ import * as Schema from "effect/Schema";
 
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type {
-  ProviderWorkspaceDirectoryEntry,
+  ProviderWorkspaceDirectoryListing,
   ProviderWorkspaceError,
+  ProviderWorkspaceMaxEntries,
   ProviderWorkspaceMetadata,
   ProviderWorkspaceRoot,
 } from "../provider/ProviderWorkspaceAdapter.ts";
@@ -53,6 +54,19 @@ export class ProjectWorkspaceCapabilityUnavailableError extends Schema.TaggedErr
 ) {
   override get message(): string {
     return `Provider instance '${this.providerInstanceId}' does not expose workspace access for project '${this.projectId}'.`;
+  }
+}
+
+export class ProjectWorkspaceProviderUnavailableError extends Schema.TaggedErrorClass<ProjectWorkspaceProviderUnavailableError>()(
+  "ProjectWorkspaceProviderUnavailableError",
+  {
+    projectId: ProjectId,
+    providerInstanceId: ProviderInstanceId,
+    reason: Schema.Literal("disabled"),
+  },
+) {
+  override get message(): string {
+    return `Provider instance '${this.providerInstanceId}' is disabled for project '${this.projectId}'.`;
   }
 }
 
@@ -97,6 +111,7 @@ export class ProjectWorkspaceResolveOperationError extends Schema.TaggedErrorCla
 export type ProjectWorkspaceError =
   | ProjectWorkspaceProjectNotFoundError
   | ProjectWorkspaceProviderNotFoundError
+  | ProjectWorkspaceProviderUnavailableError
   | ProjectWorkspaceCapabilityUnavailableError
   | ProjectWorkspaceThreadNotFoundError
   | ProjectWorkspaceThreadProjectMismatchError
@@ -120,7 +135,8 @@ export interface ProjectWorkspaceShape {
   readonly listDirectory: (input: {
     readonly target: ProjectWorkspaceTarget;
     readonly relativePath: string;
-  }) => Effect.Effect<ReadonlyArray<ProviderWorkspaceDirectoryEntry>, ProjectWorkspaceError>;
+    readonly maxEntries: ProviderWorkspaceMaxEntries;
+  }) => Effect.Effect<ProviderWorkspaceDirectoryListing, ProjectWorkspaceError>;
 }
 
 export class ProjectWorkspace extends Context.Service<ProjectWorkspace, ProjectWorkspaceShape>()(
@@ -185,6 +201,13 @@ export const make = Effect.gen(function* () {
         providerInstanceId: project.providerInstanceId,
       });
     }
+    if (instance.enabled === false) {
+      return yield* new ProjectWorkspaceProviderUnavailableError({
+        projectId,
+        providerInstanceId: project.providerInstanceId,
+        reason: "disabled",
+      });
+    }
     if (instance.workspace === undefined) {
       return yield* new ProjectWorkspaceCapabilityUnavailableError({
         projectId,
@@ -212,7 +235,10 @@ export const make = Effect.gen(function* () {
     "ProjectWorkspace.listDirectory",
   )(function* (input) {
     const root = yield* resolveRoot(input.target);
-    return yield* root.listDirectory({ relativePath: input.relativePath });
+    return yield* root.listDirectory({
+      relativePath: input.relativePath,
+      maxEntries: input.maxEntries,
+    });
   });
 
   return ProjectWorkspace.of({ validateRoot, getMetadata, listDirectory });

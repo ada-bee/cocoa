@@ -18,8 +18,10 @@ import {
   ProviderWorkspaceOperationError,
   ProviderWorkspacePathError,
   ProviderWorkspaceProtocolError,
+  ProviderWorkspaceUnsupportedError,
   type ProviderWorkspaceAdapter,
   type ProviderWorkspaceError,
+  ProviderWorkspaceMaxEntries,
 } from "../provider/ProviderWorkspaceAdapter.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
@@ -35,6 +37,12 @@ const threadA = ThreadId.make("thread-a");
 const threadB = ThreadId.make("thread-b");
 const missingThread = ThreadId.make("missing-thread");
 const sharedRoot = "/srv/shared/workspace";
+
+it("requires directory listing bounds to be positive integers", () => {
+  assert.throws(() => ProviderWorkspaceMaxEntries.make(0));
+  assert.throws(() => ProviderWorkspaceMaxEntries.make(1.5));
+  assert.strictEqual(ProviderWorkspaceMaxEntries.make(1), 1);
+});
 
 function projectShell(input: {
   readonly id: ProjectId;
@@ -56,11 +64,13 @@ function projectShell(input: {
 function providerInstance(
   instanceId: ProviderInstanceId,
   workspace?: ProviderWorkspaceAdapter,
+  enabled = true,
 ): ProviderInstance {
   return {
     instanceId,
     driverKind: ProviderDriverKind.make("codex"),
     workspace,
+    enabled,
   } as unknown as ProviderInstance;
 }
 
@@ -112,6 +122,7 @@ it.effect(
       readonly operation: string;
       readonly root: string;
       readonly relativePath?: string;
+      readonly maxEntries?: number;
     }> = [];
     const makeWorkspace = (provider: string, kind: "file" | "directory") => ({
       openRoot: (root: string) =>
@@ -121,10 +132,25 @@ it.effect(
               calls.push({ provider, operation: "getMetadata", root, relativePath });
               return { kind } as const;
             }),
-          listDirectory: ({ relativePath }: { readonly relativePath: string }) =>
+          listDirectory: ({
+            relativePath,
+            maxEntries,
+          }: {
+            readonly relativePath: string;
+            readonly maxEntries: ProviderWorkspaceMaxEntries;
+          }) =>
             Effect.sync(() => {
-              calls.push({ provider, operation: "listDirectory", root, relativePath });
-              return [{ name: `${provider}.txt`, kind: "file" as const }];
+              calls.push({
+                provider,
+                operation: "listDirectory",
+                root,
+                relativePath,
+                maxEntries,
+              });
+              return {
+                entries: [{ name: `${provider}.txt`, kind: "file" as const }],
+                truncated: true,
+              };
             }),
         }),
     });
@@ -155,11 +181,15 @@ it.effect(
       const listing = yield* workspace.listDirectory({
         target: { projectId: projectA },
         relativePath: "src",
+        maxEntries: ProviderWorkspaceMaxEntries.make(1),
       });
 
       assert.strictEqual(metadataA.kind, "file");
       assert.strictEqual(metadataB.kind, "directory");
-      assert.deepStrictEqual(listing, [{ name: "a.txt", kind: "file" }]);
+      assert.deepStrictEqual(listing, {
+        entries: [{ name: "a.txt", kind: "file" }],
+        truncated: true,
+      });
       assert.deepStrictEqual(calls, [
         {
           provider: "a",
@@ -168,7 +198,13 @@ it.effect(
           relativePath: "src/index.ts",
         },
         { provider: "b", operation: "getMetadata", root: sharedRoot, relativePath: "src" },
-        { provider: "a", operation: "listDirectory", root: sharedRoot, relativePath: "src" },
+        {
+          provider: "a",
+          operation: "listDirectory",
+          root: sharedRoot,
+          relativePath: "src",
+          maxEntries: 1,
+        },
       ]);
     }).pipe(Effect.provide(testLayer({ projects, instances })));
   },
@@ -232,6 +268,23 @@ it.effect("reports missing project, provider, and workspace capability distinctl
   }).pipe(Effect.provide(testLayer({ projects, instances })));
 });
 
+it.effect("reports a disabled provider instance as unavailable before capability lookup", () => {
+  const projects = new Map([
+    [projectA, projectShell({ id: projectA, providerInstanceId: providerA })],
+  ]);
+  const instances = new Map([[providerA, providerInstance(providerA, undefined, false)]]);
+
+  return Effect.gen(function* () {
+    const workspace = yield* ProjectWorkspace.ProjectWorkspace;
+    const error = yield* workspace.validateRoot({ projectId: projectA }).pipe(Effect.flip);
+    assert.strictEqual(error._tag, "ProjectWorkspaceProviderUnavailableError");
+    if (error._tag === "ProjectWorkspaceProviderUnavailableError") {
+      assert.strictEqual(error.providerInstanceId, providerA);
+      assert.strictEqual(error.reason, "disabled");
+    }
+  }).pipe(Effect.provide(testLayer({ projects, instances })));
+});
+
 it.effect("normalizes projection lookup failures as project resolution operations", () => {
   const cause = new PersistenceSqlError({ operation: "test.query" });
   return Effect.gen(function* () {
@@ -262,6 +315,10 @@ it.effect("preserves normalized provider workspace failure categories", () => {
       providerInstanceId: providerA,
       operation: "getMetadata",
       detail: "invalid response",
+    }),
+    new ProviderWorkspaceUnsupportedError({
+      providerInstanceId: providerA,
+      operation: "getMetadata",
     }),
     new ProviderWorkspacePathError({
       providerInstanceId: providerA,
@@ -307,7 +364,7 @@ it.effect("routes a verified thread to its provider-owned worktree root", () => 
         openedRoots.push(root);
         return {
           getMetadata: () => Effect.succeed({ kind: "directory" as const }),
-          listDirectory: () => Effect.succeed([]),
+          listDirectory: () => Effect.succeed({ entries: [], truncated: false }),
         };
       }),
   };

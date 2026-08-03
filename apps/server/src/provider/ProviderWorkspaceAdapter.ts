@@ -39,6 +39,17 @@ export interface ProviderWorkspaceDirectoryEntry {
   readonly kind: ProviderWorkspaceEntryKind;
 }
 
+export const ProviderWorkspaceMaxEntries = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)).pipe(
+  Schema.brand("ProviderWorkspaceMaxEntries"),
+);
+export type ProviderWorkspaceMaxEntries = typeof ProviderWorkspaceMaxEntries.Type;
+
+export interface ProviderWorkspaceDirectoryListing {
+  readonly entries: ReadonlyArray<ProviderWorkspaceDirectoryEntry>;
+  /** True when more direct children existed than the requested bound. */
+  readonly truncated: boolean;
+}
+
 export class ProviderWorkspaceDisconnectedError extends Schema.TaggedErrorClass<ProviderWorkspaceDisconnectedError>()(
   "ProviderWorkspaceDisconnectedError",
   {
@@ -63,6 +74,19 @@ export class ProviderWorkspaceProtocolError extends Schema.TaggedErrorClass<Prov
 ) {
   override get message(): string {
     return `Provider workspace protocol failed for '${this.providerInstanceId}' during ${this.operation}: ${this.detail}`;
+  }
+}
+
+export class ProviderWorkspaceUnsupportedError extends Schema.TaggedErrorClass<ProviderWorkspaceUnsupportedError>()(
+  "ProviderWorkspaceUnsupportedError",
+  {
+    providerInstanceId: ProviderInstanceId,
+    operation: ProviderWorkspaceOperation,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Provider workspace '${this.providerInstanceId}' does not support ${this.operation}.`;
   }
 }
 
@@ -97,6 +121,7 @@ export class ProviderWorkspaceOperationError extends Schema.TaggedErrorClass<Pro
 
 export type ProviderWorkspaceError =
   | ProviderWorkspaceDisconnectedError
+  | ProviderWorkspaceUnsupportedError
   | ProviderWorkspaceProtocolError
   | ProviderWorkspacePathError
   | ProviderWorkspaceOperationError;
@@ -108,7 +133,8 @@ export interface ProviderWorkspaceRoot {
   }) => Effect.Effect<ProviderWorkspaceMetadata, ProviderWorkspaceError>;
   readonly listDirectory: (input: {
     readonly relativePath: string;
-  }) => Effect.Effect<ReadonlyArray<ProviderWorkspaceDirectoryEntry>, ProviderWorkspaceError>;
+    readonly maxEntries: ProviderWorkspaceMaxEntries;
+  }) => Effect.Effect<ProviderWorkspaceDirectoryListing, ProviderWorkspaceError>;
 }
 
 /** Optional per-instance capability implemented by provider drivers. */
