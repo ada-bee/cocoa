@@ -2,10 +2,12 @@
 import {
   CODEX_CHECKPOINT_HELPER_MAX_PATCH_BYTES,
   CodexCheckpointHelperPatchByteLimit,
+  type CodexCheckpointHelperCheckpointId,
   OrchestrationGetFullThreadDiffResult,
   OrchestrationGetTurnDiffResult,
   type OrchestrationGetFullThreadDiffInput,
   type OrchestrationGetTurnDiffInput,
+  type ProjectId,
   type ProviderInstanceId,
   type ThreadId,
   type CodexCheckpointHelperDiffResult,
@@ -35,6 +37,18 @@ import {
   type CheckpointServiceError,
 } from "./Errors.ts";
 
+/** Internal orchestration-only input for a capture not yet in public projections. */
+export interface CompletedCaptureDiffInput {
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly projectId: ProjectId;
+  readonly threadId: ThreadId;
+  readonly baseCheckpointId: CodexCheckpointHelperCheckpointId;
+  readonly targetCheckpointId: CodexCheckpointHelperCheckpointId;
+  readonly fromTurnCount: number;
+  readonly toTurnCount: number;
+  readonly ignoreWhitespace?: boolean;
+}
+
 /** Service tag for checkpoint diff queries. */
 export class CheckpointDiffQuery extends Context.Service<
   CheckpointDiffQuery,
@@ -45,6 +59,10 @@ export class CheckpointDiffQuery extends Context.Service<
     readonly getFullThreadDiff: (
       input: OrchestrationGetFullThreadDiffInput,
     ) => Effect.Effect<OrchestrationGetFullThreadDiffResult, CheckpointServiceError>;
+    /** Diff exact completed native captures before the target public projection exists. */
+    readonly getCompletedCaptureDiff: (
+      input: CompletedCaptureDiffInput,
+    ) => Effect.Effect<OrchestrationGetTurnDiffResult, CheckpointServiceError>;
   }
 >()("t3/checkpointing/CheckpointDiffQuery") {}
 
@@ -162,6 +180,93 @@ export const make = Effect.gen(function* () {
     yield* ProviderCheckpointOperations.ProviderCheckpointOperationRepository;
   const projectRepository = yield* ProjectRepository.ProjectRepository;
 
+  const runBoundDiff = Effect.fn("CheckpointDiffQuery.runBoundDiff")(function* (input: {
+    readonly operation: CheckpointDiffOperation;
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly projectId: ProjectId;
+    readonly threadId: ThreadId;
+    readonly fromTurnCount: number;
+    readonly toTurnCount: number;
+    readonly ignoreWhitespace: boolean;
+    readonly base: ProviderCheckpointOperations.ProviderNativeCheckpoint;
+    readonly target: ProviderCheckpointOperations.ProviderNativeCheckpoint;
+  }) {
+    const repository = yield* projectRepository
+      .resolve({ projectId: input.projectId, threadId: input.threadId })
+      .pipe(
+        Effect.mapError(
+          mapRepositoryError(input.operation, input.threadId, input.providerInstanceId),
+        ),
+      );
+    if (repository.checkpoints === undefined) {
+      return yield* new CheckpointUnsupportedError({ operation: input.operation });
+    }
+    if (!sameBinding(repository, input.base) || !sameBinding(repository, input.target)) {
+      return yield* new CheckpointProviderBindingMismatchError({
+        operation: input.operation,
+        threadId: input.threadId,
+      });
+    }
+
+    const unknownResult = yield* repository.checkpoints
+      .diff({
+        baseCheckpointId: input.base.logicalCheckpointId,
+        targetCheckpointId: input.target.logicalCheckpointId,
+        ignoreWhitespace: input.ignoreWhitespace,
+        limits: { maxPatchBytes },
+      })
+      .pipe(
+        Effect.mapError(
+          mapProviderError(input.operation, input.threadId, input.providerInstanceId),
+        ),
+      );
+    const decoded = decodeBase64Patch(unknownResult);
+    if (decoded === null) {
+      return yield* new CheckpointDiffResultInvalidError({
+        operation: input.operation,
+        threadId: input.threadId,
+      });
+    }
+    const { result, bytes } = decoded;
+    if (
+      result.baseCheckpointId !== input.base.logicalCheckpointId ||
+      result.targetCheckpointId !== input.target.logicalCheckpointId ||
+      result.baseOid !== input.base.checkpointOid ||
+      result.targetOid !== input.target.checkpointOid
+    ) {
+      return yield* new CheckpointDiffResultInvalidError({
+        operation: input.operation,
+        threadId: input.threadId,
+      });
+    }
+
+    const diff = yield* Effect.try({
+      try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      catch: () =>
+        new CheckpointDiffResultInvalidError({
+          operation: input.operation,
+          threadId: input.threadId,
+        }),
+    });
+
+    return yield* decodeTurnDiff({
+      threadId: input.threadId,
+      fromTurnCount: input.fromTurnCount,
+      toTurnCount: input.toTurnCount,
+      diff,
+      byteLength: result.byteLength,
+      truncated: result.truncated,
+    }).pipe(
+      Effect.mapError(
+        () =>
+          new CheckpointDiffResultInvalidError({
+            operation: input.operation,
+            threadId: input.threadId,
+          }),
+      ),
+    );
+  });
+
   const runDiff = Effect.fn("CheckpointDiffQuery.runDiff")(function* (input: {
     readonly operation: CheckpointDiffOperation;
     readonly threadId: ThreadId;
@@ -226,81 +331,110 @@ export const make = Effect.gen(function* () {
       loadCheckpoint(input.fromTurnCount, "from"),
       loadCheckpoint(input.toTurnCount, "to"),
     ]);
-    const repository = yield* projectRepository
-      .resolve({ projectId: context.projectId, threadId: context.threadId })
-      .pipe(
-        Effect.mapError(
-          mapRepositoryError(input.operation, input.threadId, context.providerInstanceId),
-        ),
-      );
-    if (repository.checkpoints === undefined) {
-      return yield* new CheckpointUnsupportedError({ operation: input.operation });
-    }
-    if (!sameBinding(repository, base) || !sameBinding(repository, target)) {
-      return yield* new CheckpointProviderBindingMismatchError({
-        operation: input.operation,
-        threadId: input.threadId,
-      });
-    }
-
-    const unknownResult = yield* repository.checkpoints
-      .diff({
-        baseCheckpointId: base.logicalCheckpointId,
-        targetCheckpointId: target.logicalCheckpointId,
-        ignoreWhitespace: input.ignoreWhitespace,
-        limits: { maxPatchBytes },
-      })
-      .pipe(
-        Effect.mapError(
-          mapProviderError(input.operation, input.threadId, context.providerInstanceId),
-        ),
-      );
-    const decoded = decodeBase64Patch(unknownResult);
-    if (decoded === null) {
-      return yield* new CheckpointDiffResultInvalidError({
-        operation: input.operation,
-        threadId: input.threadId,
-      });
-    }
-    const { result, bytes } = decoded;
-    if (
-      result.baseCheckpointId !== base.logicalCheckpointId ||
-      result.targetCheckpointId !== target.logicalCheckpointId ||
-      result.baseOid !== base.checkpointOid ||
-      result.targetOid !== target.checkpointOid
-    ) {
-      return yield* new CheckpointDiffResultInvalidError({
-        operation: input.operation,
-        threadId: input.threadId,
-      });
-    }
-
-    const diff = yield* Effect.try({
-      try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
-      catch: () =>
-        new CheckpointDiffResultInvalidError({
-          operation: input.operation,
-          threadId: input.threadId,
-        }),
-    });
-
-    return yield* decodeTurnDiff({
+    return yield* runBoundDiff({
+      operation: input.operation,
+      providerInstanceId: context.providerInstanceId,
+      projectId: context.projectId,
       threadId: input.threadId,
       fromTurnCount: input.fromTurnCount,
       toTurnCount: input.toTurnCount,
-      diff,
-      byteLength: result.byteLength,
-      truncated: result.truncated,
-    }).pipe(
-      Effect.mapError(
-        () =>
-          new CheckpointDiffResultInvalidError({
-            operation: input.operation,
-            threadId: input.threadId,
-          }),
-      ),
-    );
+      ignoreWhitespace: input.ignoreWhitespace,
+      base,
+      target,
+    });
   });
+
+  const loadExactCompletedCapture = Effect.fn("CheckpointDiffQuery.loadExactCompletedCapture")(
+    function* (input: {
+      readonly operation: CheckpointDiffOperation;
+      readonly providerInstanceId: ProviderInstanceId;
+      readonly projectId: ProjectId;
+      readonly threadId: ThreadId;
+      readonly logicalCheckpointId: CodexCheckpointHelperCheckpointId;
+      readonly turnCount: number;
+      readonly checkpoint: "from" | "to";
+      readonly intentKind: "baseline" | "post_turn";
+    }) {
+      const checkpoint = yield* checkpointOperations
+        .getLogicalCheckpoint({ logicalCheckpointId: input.logicalCheckpointId })
+        .pipe(
+          Effect.mapError(
+            () =>
+              new CheckpointNativeProjectionError({
+                operation: input.operation,
+                threadId: input.threadId,
+              }),
+          ),
+          Effect.map(Option.getOrUndefined),
+        );
+      if (checkpoint === undefined) {
+        return yield* new CheckpointRefUnavailableError({
+          operation: input.operation,
+          threadId: input.threadId,
+          turnCount: input.turnCount,
+          checkpoint: input.checkpoint,
+        });
+      }
+      const capture = yield* checkpointOperations
+        .getByOperationId({ operationId: checkpoint.captureOperationId })
+        .pipe(
+          Effect.mapError(
+            () =>
+              new CheckpointNativeProjectionError({
+                operation: input.operation,
+                threadId: input.threadId,
+              }),
+          ),
+          Effect.map(Option.getOrUndefined),
+        );
+      const intent = capture?.intentContext;
+      const result = capture?.result;
+      const intentMatches =
+        input.intentKind === "baseline"
+          ? intent?.kind === "baseline" &&
+            intent.checkpointTurnCount === input.turnCount &&
+            capture?.turnId === null
+          : intent?.kind === "post_turn" &&
+            intent.checkpointTurnCount === input.turnCount &&
+            capture?.turnId === intent.turnId;
+      const exact =
+        capture !== undefined &&
+        capture.state === "completed" &&
+        capture.operationKind === "capture" &&
+        capture.logicalCheckpointId === input.logicalCheckpointId &&
+        capture.providerInstanceId === input.providerInstanceId &&
+        capture.projectId === input.projectId &&
+        capture.threadId === input.threadId &&
+        capture.canonicalRequest.operation === "capture" &&
+        capture.canonicalRequest.checkpointId === input.logicalCheckpointId &&
+        checkpoint.logicalCheckpointId === input.logicalCheckpointId &&
+        checkpoint.providerInstanceId === input.providerInstanceId &&
+        checkpoint.projectId === input.projectId &&
+        checkpoint.threadId === input.threadId &&
+        checkpoint.turnId === capture.turnId &&
+        checkpoint.captureOperationId === capture.operationId &&
+        checkpoint.repository.fingerprint === capture.repository.fingerprint &&
+        checkpoint.repository.objectFormat === capture.repository.objectFormat &&
+        intentMatches &&
+        result?.operation === "capture" &&
+        result.receipt.operationId === capture.operationId &&
+        result.receipt.checkpointId === checkpoint.logicalCheckpointId &&
+        result.receipt.checkpointRef === checkpoint.checkpointRef &&
+        result.receipt.checkpointOid === checkpoint.checkpointOid &&
+        result.receipt.treeOid === checkpoint.treeOid &&
+        result.receipt.receiptRef === checkpoint.receiptRef &&
+        result.receipt.requestSha256 === capture.requestSha256 &&
+        result.receipt.repositoryFingerprint === checkpoint.repository.fingerprint &&
+        result.receiptObjectOid === checkpoint.receiptObjectOid;
+      if (!exact) {
+        return yield* new CheckpointNativeProjectionError({
+          operation: input.operation,
+          threadId: input.threadId,
+        });
+      }
+      return { checkpoint, capture };
+    },
+  );
 
   return CheckpointDiffQuery.of({
     getTurnDiff: (input) =>
@@ -318,6 +452,53 @@ export const make = Effect.gen(function* () {
         fromTurnCount: 0,
         toTurnCount: input.toTurnCount,
         ignoreWhitespace: input.ignoreWhitespace ?? false,
+      }),
+    getCompletedCaptureDiff: (input) =>
+      Effect.gen(function* () {
+        const operation = "CheckpointDiffQuery.getCompletedCaptureDiff" as const;
+        const [baseCapture, targetCapture] = yield* Effect.all([
+          loadExactCompletedCapture({
+            operation,
+            providerInstanceId: input.providerInstanceId,
+            projectId: input.projectId,
+            threadId: input.threadId,
+            logicalCheckpointId: input.baseCheckpointId,
+            turnCount: input.fromTurnCount,
+            checkpoint: "from",
+            intentKind: "baseline",
+          }),
+          loadExactCompletedCapture({
+            operation,
+            providerInstanceId: input.providerInstanceId,
+            projectId: input.projectId,
+            threadId: input.threadId,
+            logicalCheckpointId: input.targetCheckpointId,
+            turnCount: input.toTurnCount,
+            checkpoint: "to",
+            intentKind: "post_turn",
+          }),
+        ]);
+        if (
+          targetCapture.capture.intentContext.kind !== "post_turn" ||
+          targetCapture.capture.intentContext.baselineCheckpointId !==
+            baseCapture.checkpoint.logicalCheckpointId
+        ) {
+          return yield* new CheckpointNativeProjectionError({
+            operation,
+            threadId: input.threadId,
+          });
+        }
+        return yield* runBoundDiff({
+          operation,
+          providerInstanceId: input.providerInstanceId,
+          projectId: input.projectId,
+          threadId: input.threadId,
+          fromTurnCount: input.fromTurnCount,
+          toTurnCount: input.toTurnCount,
+          ignoreWhitespace: input.ignoreWhitespace ?? false,
+          base: baseCapture.checkpoint,
+          target: targetCapture.checkpoint,
+        });
       }),
   });
 });

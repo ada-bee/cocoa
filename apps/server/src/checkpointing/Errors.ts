@@ -6,6 +6,7 @@ import type { ProjectionRepositoryError } from "../persistence/Errors.ts";
 export const CheckpointDiffOperation = Schema.Literals([
   "CheckpointDiffQuery.getTurnDiff",
   "CheckpointDiffQuery.getFullThreadDiff",
+  "CheckpointDiffQuery.getCompletedCaptureDiff",
 ]);
 export type CheckpointDiffOperation = typeof CheckpointDiffOperation.Type;
 
