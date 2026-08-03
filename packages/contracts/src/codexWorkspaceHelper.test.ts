@@ -2,16 +2,21 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  CODEX_WORKSPACE_HELPER_MAX_BROWSE_ENTRIES,
+  CODEX_WORKSPACE_HELPER_MAX_BROWSE_RESPONSE_BYTES,
+  CODEX_WORKSPACE_HELPER_MAX_ENTRY_NAME_CHARS,
   CODEX_WORKSPACE_HELPER_MAX_LIST_DEPTH,
   CODEX_WORKSPACE_HELPER_MAX_LIST_ENTRIES,
   CODEX_WORKSPACE_HELPER_MAX_READ_BYTES,
   CodexWorkspaceHelperConfig,
+  CodexWorkspaceHelperProbeResult,
   CodexWorkspaceHelperRequest,
   CodexWorkspaceHelperResponse,
 } from "./codexWorkspaceHelper.ts";
 import { CodexSettings, ServerSettingsPatch } from "./settings.ts";
 
 const decodeConfig = Schema.decodeUnknownSync(CodexWorkspaceHelperConfig);
+const decodeProbeResult = Schema.decodeUnknownSync(CodexWorkspaceHelperProbeResult);
 const decodeRequest = Schema.decodeUnknownSync(CodexWorkspaceHelperRequest);
 const decodeResponse = Schema.decodeUnknownSync(CodexWorkspaceHelperResponse);
 const decodeCodexSettings = Schema.decodeUnknownSync(CodexSettings);
@@ -124,6 +129,175 @@ describe("CodexWorkspaceHelper v1 wire contracts", () => {
         maxBytes: CODEX_WORKSPACE_HELPER_MAX_READ_BYTES,
       }),
     ).toMatchObject({ operation: "read", maxBytes: CODEX_WORKSPACE_HELPER_MAX_READ_BYTES });
+  });
+
+  it("preserves old probe payloads while allowing browse to be advertised", () => {
+    expect(
+      decodeProbeResult({
+        operation: "probe",
+        implementation: "cocoa-workspace-helper",
+        capabilities: ["probe", "validate", "stat", "list", "read"],
+      }).capabilities,
+    ).toEqual(["probe", "validate", "stat", "list", "read"]);
+
+    expect(
+      decodeProbeResult({
+        operation: "probe",
+        implementation: "cocoa-workspace-helper",
+        capabilities: ["probe", "validate", "stat", "list", "read", "browse"],
+      }).capabilities,
+    ).toContain("browse");
+  });
+
+  it("decodes explicit absolute and home-relative browse locators without cwd", () => {
+    expect(
+      decodeRequest({
+        protocol: 1,
+        operation: "browse",
+        locator: { kind: "absolute", path: "/Users/ada/Developer" },
+        maxEntries: 200,
+        maxResponseBytes: 1024 * 1024,
+      }),
+    ).toEqual({
+      protocol: 1,
+      operation: "browse",
+      locator: { kind: "absolute", path: "/Users/ada/Developer" },
+      maxEntries: 200,
+      maxResponseBytes: 1024 * 1024,
+    });
+
+    expect(
+      decodeRequest({
+        protocol: 1,
+        operation: "browse",
+        locator: { kind: "home", relativePath: "" },
+        maxEntries: 200,
+        maxResponseBytes: 1024 * 1024,
+      }),
+    ).toMatchObject({ locator: { kind: "home", relativePath: "" } });
+  });
+
+  it("rejects cwd, ambiguous relative locators, and unsafe locator paths", () => {
+    const browse = (locator: unknown, extras: Record<string, unknown> = {}) =>
+      decodeRequest({
+        protocol: 1,
+        operation: "browse",
+        locator,
+        maxEntries: 200,
+        maxResponseBytes: 1024 * 1024,
+        ...extras,
+      });
+
+    expect(() =>
+      browse({ kind: "absolute", path: "/Users/ada" }, { cwd: "/private/project" }),
+    ).toThrow(/cwd/);
+    expect(() => browse({ kind: "absolute", path: "Developer" })).toThrow();
+    expect(() => browse({ path: "Developer" })).toThrow();
+
+    for (const relativePath of ["../secret", "src/../secret", "src\\nested", "x\0y"]) {
+      expect(() => browse({ kind: "home", relativePath })).toThrow();
+    }
+    for (const path of [
+      "/Users/ada/../secret",
+      "/Users//ada",
+      "/Users/ada/",
+      "/Users\\ada",
+      "/Users/ada\0evil",
+    ]) {
+      expect(() => browse({ kind: "absolute", path })).toThrow();
+    }
+  });
+
+  it("enforces browse request entry and response bounds", () => {
+    const request = (maxEntries: number, maxResponseBytes: number) =>
+      decodeRequest({
+        protocol: 1,
+        operation: "browse",
+        locator: { kind: "home", relativePath: "Developer" },
+        maxEntries,
+        maxResponseBytes,
+      });
+
+    expect(() => request(0, 1024)).toThrow();
+    expect(() => request(CODEX_WORKSPACE_HELPER_MAX_BROWSE_ENTRIES + 1, 1024)).toThrow();
+    expect(() => request(1, 0)).toThrow();
+    expect(() => request(1, CODEX_WORKSPACE_HELPER_MAX_BROWSE_RESPONSE_BYTES + 1)).toThrow();
+  });
+
+  it("decodes bounded direct browse entries and normalized resolved paths", () => {
+    expect(
+      decodeResponse({
+        protocol: 1,
+        ok: true,
+        result: {
+          operation: "browse",
+          directoryPath: "/Users/ada/Developer",
+          parentPath: "/Users/ada",
+          entries: [
+            { name: "cocoa", kind: "directory" },
+            { name: "notes.txt", kind: "file" },
+          ],
+          truncated: false,
+        },
+      }),
+    ).toMatchObject({
+      ok: true,
+      result: { operation: "browse", directoryPath: "/Users/ada/Developer" },
+    });
+
+    expect(
+      decodeResponse({
+        protocol: 1,
+        ok: true,
+        result: {
+          operation: "browse",
+          directoryPath: "/",
+          parentPath: null,
+          entries: [],
+          truncated: false,
+        },
+      }),
+    ).toMatchObject({ ok: true, result: { parentPath: null } });
+  });
+
+  it("rejects unsafe or over-limit browse result paths, names, and entries", () => {
+    const result = (overrides: Record<string, unknown>) =>
+      decodeResponse({
+        protocol: 1,
+        ok: true,
+        result: {
+          operation: "browse",
+          directoryPath: "/Users/ada",
+          parentPath: "/Users",
+          entries: [],
+          truncated: false,
+          ...overrides,
+        },
+      });
+
+    expect(() => result({ directoryPath: "/Users/ada/../secret" })).toThrow();
+    expect(() => result({ parentPath: "Users" })).toThrow();
+    for (const name of ["", ".", "..", "nested/name", "nested\\name", "x\0y"]) {
+      expect(() => result({ entries: [{ name, kind: "directory" }] })).toThrow();
+    }
+    expect(() =>
+      result({
+        entries: [
+          {
+            name: "x".repeat(CODEX_WORKSPACE_HELPER_MAX_ENTRY_NAME_CHARS + 1),
+            kind: "file",
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      result({
+        entries: Array.from(
+          { length: CODEX_WORKSPACE_HELPER_MAX_BROWSE_ENTRIES + 1 },
+          (_, index) => ({ name: `entry-${index}`, kind: "file" }),
+        ),
+      }),
+    ).toThrow();
   });
 
   it.each([

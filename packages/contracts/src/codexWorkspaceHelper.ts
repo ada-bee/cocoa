@@ -20,6 +20,9 @@ export const CODEX_WORKSPACE_HELPER_MAX_LIST_ENTRIES = 25_000;
 export const CODEX_WORKSPACE_HELPER_MAX_LIST_DEPTH = 64;
 export const CODEX_WORKSPACE_HELPER_MAX_LIST_DIRECTORIES = 10_000;
 export const CODEX_WORKSPACE_HELPER_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+export const CODEX_WORKSPACE_HELPER_MAX_BROWSE_ENTRIES = 10_000;
+export const CODEX_WORKSPACE_HELPER_MAX_BROWSE_RESPONSE_BYTES = 4 * 1024 * 1024;
+export const CODEX_WORKSPACE_HELPER_MAX_ENTRY_NAME_CHARS = 1024;
 
 const strict = <S extends Schema.Top>(schema: S): S =>
   schema.annotate({ parseOptions: { onExcessProperty: "error" } }) as S;
@@ -34,6 +37,25 @@ export const CodexWorkspaceHelperAbsolutePath = Schema.String.check(
   }),
 );
 export type CodexWorkspaceHelperAbsolutePath = typeof CodexWorkspaceHelperAbsolutePath.Type;
+
+/** A canonical-form absolute POSIX path suitable for browse locations and results. */
+export const CodexWorkspaceHelperNormalizedAbsolutePath = CodexWorkspaceHelperAbsolutePath.check(
+  Schema.makeFilter((path) => {
+    if (path.includes("\\")) {
+      return "Normalized provider-host paths must use POSIX '/' separators, not backslashes.";
+    }
+    if (path === "/") return true;
+    if (path.endsWith("/")) return "Normalized provider-host paths must not end with '/'.";
+    const components = path.slice(1).split("/");
+    return (
+      components.every(
+        (component) => component !== "" && component !== "." && component !== "..",
+      ) || "Provider-host paths must be normalized without empty, '.' or '..' components."
+    );
+  }),
+);
+export type CodexWorkspaceHelperNormalizedAbsolutePath =
+  typeof CodexWorkspaceHelperNormalizedAbsolutePath.Type;
 
 /**
  * Empty means the captured workspace root. Non-empty paths are normalized,
@@ -86,6 +108,17 @@ export const CodexWorkspaceHelperResponseByteLimit = PositiveInt.check(
 export type CodexWorkspaceHelperResponseByteLimit =
   typeof CodexWorkspaceHelperResponseByteLimit.Type;
 
+export const CodexWorkspaceHelperBrowseEntryLimit = PositiveInt.check(
+  Schema.isLessThanOrEqualTo(CODEX_WORKSPACE_HELPER_MAX_BROWSE_ENTRIES),
+);
+export type CodexWorkspaceHelperBrowseEntryLimit = typeof CodexWorkspaceHelperBrowseEntryLimit.Type;
+
+export const CodexWorkspaceHelperBrowseResponseByteLimit = PositiveInt.check(
+  Schema.isLessThanOrEqualTo(CODEX_WORKSPACE_HELPER_MAX_BROWSE_RESPONSE_BYTES),
+);
+export type CodexWorkspaceHelperBrowseResponseByteLimit =
+  typeof CodexWorkspaceHelperBrowseResponseByteLimit.Type;
+
 export const CodexWorkspaceHelperFileSize = NonNegativeInt.check(
   Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
 );
@@ -110,6 +143,7 @@ export const CodexWorkspaceHelperCapability = Schema.Literals([
   "stat",
   "list",
   "read",
+  "browse",
 ]);
 export type CodexWorkspaceHelperCapability = typeof CodexWorkspaceHelperCapability.Type;
 
@@ -129,6 +163,23 @@ export const CodexWorkspaceHelperRootIdentity = strict(
   }),
 );
 export type CodexWorkspaceHelperRootIdentity = typeof CodexWorkspaceHelperRootIdentity.Type;
+
+/** Explicit pre-project browse target; relative paths are meaningful only below host home. */
+export const CodexWorkspaceHelperBrowseLocator = Schema.Union([
+  strict(
+    Schema.Struct({
+      kind: Schema.Literal("absolute"),
+      path: CodexWorkspaceHelperNormalizedAbsolutePath,
+    }),
+  ),
+  strict(
+    Schema.Struct({
+      kind: Schema.Literal("home"),
+      relativePath: CodexWorkspaceHelperRelativePath,
+    }),
+  ),
+]);
+export type CodexWorkspaceHelperBrowseLocator = typeof CodexWorkspaceHelperBrowseLocator.Type;
 
 export const CodexWorkspaceHelperListLimits = strict(
   Schema.Struct({
@@ -183,6 +234,15 @@ export const CodexWorkspaceHelperRequest = Schema.Union([
       maxBytes: CodexWorkspaceHelperReadByteLimit,
     }),
   ),
+  strict(
+    Schema.Struct({
+      protocol: ProtocolVersion,
+      operation: Schema.Literal("browse"),
+      locator: CodexWorkspaceHelperBrowseLocator,
+      maxEntries: CodexWorkspaceHelperBrowseEntryLimit,
+      maxResponseBytes: CodexWorkspaceHelperBrowseResponseByteLimit,
+    }),
+  ),
 ]);
 export type CodexWorkspaceHelperRequest = typeof CodexWorkspaceHelperRequest.Type;
 
@@ -204,6 +264,27 @@ export const CodexWorkspaceHelperEntry = strict(
 );
 export type CodexWorkspaceHelperEntry = typeof CodexWorkspaceHelperEntry.Type;
 
+export const CodexWorkspaceHelperBrowseEntryName = Schema.String.check(
+  Schema.isNonEmpty(),
+  Schema.isMaxLength(CODEX_WORKSPACE_HELPER_MAX_ENTRY_NAME_CHARS),
+  Schema.makeFilter((name) => {
+    if (name.includes("\0")) return "Browse entry names must not contain NUL bytes.";
+    if (name.includes("/") || name.includes("\\")) {
+      return "Browse entries must be direct child names without path separators.";
+    }
+    return (name !== "." && name !== "..") || "Browse entry names must not be '.' or '..'.";
+  }),
+);
+export type CodexWorkspaceHelperBrowseEntryName = typeof CodexWorkspaceHelperBrowseEntryName.Type;
+
+export const CodexWorkspaceHelperBrowseEntry = strict(
+  Schema.Struct({
+    name: CodexWorkspaceHelperBrowseEntryName,
+    kind: CodexWorkspaceHelperEntryKind,
+  }),
+);
+export type CodexWorkspaceHelperBrowseEntry = typeof CodexWorkspaceHelperBrowseEntry.Type;
+
 const Base64Bytes = Schema.String.check(
   Schema.isMaxLength(Math.ceil(CODEX_WORKSPACE_HELPER_MAX_READ_BYTES / 3) * 4),
   Schema.isPattern(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
@@ -214,7 +295,7 @@ export const CodexWorkspaceHelperProbeResult = strict(
     operation: Schema.Literal("probe"),
     implementation: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
     buildId: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(256))),
-    capabilities: Schema.Array(CodexWorkspaceHelperCapability).check(Schema.isMaxLength(5)),
+    capabilities: Schema.Array(CodexWorkspaceHelperCapability).check(Schema.isMaxLength(6)),
   }),
 );
 export type CodexWorkspaceHelperProbeResult = typeof CodexWorkspaceHelperProbeResult.Type;
@@ -257,12 +338,26 @@ export const CodexWorkspaceHelperReadResult = strict(
 );
 export type CodexWorkspaceHelperReadResult = typeof CodexWorkspaceHelperReadResult.Type;
 
+export const CodexWorkspaceHelperBrowseResult = strict(
+  Schema.Struct({
+    operation: Schema.Literal("browse"),
+    directoryPath: CodexWorkspaceHelperNormalizedAbsolutePath,
+    parentPath: Schema.NullOr(CodexWorkspaceHelperNormalizedAbsolutePath),
+    entries: Schema.Array(CodexWorkspaceHelperBrowseEntry).check(
+      Schema.isMaxLength(CODEX_WORKSPACE_HELPER_MAX_BROWSE_ENTRIES),
+    ),
+    truncated: Schema.Boolean,
+  }),
+);
+export type CodexWorkspaceHelperBrowseResult = typeof CodexWorkspaceHelperBrowseResult.Type;
+
 export const CodexWorkspaceHelperResult = Schema.Union([
   CodexWorkspaceHelperProbeResult,
   CodexWorkspaceHelperValidateResult,
   CodexWorkspaceHelperStatResult,
   CodexWorkspaceHelperListResult,
   CodexWorkspaceHelperReadResult,
+  CodexWorkspaceHelperBrowseResult,
 ]);
 export type CodexWorkspaceHelperResult = typeof CodexWorkspaceHelperResult.Type;
 
