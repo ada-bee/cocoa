@@ -247,6 +247,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             makeEndpointWorkspace: ((options) => {
               workspaceFactoryCalls += 1;
               return {
+                browseDirectory: () => Effect.die("unused"),
                 openRoot: () =>
                   Effect.gen(function* () {
                     const borrowed = yield* options.borrowConnection;

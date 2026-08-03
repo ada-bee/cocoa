@@ -1,8 +1,11 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
+  CODEX_WORKSPACE_HELPER_MAX_BROWSE_RESPONSE_BYTES,
   CODEX_WORKSPACE_HELPER_MAX_RESPONSE_BYTES,
   CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
+  CodexWorkspaceHelperBrowseEntryLimit,
+  CodexWorkspaceHelperBrowseResponseByteLimit,
   CodexWorkspaceHelperListDepthLimit,
   CodexWorkspaceHelperListDirectoryLimit,
   CodexWorkspaceHelperListEntryLimit,
@@ -24,6 +27,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 
 import {
   type ProviderWorkspaceAdapter,
+  type ProviderWorkspaceBrowseResult,
   ProviderWorkspaceDisconnectedError,
   type ProviderWorkspaceDirectoryListing,
   type ProviderWorkspaceDirectoryEntry,
@@ -77,6 +81,8 @@ const operationName = (
       return "listDirectory";
     case "read":
       return "readFile";
+    case "browse":
+      return "browseDirectory";
   }
 };
 
@@ -147,7 +153,12 @@ const mapHelperError = (
     case "unsupported_operation":
       return unsupported(providerInstanceId, operation);
     case "invalid_root":
-      return pathFailed(providerInstanceId, operation, "<workspace-root>", code);
+      return pathFailed(
+        providerInstanceId,
+        operation,
+        operation === "browseDirectory" ? relativePath : "<workspace-root>",
+        code,
+      );
     case "invalid_path":
     case "path_not_found":
     case "path_not_file":
@@ -205,12 +216,22 @@ const encodeRequestArg = (request: CodexWorkspaceHelperRequestShape): string =>
 export const makeCodexWorkspaceAdapter = (
   options: MakeCodexWorkspaceAdapterOptions,
 ): ProviderWorkspaceAdapter => {
+  let browseCapability: { readonly generationId: number; readonly supported: boolean } | undefined;
+
   const execute = Effect.fn("CodexWorkspaceAdapter.execute")(function* (
     input: CodexWorkspaceHelperRequestShape,
     providerOperation?: ProviderWorkspaceOperation,
+    borrowedConnection?: CodexEndpointConnectionBorrow,
   ): Effect.fn.Return<CodexWorkspaceHelperResult, ProviderWorkspaceError> {
     const operation = providerOperation ?? operationName(input.operation);
-    const relativePath = "relativePath" in input ? input.relativePath : "<workspace-root>";
+    const relativePath =
+      "relativePath" in input
+        ? input.relativePath
+        : input.operation === "browse"
+          ? input.locator.kind === "absolute"
+            ? input.locator.path
+            : `<provider-home>/${input.locator.relativePath}`
+          : "<workspace-root>";
     if (
       options.helper.type === "cocoa-workspace-helper-v1" &&
       options.helper.expectedProtocol !== CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION
@@ -234,9 +255,11 @@ export const makeCodexWorkspaceAdapter = (
             requestArg,
           ]
         : [options.helper.executablePath, requestArg];
-    const borrowed = yield* options.borrowConnection.pipe(
-      Effect.mapError(() => disconnected(options.providerInstanceId, operation)),
-    );
+    const borrowed =
+      borrowedConnection ??
+      (yield* options.borrowConnection.pipe(
+        Effect.mapError(() => disconnected(options.providerInstanceId, operation)),
+      ));
     yield* borrowed.ensureCurrent.pipe(
       Effect.mapError(() => disconnected(options.providerInstanceId, operation)),
     );
@@ -246,7 +269,10 @@ export const makeCodexWorkspaceAdapter = (
         command,
         sandboxPolicy: { type: "readOnly", networkAccess: false },
         timeoutMs: COMMAND_TIMEOUT_MS,
-        outputBytesCap: COMMAND_OUTPUT_BYTES_CAP,
+        outputBytesCap:
+          input.operation === "browse"
+            ? CODEX_WORKSPACE_HELPER_MAX_BROWSE_RESPONSE_BYTES + FRAME_HEADER_ALLOWANCE_BYTES
+            : COMMAND_OUTPUT_BYTES_CAP,
       })
       .pipe(Effect.result);
 
@@ -308,6 +334,113 @@ export const makeCodexWorkspaceAdapter = (
       );
     }
     return response.result;
+  });
+
+  const browseDirectory: ProviderWorkspaceAdapter["browseDirectory"] = Effect.fn(
+    "CodexWorkspaceAdapter.browseDirectory",
+  )(function* (input) {
+    if (
+      options.helper.type === "cocoa-workspace-helper-v1" &&
+      options.helper.expectedProtocol !== CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION
+    ) {
+      return yield* unsupported(options.providerInstanceId, "browseDirectory");
+    }
+    const borrowed = yield* options.borrowConnection.pipe(
+      Effect.mapError(() => disconnected(options.providerInstanceId, "browseDirectory")),
+    );
+    const cached = browseCapability;
+    if (cached?.generationId !== borrowed.generationId) {
+      const probeResult = yield* execute(
+        {
+          protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
+          operation: "probe",
+        },
+        "browseDirectory",
+        borrowed,
+      );
+      if (probeResult.operation !== "probe") {
+        return yield* protocol(
+          options.providerInstanceId,
+          "browseDirectory",
+          "Workspace helper returned the wrong probe result.",
+        );
+      }
+      browseCapability = {
+        generationId: borrowed.generationId,
+        supported: probeResult.capabilities.includes("browse"),
+      };
+    }
+    if (browseCapability?.supported !== true) {
+      return yield* unsupported(options.providerInstanceId, "browseDirectory");
+    }
+
+    const browseResult = yield* execute(
+      {
+        protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
+        operation: "browse",
+        locator: input.locator,
+        maxEntries: CodexWorkspaceHelperBrowseEntryLimit.make(input.maxEntries),
+        maxResponseBytes: CodexWorkspaceHelperBrowseResponseByteLimit.make(
+          CODEX_WORKSPACE_HELPER_MAX_BROWSE_RESPONSE_BYTES,
+        ),
+      } as CodexWorkspaceHelperRequestShape,
+      "browseDirectory",
+      borrowed,
+    );
+    if (browseResult.operation !== "browse") {
+      return yield* protocol(
+        options.providerInstanceId,
+        "browseDirectory",
+        "Workspace helper returned the wrong browse result.",
+      );
+    }
+    if (browseResult.entries.length > input.maxEntries) {
+      return yield* protocol(
+        options.providerInstanceId,
+        "browseDirectory",
+        "Workspace helper exceeded the requested browse entry bound.",
+      );
+    }
+    if (input.locator.kind === "absolute" && browseResult.directoryPath !== input.locator.path) {
+      return yield* protocol(
+        options.providerInstanceId,
+        "browseDirectory",
+        "Workspace helper returned the wrong browse directory.",
+      );
+    }
+    const separator = browseResult.directoryPath.lastIndexOf("/");
+    const expectedParent =
+      browseResult.directoryPath === "/"
+        ? null
+        : separator === 0
+          ? "/"
+          : browseResult.directoryPath.slice(0, separator);
+    if (browseResult.parentPath !== expectedParent) {
+      return yield* protocol(
+        options.providerInstanceId,
+        "browseDirectory",
+        "Workspace helper returned an invalid browse parent.",
+      );
+    }
+    const seen = new Set<string>();
+    const entries: Array<ProviderWorkspaceBrowseResult["entries"][number]> = [];
+    for (const entry of browseResult.entries) {
+      if (seen.has(entry.name)) {
+        return yield* protocol(
+          options.providerInstanceId,
+          "browseDirectory",
+          "Workspace helper returned a duplicate browse entry.",
+        );
+      }
+      seen.add(entry.name);
+      entries.push({ name: entry.name, kind: entry.kind });
+    }
+    return {
+      directoryPath: browseResult.directoryPath,
+      parentPath: browseResult.parentPath,
+      entries,
+      truncated: browseResult.truncated,
+    } satisfies ProviderWorkspaceBrowseResult;
   });
 
   const openRoot: ProviderWorkspaceAdapter["openRoot"] = Effect.fn(
@@ -502,5 +635,5 @@ export const makeCodexWorkspaceAdapter = (
     };
   });
 
-  return { openRoot };
+  return { browseDirectory, openRoot };
 };

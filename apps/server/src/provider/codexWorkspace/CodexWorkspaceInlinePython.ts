@@ -24,6 +24,9 @@ MAX_LIST_ENTRIES = 25000
 MAX_LIST_DEPTH = 64
 MAX_LIST_DIRECTORIES = 10000
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_BROWSE_ENTRIES = 10000
+MAX_BROWSE_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_ENTRY_NAME_CHARS = 1024
 MAX_SAFE_INTEGER = 9007199254740991
 FRAME_PREFIX = b"CWH1"
 
@@ -71,7 +74,11 @@ def validate_component(component):
 def split_relative(path):
     if not isinstance(path, str) or path.startswith("/") or "\\" in path or "\x00" in path:
         raise HelperError("invalid_path", "Path must be a normalized relative POSIX path.")
-    if len(path.encode("utf-8")) > MAX_PATH_BYTES:
+    try:
+        encoded = path.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HelperError("invalid_path", "Path is not valid UTF-8.")
+    if len(encoded) > MAX_PATH_BYTES:
         raise HelperError("invalid_path", "Path is too long.")
     if path == "":
         return []
@@ -83,7 +90,11 @@ def split_relative(path):
 def split_root(path):
     if not isinstance(path, str) or not path.startswith("/") or "\\" in path or "\x00" in path:
         raise HelperError("invalid_root", "Root must be an absolute POSIX path.")
-    if len(path.encode("utf-8")) > MAX_PATH_BYTES or os.path.normpath(path) != path:
+    try:
+        encoded = path.encode("utf-8")
+    except UnicodeEncodeError:
+        raise HelperError("invalid_root", "Root is not valid UTF-8.")
+    if len(encoded) > MAX_PATH_BYTES or os.path.normpath(path) != path:
         raise HelperError("invalid_root", "Root must be normalized.")
     if path == "/":
         return []
@@ -324,6 +335,89 @@ def read_response(request, root_fd):
     data = observed[:max_bytes]
     return {"protocol": PROTOCOL, "ok": True, "result": {"operation": "read", "dataBase64": base64.b64encode(data).decode("ascii"), "byteLength": byte_length, "truncated": truncated}}
 
+def split_browse_absolute(path, code):
+    try:
+        return split_root(path)
+    except HelperError:
+        raise HelperError(code, "Browse path must be an absolute normalized POSIX path.")
+
+def resolve_browse_locator(locator):
+    locator = require_object(locator)
+    kind = locator.get("kind")
+    if kind == "absolute" and set(locator) == {"kind", "path"}:
+        path = locator.get("path")
+        return path, split_browse_absolute(path, "invalid_path")
+    if kind == "home" and set(locator) == {"kind", "relativePath"}:
+        home = os.environ.get("HOME")
+        if home is None:
+            raise HelperError("invalid_root", "Provider-host home directory is unavailable.")
+        home_components = split_browse_absolute(home, "invalid_root")
+        relative_path = locator.get("relativePath")
+        descendants = split_relative(relative_path)
+        if relative_path == "":
+            directory_path = home
+        elif home == "/":
+            directory_path = "/" + relative_path
+        else:
+            directory_path = home + "/" + relative_path
+        if len(directory_path.encode("utf-8")) > MAX_PATH_BYTES:
+            raise HelperError("invalid_path", "Resolved browse path is too long.")
+        return directory_path, home_components + descendants
+    raise HelperError("invalid_path", "Browse locator is invalid.")
+
+def browse_parent(path):
+    if path == "/":
+        return None
+    separator = path.rfind("/")
+    return "/" if separator == 0 else path[:separator]
+
+def valid_browse_entry_name(name):
+    valid_entry_name(name)
+    if len(name) > MAX_ENTRY_NAME_CHARS:
+        raise HelperError("operation_failed", "Directory contains an invalid browse entry name.")
+
+def browse_response(request):
+    max_entries = require_int(request.get("maxEntries"), 1, MAX_BROWSE_ENTRIES, "Invalid browse entry limit.")
+    response_limit = require_int(request.get("maxResponseBytes"), 1, MAX_BROWSE_RESPONSE_BYTES, "Invalid browse response byte limit.")
+    directory_path, _components = resolve_browse_locator(request.get("locator"))
+    directory_fd = open_root(directory_path)
+    entries = []
+    truncated = False
+    try:
+        with os.scandir(directory_fd) as iterator:
+            for entry in iterator:
+                if len(entries) == max_entries:
+                    truncated = True
+                    break
+                valid_browse_entry_name(entry.name)
+                try:
+                    value = os.stat(entry.name, dir_fd=directory_fd, follow_symlinks=False)
+                except OSError as error:
+                    raise map_os_error(error)
+                entries.append({"name": entry.name, "kind": entry_kind(value.st_mode)})
+    finally:
+        os.close(directory_fd)
+    entries.sort(key=lambda item: item["name"])
+
+    def make(candidate, was_truncated):
+        return {"protocol": PROTOCOL, "ok": True, "result": {"operation": "browse", "directoryPath": directory_path, "parentPath": browse_parent(directory_path), "entries": candidate, "truncated": was_truncated}}
+
+    response = make(entries, truncated)
+    if len(encode_payload(response)) <= response_limit:
+        return response, response_limit
+    low = 0
+    high = len(entries)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(encode_payload(make(entries[:middle], True))) <= response_limit:
+            low = middle
+        else:
+            high = middle - 1
+    candidate = make(entries[:low], True)
+    if len(encode_payload(candidate)) > response_limit:
+        raise HelperError("limit_exceeded", "Browse response byte limit is too small.")
+    return candidate, response_limit
+
 def dispatch(request):
     request = require_object(request)
     if request.get("protocol") != PROTOCOL:
@@ -331,7 +425,7 @@ def dispatch(request):
     operation = request.get("operation")
     if operation == "probe":
         directory_flags()
-        return {"protocol": PROTOCOL, "ok": True, "result": {"operation": "probe", "implementation": "cocoa-inline-python3", "capabilities": ["probe", "validate", "stat", "list", "read"]}}
+        return {"protocol": PROTOCOL, "ok": True, "result": {"operation": "probe", "implementation": "cocoa-inline-python3", "capabilities": ["probe", "validate", "stat", "list", "read", "browse"]}}
     if operation == "validate":
         configured_root = request.get("root")
         split_root(configured_root)
@@ -343,6 +437,8 @@ def dispatch(request):
             return {"protocol": PROTOCOL, "ok": True, "result": {"operation": "validate", "root": identity(root, value), "metadata": metadata(value)}}
         finally:
             os.close(root_fd)
+    if operation == "browse":
+        return browse_response(request)
     if operation not in ("stat", "list", "read"):
         raise HelperError("unsupported_operation", "Unsupported workspace helper operation.")
     root_fd = verify_root(request)

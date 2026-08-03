@@ -19,6 +19,7 @@ import type * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import {
+  ProviderWorkspaceBrowseMaxEntries,
   ProviderWorkspaceMaxDepth,
   ProviderWorkspaceMaxDirectories,
   ProviderWorkspaceMaxEntries,
@@ -449,6 +450,240 @@ it.effect("sends identical bounded recursive list requests to inline and native 
   }),
 );
 
+it.effect(
+  "sends provider-scoped browse requests with native/inline parity and no root traversal",
+  () =>
+    Effect.gen(function* () {
+      const requests = new Map<string, Array<CodexWorkspaceHelperRequest>>();
+      const run = (helper: CodexWorkspaceHelperConfig) => {
+        const helperRequests: Array<CodexWorkspaceHelperRequest> = [];
+        requests.set(helper.type, helperRequests);
+        const { adapter } = makeAdapter({
+          helper,
+          handler: (_method, payload) => {
+            const request = decodeRequest(payload);
+            helperRequests.push(request);
+            if (request.operation === "probe") {
+              return Effect.succeed(
+                success({
+                  operation: "probe",
+                  implementation: "test-helper",
+                  capabilities: ["probe", "validate", "stat", "list", "read", "browse"],
+                }),
+              );
+            }
+            if (request.operation !== "browse") return Effect.die("unexpected helper operation");
+            const directoryPath =
+              request.locator.kind === "absolute"
+                ? request.locator.path
+                : `/home/test/${request.locator.relativePath}`;
+            return Effect.succeed(
+              success({
+                operation: "browse",
+                directoryPath,
+                parentPath:
+                  directoryPath === "/"
+                    ? null
+                    : directoryPath.slice(0, directoryPath.lastIndexOf("/")) || "/",
+                entries: [{ name: "project", kind: "directory" }],
+                truncated: false,
+              }),
+            );
+          },
+        });
+        return Effect.gen(function* () {
+          const browse = adapter.browseDirectory;
+          assert.isDefined(browse);
+          const absolute = yield* browse!({
+            locator: { kind: "absolute", path: "/" },
+            maxEntries: ProviderWorkspaceBrowseMaxEntries.make(10),
+          });
+          const home = yield* browse!({
+            locator: { kind: "home", relativePath: "Developer" },
+            maxEntries: ProviderWorkspaceBrowseMaxEntries.make(20),
+          });
+          return { absolute, home };
+        });
+      };
+
+      const inline = yield* run(HELPER);
+      const native = yield* run(NATIVE_HELPER);
+      assert.deepStrictEqual(native, inline);
+      assert.deepStrictEqual(inline.absolute, {
+        directoryPath: "/",
+        parentPath: null,
+        entries: [{ name: "project", kind: "directory" }],
+        truncated: false,
+      });
+      assert.strictEqual(inline.home.directoryPath, "/home/test/Developer");
+
+      const inlineRequests = requests.get("inline-python3-v1")!;
+      const nativeRequests = requests.get("cocoa-workspace-helper-v1")!;
+      assert.deepStrictEqual(nativeRequests, inlineRequests);
+      assert.deepStrictEqual(
+        inlineRequests.map((request) => request.operation),
+        ["probe", "browse", "browse"],
+      );
+      assert.deepStrictEqual(inlineRequests[1], {
+        protocol: 1,
+        operation: "browse",
+        locator: { kind: "absolute", path: "/" },
+        maxEntries: 10,
+        maxResponseBytes: 4 * 1024 * 1024,
+      });
+      assert.isFalse(
+        inlineRequests.some((request) => request.operation === "validate" || "root" in request),
+        "browse must not emulate host traversal by opening a workspace root",
+      );
+    }),
+);
+
+it.effect("returns typed unsupported for legacy probes and unavailable command execution", () =>
+  Effect.gen(function* () {
+    let legacyCalls = 0;
+    const legacy = makeAdapter({
+      handler: (_method, payload) => {
+        legacyCalls += 1;
+        const request = decodeRequest(payload);
+        if (request.operation !== "probe") return Effect.die("unexpected helper operation");
+        return Effect.succeed(
+          success({
+            operation: "probe",
+            implementation: "legacy-helper",
+            capabilities: ["probe", "validate", "stat", "list", "read"],
+          }),
+        );
+      },
+    });
+    for (let index = 0; index < 2; index += 1) {
+      const error = yield* legacy.adapter.browseDirectory!({
+        locator: { kind: "home", relativePath: "" },
+        maxEntries: ProviderWorkspaceBrowseMaxEntries.make(10),
+      }).pipe(Effect.flip);
+      assert.strictEqual(error._tag, "ProviderWorkspaceUnsupportedError");
+      assert.strictEqual(error.operation, "browseDirectory");
+    }
+    assert.strictEqual(legacyCalls, 1, "legacy capability result is cached per generation");
+
+    const unavailable = makeAdapter({
+      handler: () =>
+        Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound("command/exec")),
+    });
+    const unavailableError = yield* unavailable.adapter.browseDirectory!({
+      locator: { kind: "absolute", path: "/srv" },
+      maxEntries: ProviderWorkspaceBrowseMaxEntries.make(1),
+    }).pipe(Effect.flip);
+    assert.strictEqual(unavailableError._tag, "ProviderWorkspaceUnsupportedError");
+    assert.strictEqual(unavailableError.operation, "browseDirectory");
+  }),
+);
+
+it.effect("re-probes browse capability after a disconnected endpoint generation", () =>
+  Effect.gen(function* () {
+    const unavailable = new CodexEndpointBorrowUnavailableError({
+      providerInstanceId: INSTANCE_ID,
+    });
+    let currentGeneration = 1;
+    let disconnectFirstBrowse = true;
+    let probes = 0;
+    const connection = makeConnection((_method, payload) => {
+      const request = decodeRequest(payload);
+      if (request.operation === "probe") {
+        probes += 1;
+        return Effect.succeed(
+          success({
+            operation: "probe",
+            implementation: "test-helper",
+            capabilities: ["probe", "validate", "stat", "list", "read", "browse"],
+          }),
+        );
+      }
+      if (request.operation !== "browse") return Effect.die("unexpected helper operation");
+      if (disconnectFirstBrowse) {
+        disconnectFirstBrowse = false;
+        currentGeneration = 2;
+      }
+      return Effect.succeed(
+        success({
+          operation: "browse",
+          directoryPath: "/srv",
+          parentPath: "/",
+          entries: [],
+          truncated: false,
+        }),
+      );
+    });
+    const { adapter } = makeAdapter({
+      handler: () => Effect.die("unused"),
+      borrow: Effect.sync(() => {
+        const generationId = currentGeneration;
+        return {
+          generationId,
+          connection,
+          ensureCurrent: Effect.suspend(() =>
+            generationId === currentGeneration ? Effect.void : Effect.fail(unavailable),
+          ),
+        };
+      }),
+    });
+    const input = {
+      locator: { kind: "absolute" as const, path: "/srv" },
+      maxEntries: ProviderWorkspaceBrowseMaxEntries.make(5),
+    };
+    const disconnectedError = yield* adapter.browseDirectory!(input).pipe(Effect.flip);
+    assert.strictEqual(disconnectedError._tag, "ProviderWorkspaceDisconnectedError");
+    assert.deepStrictEqual(yield* adapter.browseDirectory!(input), {
+      directoryPath: "/srv",
+      parentPath: "/",
+      entries: [],
+      truncated: false,
+    });
+    yield* adapter.browseDirectory!(input);
+    assert.strictEqual(probes, 2, "each endpoint generation is probed once");
+  }),
+);
+
+it.effect("rejects browse results that exceed bounds or violate direct-entry invariants", () =>
+  Effect.gen(function* () {
+    for (const entries of [
+      [
+        { name: "one", kind: "file" as const },
+        { name: "two", kind: "file" as const },
+      ],
+      [
+        { name: "duplicate", kind: "file" as const },
+        { name: "duplicate", kind: "directory" as const },
+      ],
+    ]) {
+      const { adapter } = makeAdapter({
+        handler: (_method, payload) => {
+          const request = decodeRequest(payload);
+          return Effect.succeed(
+            request.operation === "probe"
+              ? success({
+                  operation: "probe",
+                  implementation: "test-helper",
+                  capabilities: ["probe", "browse"],
+                })
+              : success({
+                  operation: "browse",
+                  directoryPath: "/srv",
+                  parentPath: "/",
+                  entries,
+                  truncated: false,
+                }),
+          );
+        },
+      });
+      const error = yield* adapter.browseDirectory!({
+        locator: { kind: "absolute", path: "/srv" },
+        maxEntries: ProviderWorkspaceBrowseMaxEntries.make(1),
+      }).pipe(Effect.flip);
+      assert.strictEqual(error._tag, "ProviderWorkspaceProtocolError");
+    }
+  }),
+);
+
 it.effect("rejects recursive helper entries outside the requested depth or normalized shape", () =>
   Effect.gen(function* () {
     for (const path of ["nested/too/deep", "nested//invalid", "../outside", "\\windows"]) {
@@ -555,17 +790,151 @@ it("confines the inline Python helper with descriptors and enforces read/list bo
     NodeFS.symlinkSync(outside, NodePath.join(workspace, "escape"));
     NodeFS.symlinkSync(workspace, workspaceLink);
 
-    const run = (request: unknown): CodexWorkspaceHelperResponse => {
+    const run = (
+      request: unknown,
+      environment: NodeJS.ProcessEnv = process.env,
+    ): CodexWorkspaceHelperResponse => {
       const encoded = Encoding.encodeBase64(new TextEncoder().encode(JSON.stringify(request)));
       const child = NodeChildProcess.spawnSync(
         python,
         ["-I", "-S", "-c", CODEX_WORKSPACE_INLINE_PYTHON, encoded],
-        { encoding: "utf8" },
+        { encoding: "utf8", env: environment },
       );
       assert.strictEqual(child.status, 0, child.stderr);
       assert.strictEqual(child.stderr, "");
       return decodeCodexWorkspaceHelperFrame(child.stdout) as CodexWorkspaceHelperResponse;
     };
+
+    const probe = run({ protocol: 1, operation: "probe" });
+    assert.isTrue(probe.ok);
+    if (!probe.ok || probe.result.operation !== "probe") {
+      return assert.fail("expected probe result");
+    }
+    assert.include(probe.result.capabilities, "browse");
+
+    const browse = (
+      locator: Extract<CodexWorkspaceHelperRequest, { readonly operation: "browse" }>["locator"],
+      maxEntries = 100,
+      maxResponseBytes = 1024 * 1024,
+      environment: NodeJS.ProcessEnv = process.env,
+    ) =>
+      run(
+        {
+          protocol: 1,
+          operation: "browse",
+          locator,
+          maxEntries,
+          maxResponseBytes,
+        },
+        environment,
+      );
+
+    const rootBrowse = browse({ kind: "absolute", path: "/" }, 1);
+    assert.isTrue(rootBrowse.ok);
+    if (!rootBrowse.ok || rootBrowse.result.operation !== "browse") {
+      return assert.fail("expected root browse result");
+    }
+    assert.strictEqual(rootBrowse.result.directoryPath, "/");
+    assert.isNull(rootBrowse.result.parentPath);
+
+    const directBrowse = browse({ kind: "absolute", path: workspace });
+    assert.isTrue(directBrowse.ok);
+    if (!directBrowse.ok || directBrowse.result.operation !== "browse") {
+      return assert.fail("expected direct browse result");
+    }
+    assert.strictEqual(directBrowse.result.directoryPath, workspace);
+    assert.strictEqual(directBrowse.result.parentPath, temporary);
+    assert.deepInclude(directBrowse.result.entries, { name: "escape", kind: "symlink" });
+    assert.deepInclude(directBrowse.result.entries, { name: "tree", kind: "directory" });
+    assert.isFalse(directBrowse.result.entries.some((entry) => entry.name === "child.txt"));
+
+    const homeBrowse = browse({ kind: "home", relativePath: "tree" }, 100, 1024 * 1024, {
+      ...process.env,
+      HOME: workspace,
+    });
+    assert.isTrue(homeBrowse.ok);
+    if (!homeBrowse.ok || homeBrowse.result.operation !== "browse") {
+      return assert.fail("expected home browse result");
+    }
+    assert.strictEqual(homeBrowse.result.directoryPath, NodePath.join(workspace, "tree"));
+    assert.strictEqual(homeBrowse.result.parentPath, workspace);
+
+    const symlinkBrowse = browse({ kind: "absolute", path: NodePath.join(workspace, "escape") });
+    assert.isFalse(symlinkBrowse.ok);
+    if (!symlinkBrowse.ok) assert.strictEqual(symlinkBrowse.error.code, "path_is_symlink");
+
+    const invalidPathBrowse = browse({
+      kind: "absolute",
+      path: `${workspace}/../outside`,
+    } as never);
+    assert.isFalse(invalidPathBrowse.ok);
+    if (!invalidPathBrowse.ok) assert.strictEqual(invalidPathBrowse.error.code, "invalid_path");
+
+    const withoutHome = { ...process.env };
+    delete withoutHome.HOME;
+    const missingHomeBrowse = browse({ kind: "home", relativePath: "" }, 100, 1024, withoutHome);
+    assert.isFalse(missingHomeBrowse.ok);
+    if (!missingHomeBrowse.ok) assert.strictEqual(missingHomeBrowse.error.code, "invalid_root");
+
+    const invalidHomeBrowse = browse({ kind: "home", relativePath: "" }, 100, 1024, {
+      ...process.env,
+      HOME: "relative/home",
+    });
+    assert.isFalse(invalidHomeBrowse.ok);
+    if (!invalidHomeBrowse.ok) assert.strictEqual(invalidHomeBrowse.error.code, "invalid_root");
+
+    const homeTraversalBrowse = browse(
+      { kind: "home", relativePath: "../outside" } as never,
+      100,
+      1024,
+      { ...process.env, HOME: workspace },
+    );
+    assert.isFalse(homeTraversalBrowse.ok);
+    if (!homeTraversalBrowse.ok) {
+      assert.strictEqual(homeTraversalBrowse.error.code, "invalid_path");
+    }
+
+    const entryBoundBrowse = browse({ kind: "absolute", path: workspace }, 1);
+    assert.isTrue(entryBoundBrowse.ok);
+    if (!entryBoundBrowse.ok || entryBoundBrowse.result.operation !== "browse") {
+      return assert.fail("expected bounded browse result");
+    }
+    assert.strictEqual(entryBoundBrowse.result.entries.length, 1);
+    assert.isTrue(entryBoundBrowse.result.truncated);
+
+    for (const prefix of ["long-alpha-", "long-beta-"]) {
+      NodeFS.writeFileSync(NodePath.join(workspace, `${prefix}${"x".repeat(180)}`), "x");
+    }
+    const responseBoundBrowse = browse({ kind: "absolute", path: workspace }, 100, 512);
+    assert.isTrue(responseBoundBrowse.ok);
+    if (!responseBoundBrowse.ok || responseBoundBrowse.result.operation !== "browse") {
+      return assert.fail("expected response-bounded browse result");
+    }
+    assert.isTrue(responseBoundBrowse.result.truncated);
+    assert.isBelow(
+      responseBoundBrowse.result.entries.length,
+      directBrowse.result.entries.length + 2,
+    );
+    assert.isAtMost(new TextEncoder().encode(JSON.stringify(responseBoundBrowse)).byteLength, 512);
+
+    let createdNonUtf8Entry = false;
+    try {
+      const invalidName = Buffer.concat([
+        Buffer.from(`${workspace}/invalid-`, "utf8"),
+        Buffer.from([0xff]),
+      ]);
+      NodeFS.writeFileSync(invalidName, "x");
+      createdNonUtf8Entry = true;
+    } catch (error) {
+      assert.instanceOf(error, Error);
+    }
+    if (createdNonUtf8Entry) {
+      const nonUtf8Browse = browse({ kind: "absolute", path: workspace });
+      assert.isFalse(nonUtf8Browse.ok);
+      if (!nonUtf8Browse.ok) {
+        assert.strictEqual(nonUtf8Browse.error.code, "operation_failed");
+      }
+    }
 
     const validated = run({ protocol: 1, operation: "validate", root: workspaceLink });
     assert.isTrue(validated.ok);

@@ -151,6 +151,7 @@ it.effect(
       readonly maxBytes?: number;
     }> = [];
     const makeWorkspace = (provider: string, kind: "file" | "directory") => ({
+      browseDirectory: () => Effect.die("unused"),
       openRoot: (root: string) =>
         Effect.succeed({
           getMetadata: ({ relativePath }: { readonly relativePath: string }) =>
@@ -316,6 +317,7 @@ it.effect(
 it.effect("validates only the persisted root and does not expose a root handle", () => {
   const openedRoots: Array<string> = [];
   const workspace: ProviderWorkspaceAdapter = {
+    browseDirectory: () => Effect.die("unused"),
     openRoot: (root) =>
       Effect.sync(() => {
         openedRoots.push(root);
@@ -439,6 +441,7 @@ it.effect("preserves normalized provider workspace failure categories", () => {
   ];
   let errorIndex = 0;
   const providerWorkspace: ProviderWorkspaceAdapter = {
+    browseDirectory: () => Effect.die("unused"),
     openRoot: () =>
       Effect.succeed({
         getMetadata: () => Effect.fail(errors[errorIndex++]!),
@@ -466,6 +469,7 @@ it.effect("preserves normalized provider workspace failure categories", () => {
 it.effect("routes a verified thread to its provider-owned worktree root", () => {
   const openedRoots: Array<string> = [];
   const providerWorkspace: ProviderWorkspaceAdapter = {
+    browseDirectory: () => Effect.die("unused"),
     openRoot: (root) =>
       Effect.sync(() => {
         openedRoots.push(root);

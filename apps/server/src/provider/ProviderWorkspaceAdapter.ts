@@ -18,6 +18,7 @@ export const ProviderWorkspaceOperation = Schema.Literals([
   "listDirectory",
   "listEntries",
   "readFile",
+  "browseDirectory",
 ]);
 export type ProviderWorkspaceOperation = typeof ProviderWorkspaceOperation.Type;
 
@@ -50,6 +51,33 @@ export type ProviderWorkspaceMaxEntries = typeof ProviderWorkspaceMaxEntries.Typ
 export interface ProviderWorkspaceDirectoryListing {
   readonly entries: ReadonlyArray<ProviderWorkspaceDirectoryEntry>;
   /** True when more direct children existed than the requested bound. */
+  readonly truncated: boolean;
+}
+
+export const PROVIDER_WORKSPACE_MAX_BROWSE_ENTRIES = 10_000;
+export const ProviderWorkspaceBrowseMaxEntries = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(1),
+  Schema.isLessThanOrEqualTo(PROVIDER_WORKSPACE_MAX_BROWSE_ENTRIES),
+).pipe(Schema.brand("ProviderWorkspaceBrowseMaxEntries"));
+export type ProviderWorkspaceBrowseMaxEntries = typeof ProviderWorkspaceBrowseMaxEntries.Type;
+
+/** A provider-host directory, independent of any configured project root. */
+export type ProviderWorkspaceBrowseLocator =
+  | {
+      readonly kind: "absolute";
+      /** A normalized absolute POSIX path on the provider host. */
+      readonly path: string;
+    }
+  | {
+      readonly kind: "home";
+      /** A normalized descendant path resolved below HOME on the provider host. */
+      readonly relativePath: string;
+    };
+
+export interface ProviderWorkspaceBrowseResult {
+  readonly directoryPath: string;
+  readonly parentPath: string | null;
+  readonly entries: ReadonlyArray<ProviderWorkspaceDirectoryEntry>;
   readonly truncated: boolean;
 }
 
@@ -194,6 +222,10 @@ export interface ProviderWorkspaceRoot {
 
 /** Optional per-instance capability implemented by provider drivers. */
 export interface ProviderWorkspaceAdapter {
+  readonly browseDirectory: (input: {
+    readonly locator: ProviderWorkspaceBrowseLocator;
+    readonly maxEntries: ProviderWorkspaceBrowseMaxEntries;
+  }) => Effect.Effect<ProviderWorkspaceBrowseResult, ProviderWorkspaceError>;
   readonly openRoot: (
     workspaceRoot: string,
   ) => Effect.Effect<ProviderWorkspaceRoot, ProviderWorkspaceError>;
