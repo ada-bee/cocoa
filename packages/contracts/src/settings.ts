@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { CodexEndpointTransport } from "./codexEndpoint.ts";
+import { CodexWorkspaceHelperConfig } from "./codexWorkspaceHelper.ts";
 import { DEFAULT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
@@ -206,6 +207,14 @@ export const CodexSettings = makeProviderSettingsSchema(
         title: "Endpoint transport",
         description:
           "Internal Cocoa transition field for an externally managed Codex app-server endpoint. When present, the gateway runtime will prefer it over the legacy local-process fields after remote transport integration lands.",
+        providerSettingsForm: { hidden: true },
+      }),
+    ),
+    workspaceHelper: Schema.optionalKey(CodexWorkspaceHelperConfig).pipe(
+      Schema.annotateKey({
+        title: "Workspace helper",
+        description:
+          "Internal Cocoa provider-host capability for rooted, bounded workspace access.",
         providerSettingsForm: { hidden: true },
       }),
     ),
@@ -594,15 +603,17 @@ const ModelSelectionPatch = Schema.Struct({
   options: Schema.optionalKey(ProviderOptionSelections),
 });
 
-const CodexSettingsPatch = Schema.Struct({
+export const CodexSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   endpointTransport: Schema.optionalKey(CodexEndpointTransport),
+  workspaceHelper: Schema.optionalKey(CodexWorkspaceHelperConfig),
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),
   shadowHomePath: Schema.optionalKey(TrimmedString),
   launchArgs: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
+export type CodexSettingsPatch = typeof CodexSettingsPatch.Type;
 
 const ClaudeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
