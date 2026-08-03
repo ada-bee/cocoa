@@ -20,6 +20,7 @@ import {
   type ProjectionRepositoryError,
 } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { CheckpointRevertIntentRepository } from "../../persistence/Services/CheckpointRevertIntents.ts";
 import { PostTurnCheckpointIntentRepository } from "../../persistence/Services/PostTurnCheckpointIntents.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
@@ -55,6 +56,7 @@ import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
 import { PostTurnCheckpointIntentRepositoryLive } from "../../persistence/Layers/PostTurnCheckpointIntents.ts";
+import { CheckpointRevertIntentRepositoryLive } from "../../persistence/Layers/CheckpointRevertIntents.ts";
 import {
   TurnDispatchJournalRepositoryLive,
   turnDispatchTitleSeedSha256,
@@ -496,6 +498,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const projectionThreadSessionRepository = yield* ProjectionThreadSessionRepository;
     const projectionTurnRepository = yield* ProjectionTurnRepository;
     const projectionPendingApprovalRepository = yield* ProjectionPendingApprovalRepository;
+    const checkpointRevertIntents = yield* CheckpointRevertIntentRepository;
     const postTurnCheckpointIntents = yield* PostTurnCheckpointIntentRepository;
     const turnDispatchJournal = yield* TurnDispatchJournalRepository;
 
@@ -1487,30 +1490,56 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
     const applyCheckpointsProjection: ProjectorDefinition["apply"] = Effect.fn(
       "applyCheckpointsProjection",
     )(function* (event, _attachmentSideEffects) {
-      if (event.type !== "thread.turn-completed") return;
-      yield* postTurnCheckpointIntents
-        .projectInTransaction({
-          sourceEventId: event.eventId,
-          sourceSequence: event.sequence,
-          threadId: event.payload.threadId,
-          turnId: event.payload.turnId,
-          providerTurnId:
-            event.payload.providerTurnId !== undefined &&
-            isProviderTurnId(event.payload.providerTurnId)
-              ? event.payload.providerTurnId
-              : null,
-          outcome: event.payload.outcome,
-          completedAt: event.payload.completedAt,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new PersistenceSqlError({
-                operation: "ProjectionPipeline.checkpoints",
-                cause,
-              }),
-          ),
-        );
+      switch (event.type) {
+        case "thread.turn-completed":
+          yield* postTurnCheckpointIntents
+            .projectInTransaction({
+              sourceEventId: event.eventId,
+              sourceSequence: event.sequence,
+              threadId: event.payload.threadId,
+              turnId: event.payload.turnId,
+              providerTurnId:
+                event.payload.providerTurnId !== undefined &&
+                isProviderTurnId(event.payload.providerTurnId)
+                  ? event.payload.providerTurnId
+                  : null,
+              outcome: event.payload.outcome,
+              completedAt: event.payload.completedAt,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PersistenceSqlError({
+                    operation: "ProjectionPipeline.checkpoints",
+                    cause,
+                  }),
+              ),
+            );
+          return;
+        case "thread.checkpoint-revert-requested":
+          yield* checkpointRevertIntents
+            .projectInTransaction({
+              sourceEventId: event.eventId,
+              sourceSequence: event.sequence,
+              sourceCommandId: event.commandId,
+              threadId: event.payload.threadId,
+              requestedTurnCount: event.payload.turnCount,
+              requestedAt: event.payload.createdAt,
+              createdAt: event.occurredAt,
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PersistenceSqlError({
+                    operation: "ProjectionPipeline.checkpoints",
+                    cause,
+                  }),
+              ),
+            );
+          return;
+        default:
+          return;
+      }
     });
 
     const applyPendingApprovalsProjection: ProjectorDefinition["apply"] = Effect.fn(
@@ -1779,4 +1808,5 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   Layer.provideMerge(ProjectionStateRepositoryLive),
   Layer.provideMerge(TurnDispatchJournalRepositoryLive),
   Layer.provideMerge(PostTurnCheckpointIntentRepositoryLive),
+  Layer.provideMerge(CheckpointRevertIntentRepositoryLive),
 );

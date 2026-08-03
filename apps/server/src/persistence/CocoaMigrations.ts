@@ -7,12 +7,14 @@ import Migration0001 from "./CocoaMigrations/001_ProviderCheckpointOperations.ts
 import Migration0002 from "./CocoaMigrations/002_TurnDispatchJournal.ts";
 import Migration0003 from "./CocoaMigrations/003_PostTurnCheckpointIntents.ts";
 import Migration0004 from "./CocoaMigrations/004_CheckpointRevertSagas.ts";
+import Migration0005 from "./CocoaMigrations/005_CheckpointRevertIntents.ts";
 
 export const cocoaMigrationEntries = [
   [1, "ProviderCheckpointOperations", Migration0001],
   [2, "TurnDispatchJournal", Migration0002],
   [3, "PostTurnCheckpointIntents", Migration0003],
   [4, "CheckpointRevertSagas", Migration0004],
+  [5, "CheckpointRevertIntents", Migration0005],
 ] as const;
 
 export const cocoaMigrationManifest = cocoaMigrationEntries.map(

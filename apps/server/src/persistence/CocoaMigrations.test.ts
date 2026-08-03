@@ -23,6 +23,7 @@ layer("Cocoa migrations", (it) => {
         [2, "TurnDispatchJournal"],
         [3, "PostTurnCheckpointIntents"],
         [4, "CheckpointRevertSagas"],
+        [5, "CheckpointRevertIntents"],
       ]);
 
       yield* sql`
@@ -47,6 +48,7 @@ layer("Cocoa migrations", (it) => {
         { migrationId: 2, name: "TurnDispatchJournal" },
         { migrationId: 3, name: "PostTurnCheckpointIntents" },
         { migrationId: 4, name: "CheckpointRevertSagas" },
+        { migrationId: 5, name: "CheckpointRevertIntents" },
       ]);
     }),
   );

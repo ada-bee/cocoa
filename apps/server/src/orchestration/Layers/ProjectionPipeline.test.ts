@@ -24,6 +24,7 @@ import {
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { CheckpointRevertIntentRepository } from "../../persistence/Services/CheckpointRevertIntents.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import {
@@ -239,6 +240,58 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 });
+
+it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-revert-intent-projection-")))(
+  "OrchestrationProjectionPipeline checkpoint revert intents",
+  (it) => {
+    it.effect("durably projects a revert request before any live consumer runs", () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const intents = yield* CheckpointRevertIntentRepository;
+        const now = "2026-08-04T12:00:00.000Z";
+        const sourceEventId = EventId.make("event:projection:checkpoint-revert");
+        const commandId = CommandId.make("command:projection:checkpoint-revert");
+        const threadId = ThreadId.make("thread-projection-checkpoint-revert");
+
+        const saved = yield* eventStore.append({
+          type: "thread.checkpoint-revert-requested",
+          eventId: sourceEventId,
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId,
+          causationEventId: null,
+          correlationId: commandId,
+          metadata: {},
+          payload: {
+            threadId,
+            turnCount: 3,
+            createdAt: now,
+          },
+        });
+        yield* projectionPipeline.projectEvent(saved);
+
+        const recovery = yield* intents.listRecovery({ after: null, limit: 500 });
+        assert.deepStrictEqual(recovery, [
+          {
+            sourceEventId,
+            sourceSequence: saved.sequence,
+            sourceCommandId: commandId,
+            threadId,
+            requestedTurnCount: 3,
+            requestedAt: now,
+            createdAt: now,
+            state: "awaiting_saga",
+            sagaId: null,
+            terminalOutcome: null,
+            terminalAt: null,
+          },
+        ]);
+      }),
+    );
+  },
+);
 
 it.layer(Layer.fresh(makeProjectionPipelinePrefixedTestLayer("t3-base-")))(
   "OrchestrationProjectionPipeline",
