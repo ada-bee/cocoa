@@ -1,0 +1,64 @@
+{
+  "providerInstances": {
+    "codex_macbook_air": {
+      "driver": "codex",
+      "displayName": "MacBook Air",
+      "enabled": true,
+      "config": {
+        "endpointTransport": {
+          "type": "ssh-proxy",
+          "host": "192.168.20.99",
+          "user": "ada-bee",
+          "options": {
+            "identityFile": "/run/secrets/cocoa_ssh_identity",
+            "connectTimeoutSeconds": 15,
+            "serverAliveIntervalSeconds": 30,
+            "serverAliveCountMax": 3,
+            "strictHostKeyChecking": "yes"
+          }
+        },
+        "workspaceHelper": {
+          "type": "inline-python3-v1",
+          "executablePath": "/usr/bin/python3"
+        },
+        "endpointGitExecutablePath": "/usr/bin/git",
+        "endpointTerminal": {
+          "enabled": true,
+          "sandboxMode": "workspaceWrite"
+        }
+      }
+    },
+    "codex_linux_rigatoni_alfredo": {
+      "driver": "codex",
+      "displayName": "Linux dev box (rigatoni-alfredo)",
+      "enabled": true,
+      "config": {
+        "endpointTransport": {
+          "type": "ssh-proxy",
+          "host": "192.168.20.61",
+          "user": "ada-bee",
+          "options": {
+            "identityFile": "/run/secrets/cocoa_ssh_identity",
+            "connectTimeoutSeconds": 15,
+            "serverAliveIntervalSeconds": 30,
+            "serverAliveCountMax": 3,
+            "strictHostKeyChecking": "yes"
+          }
+        },
+        "workspaceHelper": {
+          "type": "inline-python3-v1",
+          "executablePath": "/usr/bin/python3"
+        },
+        "endpointGitExecutablePath": "/usr/bin/git",
+        "endpointTerminal": {
+          "enabled": true,
+          "sandboxMode": "workspaceWrite"
+        }
+      }
+    }
+  },
+  "textGenerationModelSelection": {
+    "instanceId": "codex_macbook_air",
+    "model": "gpt-5.4"
+  }
+}

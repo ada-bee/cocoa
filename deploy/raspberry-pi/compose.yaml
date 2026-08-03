@@ -1,0 +1,56 @@
+services:
+  cocoa-gateway:
+    image: cocoa-gateway:latest
+    platform: linux/arm64
+    user: "10001:10001"
+    read_only: true
+    restart: unless-stopped
+    ports:
+      - "7331:7331"
+    environment:
+      T3CODE_RUNTIME_PROFILE: cocoa-gateway
+      T3CODE_HOST: 0.0.0.0
+      T3CODE_PORT: "7331"
+      T3CODE_HOME: /data
+      T3CODE_NO_BROWSER: "true"
+    volumes:
+      - cocoa-data:/data
+    secrets:
+      - source: cocoa-ssh-identity
+        target: /run/secrets/cocoa_ssh_identity
+        uid: "10001"
+        gid: "10001"
+        mode: 0400
+      - source: cocoa-ssh-known-hosts
+        target: /home/cocoa/.ssh/known_hosts
+        uid: "10001"
+        gid: "10001"
+        mode: 0444
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=128m,mode=1777
+      - /data/userdata/logs:rw,nosuid,nodev,noexec,size=128m,mode=0750,uid=10001,gid=10001
+      - /data/worktrees:rw,nosuid,nodev,noexec,size=16m,mode=0750,uid=10001,gid=10001
+      - /data/caches:rw,nosuid,nodev,noexec,size=32m,mode=0750,uid=10001,gid=10001
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - /bin/bun
+        - -e
+        - const r=await fetch('http://127.0.0.1:7331/healthz');if(!r.ok)process.exit(1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  cocoa-data:
+
+secrets:
+  cocoa-ssh-identity:
+    file: ./secrets/id_ed25519
+  cocoa-ssh-known-hosts:
+    file: ./secrets/known_hosts
