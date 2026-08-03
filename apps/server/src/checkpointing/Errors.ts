@@ -9,6 +9,18 @@ export const CheckpointDiffOperation = Schema.Literals([
 ]);
 export type CheckpointDiffOperation = typeof CheckpointDiffOperation.Type;
 
+/** Provider-backed checkpoint operations are not available yet. */
+export class CheckpointUnsupportedError extends Schema.TaggedErrorClass<CheckpointUnsupportedError>()(
+  "CheckpointUnsupportedError",
+  {
+    operation: CheckpointDiffOperation,
+  },
+) {
+  override get message(): string {
+    return "Checkpoint diffs are unavailable until the bound provider supplies checkpoint operations.";
+  }
+}
+
 /** The computed result does not satisfy the checkpoint RPC contract. */
 export class CheckpointDiffResultInvalidError extends Schema.TaggedErrorClass<CheckpointDiffResultInvalidError>()(
   "CheckpointDiffResultInvalidError",
@@ -87,6 +99,7 @@ export type CheckpointStoreError = VcsError;
 export type CheckpointServiceError =
   | CheckpointStoreError
   | ProjectionRepositoryError
+  | CheckpointUnsupportedError
   | CheckpointDiffResultInvalidError
   | CheckpointThreadNotFoundError
   | CheckpointWorkspacePathMissingError

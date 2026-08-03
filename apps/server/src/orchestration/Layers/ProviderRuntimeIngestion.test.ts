@@ -167,7 +167,6 @@ type ProviderRuntimeTestThread = ProviderRuntimeTestReadModel["threads"][number]
 type ProviderRuntimeTestMessage = ProviderRuntimeTestThread["messages"][number];
 type ProviderRuntimeTestProposedPlan = ProviderRuntimeTestThread["proposedPlans"][number];
 type ProviderRuntimeTestActivity = ProviderRuntimeTestThread["activities"][number];
-type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][number];
 
 async function waitForThread(
   readModel: () => Promise<ProviderRuntimeTestReadModel>,
@@ -2760,7 +2759,7 @@ describe("ProviderRuntimeIngestion", () => {
     ).toBe(true);
   });
 
-  it("consumes P1 runtime events into thread metadata, diff checkpoints, and activities", async () => {
+  it("consumes P1 runtime events without fabricating checkpoint state", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -2834,6 +2833,17 @@ describe("ProviderRuntimeIngestion", () => {
         unifiedDiff: "diff --git a/file.txt b/file.txt\n+hello\n",
       },
     });
+    harness.emit({
+      type: "runtime.warning",
+      eventId: asEventId("evt-after-turn-diff"),
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-p1"),
+      payload: {
+        message: "Diff event processed",
+      },
+    });
 
     const thread = await waitForThread(
       harness.readModel,
@@ -2846,10 +2856,7 @@ describe("ProviderRuntimeIngestion", () => {
           (activity: ProviderRuntimeTestActivity) => activity.kind === "tool.updated",
         ) &&
         entry.activities.some(
-          (activity: ProviderRuntimeTestActivity) => activity.kind === "runtime.warning",
-        ) &&
-        entry.checkpoints.some(
-          (checkpoint: ProviderRuntimeTestCheckpoint) => checkpoint.turnId === "turn-p1",
+          (activity: ProviderRuntimeTestActivity) => activity.id === "evt-after-turn-diff",
         ),
     );
 
@@ -2886,12 +2893,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(warning?.kind).toBe("runtime.warning");
     expect(warningPayload?.message).toBe("Provider got slow");
 
-    const checkpoint = thread.checkpoints.find(
-      (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === "turn-p1",
-    );
-    expect(checkpoint?.status).toBe("missing");
-    expect(checkpoint?.assistantMessageId).toBe("assistant:item-p1-assistant");
-    expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated");
+    expect(thread.checkpoints).toEqual([]);
   });
 
   it("projects context window updates into normalized thread activities", async () => {
