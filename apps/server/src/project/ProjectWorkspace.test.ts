@@ -22,6 +22,8 @@ import {
   type ProviderWorkspaceAdapter,
   type ProviderWorkspaceError,
   ProviderWorkspaceMaxEntries,
+  ProviderWorkspaceReadByteLimit,
+  PROVIDER_WORKSPACE_MAX_READ_BYTES,
 } from "../provider/ProviderWorkspaceAdapter.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
@@ -42,6 +44,15 @@ it("requires directory listing bounds to be positive integers", () => {
   assert.throws(() => ProviderWorkspaceMaxEntries.make(0));
   assert.throws(() => ProviderWorkspaceMaxEntries.make(1.5));
   assert.strictEqual(ProviderWorkspaceMaxEntries.make(1), 1);
+});
+
+it("bounds provider workspace reads at one MiB", () => {
+  assert.throws(() => ProviderWorkspaceReadByteLimit.make(0));
+  assert.throws(() => ProviderWorkspaceReadByteLimit.make(PROVIDER_WORKSPACE_MAX_READ_BYTES + 1));
+  assert.strictEqual(
+    ProviderWorkspaceReadByteLimit.make(PROVIDER_WORKSPACE_MAX_READ_BYTES),
+    PROVIDER_WORKSPACE_MAX_READ_BYTES,
+  );
 });
 
 function projectShell(input: {
@@ -123,6 +134,7 @@ it.effect(
       readonly root: string;
       readonly relativePath?: string;
       readonly maxEntries?: number;
+      readonly maxBytes?: number;
     }> = [];
     const makeWorkspace = (provider: string, kind: "file" | "directory") => ({
       openRoot: (root: string) =>
@@ -151,6 +163,24 @@ it.effect(
                 entries: [{ name: `${provider}.txt`, kind: "file" as const }],
                 truncated: true,
               };
+            }),
+          readFile: ({
+            relativePath,
+            maxBytes,
+          }: {
+            readonly relativePath: string;
+            readonly maxBytes: ProviderWorkspaceReadByteLimit;
+          }) =>
+            Effect.sync(() => {
+              calls.push({
+                provider,
+                operation: "readFile",
+                root,
+                relativePath,
+                maxBytes,
+              });
+              const bytes = new TextEncoder().encode(provider);
+              return { bytes, byteLength: bytes.byteLength, truncated: false };
             }),
         }),
     });
@@ -183,6 +213,11 @@ it.effect(
         relativePath: "src",
         maxEntries: ProviderWorkspaceMaxEntries.make(1),
       });
+      const read = yield* workspace.readFile({
+        target: { projectId: projectA },
+        relativePath: "README.md",
+        maxBytes: ProviderWorkspaceReadByteLimit.make(16),
+      });
 
       assert.strictEqual(metadataA.kind, "file");
       assert.strictEqual(metadataB.kind, "directory");
@@ -190,6 +225,7 @@ it.effect(
         entries: [{ name: "a.txt", kind: "file" }],
         truncated: true,
       });
+      assert.strictEqual(new TextDecoder().decode(read.bytes), "a");
       assert.deepStrictEqual(calls, [
         {
           provider: "a",
@@ -205,6 +241,13 @@ it.effect(
           relativePath: "src",
           maxEntries: 1,
         },
+        {
+          provider: "a",
+          operation: "readFile",
+          root: sharedRoot,
+          relativePath: "README.md",
+          maxBytes: 16,
+        },
       ]);
     }).pipe(Effect.provide(testLayer({ projects, instances })));
   },
@@ -219,6 +262,7 @@ it.effect("validates only the persisted root and does not expose a root handle",
         return {
           getMetadata: () => Effect.die("unused"),
           listDirectory: () => Effect.die("unused"),
+          readFile: () => Effect.die("unused"),
         };
       }),
   };
@@ -338,6 +382,7 @@ it.effect("preserves normalized provider workspace failure categories", () => {
       Effect.succeed({
         getMetadata: () => Effect.fail(errors[errorIndex++]!),
         listDirectory: () => Effect.die("unused"),
+        readFile: () => Effect.die("unused"),
       }),
   };
   const projects = new Map([
@@ -365,6 +410,7 @@ it.effect("routes a verified thread to its provider-owned worktree root", () => 
         return {
           getMetadata: () => Effect.succeed({ kind: "directory" as const }),
           listDirectory: () => Effect.succeed({ entries: [], truncated: false }),
+          readFile: () => Effect.die("unused"),
         };
       }),
   };

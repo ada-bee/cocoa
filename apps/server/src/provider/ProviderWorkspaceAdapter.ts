@@ -16,6 +16,7 @@ export const ProviderWorkspaceOperation = Schema.Literals([
   "openRoot",
   "getMetadata",
   "listDirectory",
+  "readFile",
 ]);
 export type ProviderWorkspaceOperation = typeof ProviderWorkspaceOperation.Type;
 
@@ -29,6 +30,7 @@ export type ProviderWorkspaceEntryKind = typeof ProviderWorkspaceEntryKind.Type;
 
 export interface ProviderWorkspaceMetadata {
   readonly kind: ProviderWorkspaceEntryKind;
+  readonly size?: number;
   readonly createdAtMs?: number;
   readonly modifiedAtMs?: number;
 }
@@ -47,6 +49,22 @@ export type ProviderWorkspaceMaxEntries = typeof ProviderWorkspaceMaxEntries.Typ
 export interface ProviderWorkspaceDirectoryListing {
   readonly entries: ReadonlyArray<ProviderWorkspaceDirectoryEntry>;
   /** True when more direct children existed than the requested bound. */
+  readonly truncated: boolean;
+}
+
+export const PROVIDER_WORKSPACE_MAX_READ_BYTES = 1024 * 1024;
+export const ProviderWorkspaceReadByteLimit = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(1),
+  Schema.isLessThanOrEqualTo(PROVIDER_WORKSPACE_MAX_READ_BYTES),
+).pipe(Schema.brand("ProviderWorkspaceReadByteLimit"));
+export type ProviderWorkspaceReadByteLimit = typeof ProviderWorkspaceReadByteLimit.Type;
+
+export interface ProviderWorkspaceFileRead {
+  /** At most the requested number of bytes. */
+  readonly bytes: Uint8Array;
+  /** Descriptor-observed file size, or a safe lower bound when the file grew during reading. */
+  readonly byteLength: number;
+  /** True when at least one additional byte existed on the provider host. */
   readonly truncated: boolean;
 }
 
@@ -135,6 +153,10 @@ export interface ProviderWorkspaceRoot {
     readonly relativePath: string;
     readonly maxEntries: ProviderWorkspaceMaxEntries;
   }) => Effect.Effect<ProviderWorkspaceDirectoryListing, ProviderWorkspaceError>;
+  readonly readFile: (input: {
+    readonly relativePath: string;
+    readonly maxBytes: ProviderWorkspaceReadByteLimit;
+  }) => Effect.Effect<ProviderWorkspaceFileRead, ProviderWorkspaceError>;
 }
 
 /** Optional per-instance capability implemented by provider drivers. */

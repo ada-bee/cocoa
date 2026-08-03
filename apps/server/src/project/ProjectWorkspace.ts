@@ -18,8 +18,10 @@ import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSn
 import type {
   ProviderWorkspaceDirectoryListing,
   ProviderWorkspaceError,
+  ProviderWorkspaceFileRead,
   ProviderWorkspaceMaxEntries,
   ProviderWorkspaceMetadata,
+  ProviderWorkspaceReadByteLimit,
   ProviderWorkspaceRoot,
 } from "../provider/ProviderWorkspaceAdapter.ts";
 import * as ProviderInstanceRegistry from "../provider/Services/ProviderInstanceRegistry.ts";
@@ -137,6 +139,11 @@ export interface ProjectWorkspaceShape {
     readonly relativePath: string;
     readonly maxEntries: ProviderWorkspaceMaxEntries;
   }) => Effect.Effect<ProviderWorkspaceDirectoryListing, ProjectWorkspaceError>;
+  readonly readFile: (input: {
+    readonly target: ProjectWorkspaceTarget;
+    readonly relativePath: string;
+    readonly maxBytes: ProviderWorkspaceReadByteLimit;
+  }) => Effect.Effect<ProviderWorkspaceFileRead, ProjectWorkspaceError>;
 }
 
 export class ProjectWorkspace extends Context.Service<ProjectWorkspace, ProjectWorkspaceShape>()(
@@ -241,7 +248,17 @@ export const make = Effect.gen(function* () {
     });
   });
 
-  return ProjectWorkspace.of({ validateRoot, getMetadata, listDirectory });
+  const readFile: ProjectWorkspaceShape["readFile"] = Effect.fn("ProjectWorkspace.readFile")(
+    function* (input) {
+      const root = yield* resolveRoot(input.target);
+      return yield* root.readFile({
+        relativePath: input.relativePath,
+        maxBytes: input.maxBytes,
+      });
+    },
+  );
+
+  return ProjectWorkspace.of({ validateRoot, getMetadata, listDirectory, readFile });
 });
 
 export const layer = Layer.effect(ProjectWorkspace, make);
