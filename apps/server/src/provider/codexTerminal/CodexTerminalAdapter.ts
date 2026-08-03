@@ -44,12 +44,17 @@ export const CODEX_TERMINAL_START_TIMEOUT = "10 seconds" as const;
 export const CODEX_TERMINAL_CLEANUP_TIMEOUT = "2 seconds" as const;
 export const CODEX_TERMINAL_MAX_OUTPUT_CHUNK_BYTES = 64 * 1024;
 
+/** Administrator-selected execution boundary. There is intentionally no default. */
+export type CodexTerminalSandboxMode = "workspaceWrite" | "dangerFullAccess";
+
 const READY_FRAME_PREFIX = "\u001eCOCOA_TERMINAL_READY:";
 const READY_FRAME_SUFFIX = "\u001f";
 const textEncoder = new TextEncoder();
 
 export interface MakeCodexTerminalAdapterOptions {
   readonly providerInstanceId: ProviderInstanceId;
+  /** Derived from trusted instance configuration, never terminal start input. */
+  readonly sandboxMode: CodexTerminalSandboxMode;
   readonly borrowConnection: Effect.Effect<
     CodexEndpointConnectionBorrow,
     CodexEndpointBorrowUnavailableError
@@ -140,13 +145,28 @@ function makeReadyFrame(processId: string): Uint8Array {
 
 function makeCommand(input: ProviderTerminalStartInput, processId: string): ReadonlyArray<string> {
   return [
-    "sh",
+    "/bin/sh",
     "-c",
     'printf "\\036COCOA_TERMINAL_READY:%s\\037" "$1"; shift; exec "$@"',
     "cocoa-terminal-bootstrap",
     processId,
     ...input.shellArgv,
   ];
+}
+
+function makeSandboxPolicy(mode: CodexTerminalSandboxMode, cwd: string) {
+  switch (mode) {
+    case "workspaceWrite":
+      return {
+        type: "workspaceWrite" as const,
+        writableRoots: [cwd],
+        networkAccess: false,
+        excludeSlashTmp: true,
+        excludeTmpdirEnvVar: true,
+      };
+    case "dangerFullAccess":
+      return { type: "dangerFullAccess" as const };
+  }
 }
 
 export const makeCodexTerminalAdapter = Effect.fn("CodexTerminalAdapter.make")(function* (
@@ -400,7 +420,7 @@ export const makeCodexTerminalAdapter = Effect.fn("CodexTerminalAdapter.make")(f
                 ...(input.env === undefined ? {} : { env: input.env }),
                 outputBytesCap: input.outputByteLimit,
                 processId,
-                sandboxPolicy: { type: "dangerFullAccess" },
+                sandboxPolicy: makeSandboxPolicy(options.sandboxMode, input.cwd),
                 size: { cols: input.cols, rows: input.rows },
                 streamStdin: true,
                 streamStdoutStderr: true,

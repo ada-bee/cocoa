@@ -22,6 +22,7 @@ import {
 import {
   CODEX_TERMINAL_MAX_OUTPUT_CHUNK_BYTES,
   CODEX_TERMINAL_START_TIMEOUT,
+  type CodexTerminalSandboxMode,
   makeCodexTerminalAdapter,
 } from "./CodexTerminalAdapter.ts";
 import type { CodexTerminalOutputDelta } from "./CodexTerminalMultiplexer.ts";
@@ -54,7 +55,7 @@ function readyFrame(processId: string): Uint8Array {
   return textEncoder.encode(`\u001eCOCOA_TERMINAL_READY:${processId}\u001f`);
 }
 
-function makeHarness() {
+function makeHarness(sandboxMode: CodexTerminalSandboxMode) {
   return Effect.gen(function* () {
     const commandStarted = yield* Deferred.make<void>();
     const commandResponse = yield* Deferred.make<
@@ -111,6 +112,7 @@ function makeHarness() {
     };
     const adapter = yield* makeCodexTerminalAdapter({
       providerInstanceId: INSTANCE_ID,
+      sandboxMode,
       borrowConnection: Effect.succeed(borrow),
     });
 
@@ -190,10 +192,16 @@ it.effect(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const harness = yield* makeHarness();
+        const harness = yield* makeHarness("workspaceWrite");
         const collected = yield* makeEventCollector();
+        const untrustedStartInput = {
+          ...startInput(),
+          shellArgv: ["/bin/zsh", "-lc", 'printf "%s" "$(client-content)"'] as const,
+          sandboxMode: "dangerFullAccess",
+          sandboxPolicy: { type: "dangerFullAccess" },
+        };
         const opening = yield* harness.adapter
-          .start(startInput(), collected.handler)
+          .start(untrustedStartInput, collected.handler)
           .pipe(Effect.forkChild({ startImmediately: true }));
         yield* harness.commandStarted;
 
@@ -222,15 +230,22 @@ it.effect(
           "tty",
         ]);
         assert.deepStrictEqual(startRequest.payload.command, [
-          "sh",
+          "/bin/sh",
           "-c",
           'printf "\\036COCOA_TERMINAL_READY:%s\\037" "$1"; shift; exec "$@"',
           "cocoa-terminal-bootstrap",
           processId,
           "/bin/zsh",
-          "-l",
+          "-lc",
+          'printf "%s" "$(client-content)"',
         ]);
-        assert.deepStrictEqual(startRequest.payload.sandboxPolicy, { type: "dangerFullAccess" });
+        assert.deepStrictEqual(startRequest.payload.sandboxPolicy, {
+          type: "workspaceWrite",
+          writableRoots: ["/srv/project"],
+          networkAccess: false,
+          excludeSlashTmp: true,
+          excludeTmpdirEnvVar: true,
+        });
         assert.strictEqual(startRequest.payload.outputBytesCap, 4 * 1024 * 1024);
 
         const outputEvents = collected.events.filter(
@@ -256,10 +271,38 @@ it.effect(
     ),
 );
 
+it.effect("uses danger-full-access only when the adapter factory explicitly selects it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const harness = yield* makeHarness("dangerFullAccess");
+      const collected = yield* makeEventCollector();
+      const untrustedStartInput = {
+        ...startInput(),
+        sandboxMode: "workspaceWrite",
+        sandboxPolicy: {
+          type: "workspaceWrite",
+          writableRoots: ["/client/chosen"],
+          networkAccess: true,
+        },
+      };
+      const opening = yield* harness.adapter
+        .start(untrustedStartInput, collected.handler)
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* harness.commandStarted;
+      yield* harness.emit(readyFrame(harness.getProcessId()));
+      yield* Fiber.join(opening);
+
+      assert.deepStrictEqual(harness.requests[0]!.payload.sandboxPolicy, {
+        type: "dangerFullAccess",
+      });
+    }),
+  ),
+);
+
 it.effect("pins write and resize controls to the captured generation without replay", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const harness = yield* makeHarness();
+      const harness = yield* makeHarness("workspaceWrite");
       const collected = yield* makeEventCollector();
       const opening = yield* harness.adapter
         .start(startInput(), collected.handler)
@@ -303,7 +346,7 @@ it.effect("pins write and resize controls to the captured generation without rep
 it.effect("caps cumulative output, terminates remotely, and suppresses late output and exits", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const harness = yield* makeHarness();
+      const harness = yield* makeHarness("workspaceWrite");
       const collected = yield* makeEventCollector();
       const opening = yield* harness.adapter
         .start(startInput(5), collected.handler)
@@ -337,7 +380,7 @@ it.effect("caps cumulative output, terminates remotely, and suppresses late outp
 it.effect("terminates malformed base64 sessions and fails startup without waiting", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const harness = yield* makeHarness();
+      const harness = yield* makeHarness("workspaceWrite");
       const collected = yield* makeEventCollector();
       const opening = yield* harness.adapter
         .start(startInput(), collected.handler)
@@ -361,7 +404,7 @@ it.effect("terminates malformed base64 sessions and fails startup without waitin
 it.effect("treats buffered output in a streaming command response as a protocol failure", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const harness = yield* makeHarness();
+      const harness = yield* makeHarness("workspaceWrite");
       const collected = yield* makeEventCollector();
       const opening = yield* harness.adapter
         .start(startInput(), collected.handler)
@@ -382,7 +425,7 @@ it.effect("treats buffered output in a streaming command response as a protocol 
 it.effect("uses the test clock for ready timeout and terminates without polling or sleeps", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const harness = yield* makeHarness();
+      const harness = yield* makeHarness("workspaceWrite");
       const collected = yield* makeEventCollector();
       const opening = yield* harness.adapter
         .start(startInput(), collected.handler)
@@ -407,7 +450,7 @@ it.effect("uses the test clock for ready timeout and terminates without polling 
 
 it.effect("scope finalization terminates the exact process and emits one terminal event", () =>
   Effect.gen(function* () {
-    const harness = yield* makeHarness();
+    const harness = yield* makeHarness("workspaceWrite");
     const collected = yield* makeEventCollector();
 
     yield* Effect.scoped(
