@@ -26,6 +26,27 @@ const MAX_USER_CHARS = 64;
 const MAX_SSH_TIMEOUT_SECONDS = 300;
 const MAX_SSH_KEEPALIVE_SECONDS = 3600;
 const MAX_SSH_KEEPALIVE_COUNT = 20;
+const MAX_PROVIDER_EXECUTABLE_PATH_CHARS = 4096;
+
+const isAbsoluteNormalizedPosixPath = (path: string): boolean => {
+  if (!path.startsWith("/") || path.includes("\0") || path.includes("\\")) return false;
+  if (path === "/") return true;
+  if (path.endsWith("/") || path.includes("//")) return false;
+  return path
+    .split("/")
+    .slice(1)
+    .every((part) => part !== "" && part !== "." && part !== "..");
+};
+
+/** Explicit provider-host Git executable. Cocoa never discovers or defaults this path. */
+export const CodexGitExecutablePath = Schema.String.check(
+  Schema.isNonEmpty(),
+  Schema.isMaxLength(MAX_PROVIDER_EXECUTABLE_PATH_CHARS),
+  Schema.makeFilter((path) => isAbsoluteNormalizedPosixPath(path), {
+    message: "The Git executable path must be an absolute normalized POSIX path.",
+  }),
+).pipe(Schema.brand("CodexGitExecutablePath"));
+export type CodexGitExecutablePath = typeof CodexGitExecutablePath.Type;
 
 const AbsoluteCredentialPath = TrimmedNonEmptyString.check(
   Schema.isMaxLength(4096),

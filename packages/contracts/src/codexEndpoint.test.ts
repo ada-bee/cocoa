@@ -5,6 +5,7 @@ import {
   CODEX_APP_SERVER_TESTED_VERSION,
   CODEX_SSH_PROXY_REMOTE_COMMAND,
   CodexEndpointTransport,
+  CodexGitExecutablePath,
 } from "./codexEndpoint.ts";
 import { CodexSettings, ServerSettingsPatch } from "./settings.ts";
 
@@ -181,8 +182,26 @@ describe("CodexSettings endpoint transition", () => {
     const decoded = decodeCodexSettings({ binaryPath: "/opt/codex", homePath: "/tmp/codex" });
     expect(decoded.endpointTransport).toBeUndefined();
     expect(decoded.endpointTerminal).toEqual({ enabled: false });
+    expect(decoded.endpointGitExecutablePath).toBeUndefined();
     expect(decoded.binaryPath).toBe("/opt/codex");
   });
+
+  it("roundtrips an explicit provider-host Git executable path", () => {
+    const decoded = decodeCodexSettings({
+      endpointGitExecutablePath: "/nix/store/git/bin/git",
+    });
+
+    expect(decoded.endpointGitExecutablePath).toBe("/nix/store/git/bin/git");
+    expect(decodeCodexSettings(encodeCodexSettings(decoded))).toEqual(decoded);
+  });
+
+  it.each(["git", "./git", "/usr/../bin/git", "/usr//bin/git", "/usr/bin/git/", "C:\\git.exe"])(
+    "rejects invalid endpoint Git executable path %s",
+    (endpointGitExecutablePath) => {
+      expect(() => decodeCodexSettings({ endpointGitExecutablePath })).toThrow();
+      expect(() => CodexGitExecutablePath.make(endpointGitExecutablePath)).toThrow();
+    },
+  );
 
   it("requires an explicit sandbox mode when endpoint terminals are enabled", () => {
     expect(() => decodeCodexSettings({ endpointTerminal: { enabled: true } })).toThrow(
@@ -255,5 +274,22 @@ describe("CodexSettings endpoint transition", () => {
         providers: { codex: { endpointTerminal: { enabled: true } } },
       }),
     ).toThrow(/sandboxMode/);
+  });
+
+  it("decodes an explicit endpoint Git executable through settings patches", () => {
+    const decoded = decodeServerSettingsPatch({
+      providers: {
+        codex: { endpointGitExecutablePath: "/run/current-system/sw/bin/git" },
+      },
+    });
+
+    expect(decoded.providers?.codex?.endpointGitExecutablePath).toBe(
+      "/run/current-system/sw/bin/git",
+    );
+    expect(() =>
+      decodeServerSettingsPatch({
+        providers: { codex: { endpointGitExecutablePath: "git" } },
+      }),
+    ).toThrow(/absolute normalized POSIX path/);
   });
 });

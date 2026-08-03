@@ -32,6 +32,7 @@ import type {
   ProviderTerminalAdapter,
   ProviderTerminalSession,
 } from "../ProviderTerminalAdapter.ts";
+import type { ProviderVcsAdapter } from "../ProviderVcsAdapter.ts";
 import * as CodexEndpointConnection from "../codexEndpoint/CodexEndpointConnection.ts";
 import type { CodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
@@ -61,6 +62,7 @@ const WORKSPACE_ENDPOINT_CONFIG = decodeCodexSettings({
     executablePath: "/run/current-system/sw/bin/cocoa-workspace-helper",
     expectedProtocol: 1,
   },
+  endpointGitExecutablePath: "/run/current-system/sw/bin/git",
 });
 const TERMINAL_ENDPOINT_CONFIG = decodeCodexSettings({
   endpointTransport: {
@@ -77,6 +79,7 @@ const TERMINAL_WORKSPACE_ENDPOINT_CONFIG = decodeCodexSettings({
     authentication: { type: "none" },
   },
   endpointTerminal: { enabled: true, sandboxMode: "dangerFullAccess" },
+  endpointGitExecutablePath: "/run/current-system/sw/bin/git",
   workspaceHelper: {
     type: "cocoa-workspace-helper-v1",
     executablePath: "/run/current-system/sw/bin/cocoa-workspace-helper",
@@ -231,7 +234,11 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           let stopAllCalls = 0;
           let generationReleases = 0;
           let workspaceFactoryCalls = 0;
+          let vcsFactoryCalls = 0;
           const workspaceGenerations: Array<number> = [];
+          const vcsGenerations: Array<number> = [];
+          let vcsFactoryPath: string | undefined;
+          let vcsFactoryProviderInstanceId: ProviderInstanceId | undefined;
 
           const router = {
             registerSession: () => Effect.die("unused"),
@@ -289,6 +296,21 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
                   }).pipe(Effect.orDie),
               };
             }) as CodexDriverDependencies["makeEndpointWorkspace"],
+            makeEndpointVcs: ((options) => {
+              vcsFactoryCalls += 1;
+              vcsFactoryPath = options.gitExecutablePath;
+              vcsFactoryProviderInstanceId = options.providerInstanceId;
+              return {
+                openRepository: () =>
+                  Effect.gen(function* () {
+                    const borrowed = yield* options.borrowConnection;
+                    yield* borrowed.ensureCurrent;
+                    vcsGenerations.push(borrowed.generationId);
+                    yield* borrowed.ensureCurrent;
+                    return { _tag: "NotRepository" as const };
+                  }).pipe(Effect.orDie),
+              } satisfies ProviderVcsAdapter;
+            }) as CodexDriverDependencies["makeEndpointVcs"],
             makeAdapter: ((_config: CodexSettings, options?: CodexAdapterLiveOptions) => {
               adapterOptions = options;
               return Effect.succeed(adapter);
@@ -331,10 +353,17 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
 
           assert.equal(endpointFactoryCalls, 1);
           assert.equal(workspaceFactoryCalls, 1);
+          assert.equal(vcsFactoryCalls, 1);
+          assert.equal(vcsFactoryPath, "/run/current-system/sw/bin/git");
+          assert.equal(vcsFactoryProviderInstanceId, INSTANCE_ID);
           assert.isDefined(instance.workspace);
+          assert.isDefined(instance.vcs);
           assert.deepStrictEqual(workspaceGenerations, []);
+          assert.deepStrictEqual(vcsGenerations, []);
           yield* instance.workspace!.openRoot("/remote/workspace");
+          yield* instance.vcs!.openRepository("/remote/workspace");
           assert.deepStrictEqual(workspaceGenerations, [1]);
+          assert.deepStrictEqual(vcsGenerations, [1]);
           assert.equal(
             instance.continuationIdentity.continuationKey,
             `codex:instance:${INSTANCE_ID}`,
@@ -414,7 +443,9 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           assert.equal((yield* instance.snapshot.getSnapshot).version, "0.2.0");
           assert.equal(stopAllCalls, 1);
           yield* instance.workspace!.openRoot("/remote/workspace");
+          yield* instance.vcs!.openRepository("/remote/workspace");
           assert.deepStrictEqual(workspaceGenerations, [1, 2]);
+          assert.deepStrictEqual(vcsGenerations, [1, 2]);
 
           const recoveredRuntime = yield* adapterOptions!.makeRuntime!(runtimeOptions).pipe(
             Effect.result,
@@ -487,6 +518,9 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             Effect.die(
               "terminal factory called while disabled by default",
             )) as CodexDriverDependencies["makeEndpointTerminal"],
+          makeEndpointVcs: (() => {
+            throw new Error("VCS factory called without an explicit Git executable");
+          }) as CodexDriverDependencies["makeEndpointVcs"],
           checkEndpointProviderStatus: ((_config: CodexSettings, connection: unknown) => {
             assert.strictEqual(connection, endpoint.connection);
             return Effect.succeed(providerDraft("ready", "0.1.0"));
@@ -508,6 +542,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         assert.deepStrictEqual(fabricatedThreadIds, []);
         assert.isUndefined(instance.workspace);
         assert.isUndefined(instance.terminal);
+        assert.isUndefined(instance.vcs);
         assert.equal((yield* instance.snapshot.getSnapshot).status, "ready");
         yield* Scope.close(instanceScope, Exit.void);
       }),
@@ -683,6 +718,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         let endpointCalls = 0;
         let localCalls = 0;
         let terminalCalls = 0;
+        let vcsCalls = 0;
         let workspaceCalls = 0;
         const adapter = { stopAll: () => Effect.void } as unknown as CodexAdapterShape;
         const driver = makeCodexDriver({
@@ -699,6 +735,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             terminalCalls += 1;
             return Effect.die("disabled endpoint created terminal adapter");
           }) as CodexDriverDependencies["makeEndpointTerminal"],
+          makeEndpointVcs: (() => {
+            vcsCalls += 1;
+            throw new Error("disabled endpoint created VCS adapter");
+          }) as CodexDriverDependencies["makeEndpointVcs"],
           resolveHomeLayout: (() => {
             localCalls += 1;
             return Effect.die("disabled endpoint resolved local home");
@@ -728,9 +768,11 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         assert.equal(endpointCalls, 0);
         assert.equal(localCalls, 0);
         assert.equal(terminalCalls, 0);
+        assert.equal(vcsCalls, 0);
         assert.equal(workspaceCalls, 0);
         assert.isUndefined(instance.workspace);
         assert.isUndefined(instance.terminal);
+        assert.isUndefined(instance.vcs);
         assert.isFalse(instance.enabled);
         assert.equal(instance.gatewayMcpMode, "unavailable");
         assert.isNull(instance.snapshot.maintenanceCapabilities.update);
@@ -954,6 +996,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         const endpointCalls: Array<string> = [];
         let workspaceCalls = 0;
         let terminalCalls = 0;
+        let vcsCalls = 0;
         const adapter = { stopAll: () => Effect.void } as unknown as CodexAdapterShape;
         const driver = makeCodexDriver({
           makeEndpoint: (() => {
@@ -976,6 +1019,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             terminalCalls += 1;
             return Effect.die("legacy branch created terminal adapter");
           }) as CodexDriverDependencies["makeEndpointTerminal"],
+          makeEndpointVcs: (() => {
+            vcsCalls += 1;
+            throw new Error("legacy branch created VCS adapter");
+          }) as CodexDriverDependencies["makeEndpointVcs"],
           makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],
           resolveHomeLayout: (() => {
             localCalls.push("home");
@@ -1009,6 +1056,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           config: decodeCodexSettings({
             enabled: false,
             endpointTerminal: { enabled: true, sandboxMode: "workspaceWrite" },
+            endpointGitExecutablePath: "/run/current-system/sw/bin/git",
             homePath: "/legacy/.codex",
             workspaceHelper: {
               type: "cocoa-workspace-helper-v1",
@@ -1021,8 +1069,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         assert.deepStrictEqual(endpointCalls, []);
         assert.equal(workspaceCalls, 0);
         assert.equal(terminalCalls, 0);
+        assert.equal(vcsCalls, 0);
         assert.isUndefined(instance.workspace);
         assert.isUndefined(instance.terminal);
+        assert.isUndefined(instance.vcs);
         assert.deepStrictEqual(localCalls, ["home", "materialize", "text-generation", "probe"]);
         assert.equal(instance.continuationIdentity.continuationKey, "codex:home:/legacy/.codex");
         assert.isUndefined(instance.gatewayMcpMode);

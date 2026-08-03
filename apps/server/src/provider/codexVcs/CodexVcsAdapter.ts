@@ -1,6 +1,9 @@
-import { type ProviderInstanceId } from "@t3tools/contracts";
+import {
+  CodexGitExecutablePath as CodexGitExecutablePathSchema,
+  type CodexGitExecutablePath as CodexGitExecutablePathContract,
+  type ProviderInstanceId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
 import {
@@ -23,12 +26,8 @@ import type {
   CodexEndpointConnectionBorrow,
 } from "../codexEndpoint/CodexEndpointSupervisor.ts";
 
-export const CodexGitExecutablePath = Schema.String.check(
-  Schema.makeFilter((path) => isAbsoluteNormalizedPosixPath(path), {
-    message: "The Git executable path must be an absolute normalized POSIX path.",
-  }),
-).pipe(Schema.brand("CodexGitExecutablePath"));
-export type CodexGitExecutablePath = typeof CodexGitExecutablePath.Type;
+export const CodexGitExecutablePath = CodexGitExecutablePathSchema;
+export type CodexGitExecutablePath = CodexGitExecutablePathContract;
 
 export interface MakeCodexVcsAdapterOptions {
   readonly providerInstanceId: ProviderInstanceId;

@@ -3,7 +3,7 @@ import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
-import { CodexEndpointTransport } from "./codexEndpoint.ts";
+import { CodexEndpointTransport, CodexGitExecutablePath } from "./codexEndpoint.ts";
 import { CodexWorkspaceHelperConfig } from "./codexWorkspaceHelper.ts";
 import { DEFAULT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
@@ -234,6 +234,14 @@ export const CodexSettings = makeProviderSettingsSchema(
         title: "Endpoint terminal",
         description:
           "Provider-host terminal capability on a dedicated Codex endpoint connection. Enabling it requires an explicit sandbox mode.",
+        providerSettingsForm: { hidden: true },
+      }),
+    ),
+    endpointGitExecutablePath: Schema.optionalKey(CodexGitExecutablePath).pipe(
+      Schema.annotateKey({
+        title: "Endpoint Git executable",
+        description:
+          "Explicit absolute POSIX path to Git on the Codex provider host. Cocoa never discovers or defaults this executable.",
         providerSettingsForm: { hidden: true },
       }),
     ),
@@ -634,6 +642,7 @@ export const CodexSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   endpointTransport: Schema.optionalKey(CodexEndpointTransport),
   endpointTerminal: Schema.optionalKey(CodexEndpointTerminalConfig),
+  endpointGitExecutablePath: Schema.optionalKey(CodexGitExecutablePath),
   workspaceHelper: Schema.optionalKey(CodexWorkspaceHelperConfig),
   binaryPath: Schema.optionalKey(TrimmedString),
   homePath: Schema.optionalKey(TrimmedString),

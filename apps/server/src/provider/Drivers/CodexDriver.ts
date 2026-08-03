@@ -64,6 +64,7 @@ import * as CodexEndpointFactory from "../codexEndpoint/CodexEndpointFactory.ts"
 import { makeCodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
 import { makeCodexTerminalAdapter } from "../codexTerminal/CodexTerminalAdapter.ts";
+import { makeCodexVcsAdapter } from "../codexVcs/CodexVcsAdapter.ts";
 import { makeCodexWorkspaceAdapter } from "../codexWorkspace/CodexWorkspaceAdapter.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
@@ -125,6 +126,7 @@ export interface CodexDriverDependencies {
   readonly makeEndpointRouter: typeof makeCodexEndpointRouter;
   readonly makeEndpointRuntime: typeof makeCodexEndpointSessionRuntime;
   readonly makeEndpointTerminal: typeof makeCodexTerminalAdapter;
+  readonly makeEndpointVcs: typeof makeCodexVcsAdapter;
   readonly makeEndpointWorkspace: typeof makeCodexWorkspaceAdapter;
   readonly makeAdapter: typeof makeCodexAdapter;
   readonly makeLocalTextGeneration: typeof makeCodexTextGeneration;
@@ -140,6 +142,7 @@ const defaultDependencies: CodexDriverDependencies = {
   makeEndpointRouter: makeCodexEndpointRouter,
   makeEndpointRuntime: makeCodexEndpointSessionRuntime,
   makeEndpointTerminal: makeCodexTerminalAdapter,
+  makeEndpointVcs: makeCodexVcsAdapter,
   makeEndpointWorkspace: makeCodexWorkspaceAdapter,
   makeAdapter: makeCodexAdapter,
   makeLocalTextGeneration: makeCodexTextGeneration,
@@ -314,6 +317,14 @@ export const makeCodexDriver = (
               : dependencies.makeEndpointWorkspace({
                   providerInstanceId: instanceId,
                   helper: config.workspaceHelper,
+                  borrowConnection: supervisor.borrowConnection,
+                });
+          const vcs =
+            config.endpointGitExecutablePath === undefined
+              ? undefined
+              : dependencies.makeEndpointVcs({
+                  providerInstanceId: instanceId,
+                  gitExecutablePath: config.endpointGitExecutablePath,
                   borrowConnection: supervisor.borrowConnection,
                 });
           const supervisorChanges = yield* supervisor.subscribeChanges;
@@ -568,6 +579,7 @@ export const makeCodexDriver = (
             adapter,
             ...(workspace === undefined ? {} : { workspace }),
             ...(terminal === undefined ? {} : { terminal }),
+            ...(vcs === undefined ? {} : { vcs }),
             textGeneration,
           } satisfies ProviderInstance;
         }
