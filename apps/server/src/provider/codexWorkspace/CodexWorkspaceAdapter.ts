@@ -208,7 +208,10 @@ export const makeCodexWorkspaceAdapter = (
   ): Effect.fn.Return<CodexWorkspaceHelperResult, ProviderWorkspaceError> {
     const operation = operationName(input.operation);
     const relativePath = "relativePath" in input ? input.relativePath : "<workspace-root>";
-    if (options.helper.type !== "inline-python3-v1") {
+    if (
+      options.helper.type === "cocoa-workspace-helper-v1" &&
+      options.helper.expectedProtocol !== CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION
+    ) {
       return yield* unsupported(options.providerInstanceId, operation);
     }
     const request = yield* decodeHelperRequest(input).pipe(
@@ -216,6 +219,18 @@ export const makeCodexWorkspaceAdapter = (
         pathFailed(options.providerInstanceId, operation, relativePath, "invalid_path"),
       ),
     );
+    const requestArg = encodeRequestArg(request);
+    const command =
+      options.helper.type === "inline-python3-v1"
+        ? [
+            options.helper.executablePath,
+            "-I",
+            "-S",
+            "-c",
+            CODEX_WORKSPACE_INLINE_PYTHON,
+            requestArg,
+          ]
+        : [options.helper.executablePath, requestArg];
     const borrowed = yield* options.borrowConnection.pipe(
       Effect.mapError(() => disconnected(options.providerInstanceId, operation)),
     );
@@ -225,14 +240,7 @@ export const makeCodexWorkspaceAdapter = (
 
     const exit = yield* borrowed.connection.client
       .request("command/exec", {
-        command: [
-          options.helper.executablePath,
-          "-I",
-          "-S",
-          "-c",
-          CODEX_WORKSPACE_INLINE_PYTHON,
-          encodeRequestArg(request),
-        ],
+        command,
         sandboxPolicy: { type: "readOnly", networkAccess: false },
         timeoutMs: COMMAND_TIMEOUT_MS,
         outputBytesCap: COMMAND_OUTPUT_BYTES_CAP,
@@ -250,18 +258,18 @@ export const makeCodexWorkspaceAdapter = (
       Effect.mapError(() => disconnected(options.providerInstanceId, operation)),
     );
 
-    const command = exit.success;
-    if (command.exitCode === 126 || command.exitCode === 127) {
+    const commandResult = exit.success;
+    if (commandResult.exitCode === 126 || commandResult.exitCode === 127) {
       return yield* unsupported(options.providerInstanceId, operation);
     }
-    if (command.exitCode !== 0) {
+    if (commandResult.exitCode !== 0) {
       return yield* operationFailed(
         options.providerInstanceId,
         operation,
         "Workspace helper exited unsuccessfully.",
       );
     }
-    if (command.stderr !== "") {
+    if (commandResult.stderr !== "") {
       return yield* protocol(
         options.providerInstanceId,
         operation,
@@ -269,7 +277,9 @@ export const makeCodexWorkspaceAdapter = (
       );
     }
 
-    const untrusted = yield* Effect.try(() => decodeCodexWorkspaceHelperFrame(command.stdout)).pipe(
+    const untrusted = yield* Effect.try(() =>
+      decodeCodexWorkspaceHelperFrame(commandResult.stdout),
+    ).pipe(
       Effect.mapError(() =>
         protocol(options.providerInstanceId, operation, "Workspace helper frame was invalid."),
       ),

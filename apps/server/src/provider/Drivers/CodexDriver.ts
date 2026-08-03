@@ -63,6 +63,7 @@ import {
 import * as CodexEndpointFactory from "../codexEndpoint/CodexEndpointFactory.ts";
 import { makeCodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
+import { makeCodexWorkspaceAdapter } from "../codexWorkspace/CodexWorkspaceAdapter.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
@@ -122,6 +123,7 @@ export interface CodexDriverDependencies {
   readonly makeEndpoint: typeof CodexEndpointFactory.make;
   readonly makeEndpointRouter: typeof makeCodexEndpointRouter;
   readonly makeEndpointRuntime: typeof makeCodexEndpointSessionRuntime;
+  readonly makeEndpointWorkspace: typeof makeCodexWorkspaceAdapter;
   readonly makeAdapter: typeof makeCodexAdapter;
   readonly makeLocalTextGeneration: typeof makeCodexTextGeneration;
   readonly checkEndpointProviderStatus: typeof checkCodexEndpointProviderStatus;
@@ -135,6 +137,7 @@ const defaultDependencies: CodexDriverDependencies = {
   makeEndpoint: CodexEndpointFactory.make,
   makeEndpointRouter: makeCodexEndpointRouter,
   makeEndpointRuntime: makeCodexEndpointSessionRuntime,
+  makeEndpointWorkspace: makeCodexWorkspaceAdapter,
   makeAdapter: makeCodexAdapter,
   makeLocalTextGeneration: makeCodexTextGeneration,
   checkEndpointProviderStatus: checkCodexEndpointProviderStatus,
@@ -279,6 +282,14 @@ export const makeCodexDriver = (
               makeRouter: dependencies.makeEndpointRouter,
             },
           });
+          const workspace =
+            config.workspaceHelper === undefined
+              ? undefined
+              : dependencies.makeEndpointWorkspace({
+                  providerInstanceId: instanceId,
+                  helper: config.workspaceHelper,
+                  borrowConnection: supervisor.borrowConnection,
+                });
           const supervisorChanges = yield* supervisor.subscribeChanges;
           const generationChanges = yield* Effect.acquireRelease(
             PubSub.unbounded<ProviderInstanceGenerationState>(),
@@ -518,6 +529,7 @@ export const makeCodexDriver = (
             generationLifecycle,
             snapshot,
             adapter,
+            ...(workspace === undefined ? {} : { workspace }),
             textGeneration,
           } satisfies ProviderInstance;
         }

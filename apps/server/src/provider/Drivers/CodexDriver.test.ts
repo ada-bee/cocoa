@@ -1,11 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  CodexSettings,
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ThreadId,
-} from "@t3tools/contracts";
+import { CodexSettings, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -44,12 +39,23 @@ import { makeCodexDriver, type CodexDriverDependencies } from "./CodexDriver.ts"
 
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 const INSTANCE_ID = ProviderInstanceId.make("codex_remote");
-const DRIVER_KIND = ProviderDriverKind.make("codex");
 const ENDPOINT_CONFIG = decodeCodexSettings({
   endpointTransport: {
     type: "direct-websocket",
     url: "ws://127.0.0.1:7777",
     authentication: { type: "none" },
+  },
+});
+const WORKSPACE_ENDPOINT_CONFIG = decodeCodexSettings({
+  endpointTransport: {
+    type: "direct-websocket",
+    url: "ws://127.0.0.1:7777",
+    authentication: { type: "none" },
+  },
+  workspaceHelper: {
+    type: "cocoa-workspace-helper-v1",
+    executablePath: "/run/current-system/sw/bin/cocoa-workspace-helper",
+    expectedProtocol: 1,
   },
 });
 
@@ -199,6 +205,8 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           let endpointFactoryCalls = 0;
           let stopAllCalls = 0;
           let generationReleases = 0;
+          let workspaceFactoryCalls = 0;
+          const workspaceGenerations: Array<number> = [];
 
           const router = { registerSession: () => Effect.die("unused") } as CodexEndpointRouter;
           const adapter = {
@@ -233,6 +241,23 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
                     Effect.as({}),
                   ),
               } as unknown as CodexSessionRuntimeShape)) as CodexDriverDependencies["makeEndpointRuntime"],
+            makeEndpointWorkspace: ((options) => {
+              workspaceFactoryCalls += 1;
+              return {
+                openRoot: () =>
+                  Effect.gen(function* () {
+                    const borrowed = yield* options.borrowConnection;
+                    yield* borrowed.ensureCurrent;
+                    workspaceGenerations.push(borrowed.generationId);
+                    yield* borrowed.ensureCurrent;
+                    return {
+                      getMetadata: () => Effect.die("unused"),
+                      listDirectory: () => Effect.die("unused"),
+                      readFile: () => Effect.die("unused"),
+                    };
+                  }).pipe(Effect.orDie),
+              };
+            }) as CodexDriverDependencies["makeEndpointWorkspace"],
             makeAdapter: ((_config: CodexSettings, options?: CodexAdapterLiveOptions) => {
               adapterOptions = options;
               return Effect.succeed(adapter);
@@ -269,11 +294,16 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
               accentColor: undefined,
               environment: [],
               enabled: true,
-              config: ENDPOINT_CONFIG,
+              config: WORKSPACE_ENDPOINT_CONFIG,
             })
             .pipe(Effect.provideService(Scope.Scope, instanceScope));
 
           assert.equal(endpointFactoryCalls, 1);
+          assert.equal(workspaceFactoryCalls, 1);
+          assert.isDefined(instance.workspace);
+          assert.deepStrictEqual(workspaceGenerations, []);
+          yield* instance.workspace!.openRoot("/remote/workspace");
+          assert.deepStrictEqual(workspaceGenerations, [1]);
           assert.equal(
             instance.continuationIdentity.continuationKey,
             `codex:instance:${INSTANCE_ID}`,
@@ -352,6 +382,8 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           assert.equal((yield* instance.snapshot.getSnapshot).status, "ready");
           assert.equal((yield* instance.snapshot.getSnapshot).version, "0.2.0");
           assert.equal(stopAllCalls, 1);
+          yield* instance.workspace!.openRoot("/remote/workspace");
+          assert.deepStrictEqual(workspaceGenerations, [1, 2]);
 
           const recoveredRuntime = yield* adapterOptions!.makeRuntime!(runtimeOptions).pipe(
             Effect.result,
@@ -415,6 +447,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
               } satisfies CodexEndpointSupervisor.CodexEndpointSupervisor;
             })) as CodexDriverDependencies["makeEndpointSupervisor"],
           makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],
+          makeEndpointWorkspace: (() =>
+            Effect.die(
+              "workspace factory called without helper",
+            )) as unknown as CodexDriverDependencies["makeEndpointWorkspace"],
           checkEndpointProviderStatus: ((_config: CodexSettings, connection: unknown) => {
             assert.strictEqual(connection, endpoint.connection);
             return Effect.succeed(providerDraft("ready", "0.1.0"));
@@ -434,6 +470,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
 
         assert.isAbove(connectionBorrowCalls, 0);
         assert.deepStrictEqual(fabricatedThreadIds, []);
+        assert.isUndefined(instance.workspace);
         assert.equal((yield* instance.snapshot.getSnapshot).status, "ready");
         yield* Scope.close(instanceScope, Exit.void);
       }),
@@ -445,6 +482,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
       Effect.gen(function* () {
         let endpointCalls = 0;
         let localCalls = 0;
+        let workspaceCalls = 0;
         const adapter = { stopAll: () => Effect.void } as unknown as CodexAdapterShape;
         const driver = makeCodexDriver({
           makeEndpoint: (() => {
@@ -452,6 +490,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             return Effect.die("disabled endpoint connected");
           }) as CodexDriverDependencies["makeEndpoint"],
           makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],
+          makeEndpointWorkspace: (() => {
+            workspaceCalls += 1;
+            throw new Error("disabled endpoint created workspace adapter");
+          }) as CodexDriverDependencies["makeEndpointWorkspace"],
           resolveHomeLayout: (() => {
             localCalls += 1;
             return Effect.die("disabled endpoint resolved local home");
@@ -476,10 +518,12 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           accentColor: undefined,
           environment: [],
           enabled: false,
-          config: ENDPOINT_CONFIG,
+          config: WORKSPACE_ENDPOINT_CONFIG,
         });
         assert.equal(endpointCalls, 0);
         assert.equal(localCalls, 0);
+        assert.equal(workspaceCalls, 0);
+        assert.isUndefined(instance.workspace);
         assert.isFalse(instance.enabled);
         assert.equal(instance.gatewayMcpMode, "unavailable");
         assert.isNull(instance.snapshot.maintenanceCapabilities.update);
@@ -695,6 +739,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
       Effect.gen(function* () {
         const localCalls: Array<string> = [];
         const endpointCalls: Array<string> = [];
+        let workspaceCalls = 0;
         const adapter = { stopAll: () => Effect.void } as unknown as CodexAdapterShape;
         const driver = makeCodexDriver({
           makeEndpoint: (() => {
@@ -709,6 +754,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             endpointCalls.push("runtime");
             return Effect.die("legacy branch created endpoint runtime");
           }) as CodexDriverDependencies["makeEndpointRuntime"],
+          makeEndpointWorkspace: (() => {
+            workspaceCalls += 1;
+            throw new Error("legacy branch created workspace adapter");
+          }) as CodexDriverDependencies["makeEndpointWorkspace"],
           makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],
           resolveHomeLayout: (() => {
             localCalls.push("home");
@@ -739,10 +788,20 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           accentColor: undefined,
           environment: [],
           enabled: false,
-          config: decodeCodexSettings({ enabled: false, homePath: "/legacy/.codex" }),
+          config: decodeCodexSettings({
+            enabled: false,
+            homePath: "/legacy/.codex",
+            workspaceHelper: {
+              type: "cocoa-workspace-helper-v1",
+              executablePath: "/run/current-system/sw/bin/cocoa-workspace-helper",
+              expectedProtocol: 1,
+            },
+          }),
         });
 
         assert.deepStrictEqual(endpointCalls, []);
+        assert.equal(workspaceCalls, 0);
+        assert.isUndefined(instance.workspace);
         assert.deepStrictEqual(localCalls, ["home", "materialize", "text-generation", "probe"]);
         assert.equal(instance.continuationIdentity.continuationKey, "codex:home:/legacy/.codex");
         assert.isUndefined(instance.gatewayMcpMode);

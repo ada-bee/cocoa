@@ -8,6 +8,7 @@ import { assert, it } from "@effect/vitest";
 import {
   CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
   ProviderInstanceId,
+  type CodexWorkspaceHelperConfig,
   type CodexWorkspaceHelperRequest,
   type CodexWorkspaceHelperResponse,
 } from "@t3tools/contracts";
@@ -37,6 +38,11 @@ const INSTANCE_ID = ProviderInstanceId.make("codex_workspace_test");
 const HELPER = {
   type: "inline-python3-v1" as const,
   executablePath: "/nix/store/python3/bin/python3",
+};
+const NATIVE_HELPER = {
+  type: "cocoa-workspace-helper-v1" as const,
+  executablePath: "/run/current-system/sw/bin/cocoa-workspace-helper",
+  expectedProtocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
 };
 const ROOT = {
   canonicalRoot: "/srv/project",
@@ -87,7 +93,7 @@ function decodeRequest(payload: unknown): CodexWorkspaceHelperRequest {
   assert.isObject(payload);
   const command = (payload as { readonly command: ReadonlyArray<string> }).command;
   return JSON.parse(
-    Result.getOrThrow(Encoding.decodeBase64String(command[5]!)),
+    Result.getOrThrow(Encoding.decodeBase64String(command.at(-1)!)),
   ) as CodexWorkspaceHelperRequest;
 }
 
@@ -110,6 +116,7 @@ function makeConnection(handler: RequestHandler) {
 
 function makeAdapter(input: {
   readonly handler: RequestHandler;
+  readonly helper?: CodexWorkspaceHelperConfig;
   readonly ensureCurrent?: () => Effect.Effect<void, CodexEndpointBorrowUnavailableError>;
   readonly borrow?: Effect.Effect<
     CodexEndpointConnectionBorrow,
@@ -135,7 +142,7 @@ function makeAdapter(input: {
   return {
     adapter: makeCodexWorkspaceAdapter({
       providerInstanceId: INSTANCE_ID,
-      helper: HELPER,
+      helper: input.helper ?? HELPER,
       borrowConnection,
     }),
     counts: () => ({ borrows, currentChecks }),
@@ -265,59 +272,112 @@ it.effect("uses exact buffered command/exec requests and revalidates root identi
 
 it.effect("enforces generation barriers before and after command execution", () =>
   Effect.gen(function* () {
-    let requestCalls = 0;
     const unavailable = new CodexEndpointBorrowUnavailableError({
       providerInstanceId: INSTANCE_ID,
     });
-    const pre = makeAdapter({
-      handler: () => {
-        requestCalls += 1;
-        return Effect.die("must not request");
-      },
-      ensureCurrent: () => Effect.fail(unavailable),
-    });
-    const preError = yield* pre.adapter.openRoot("/srv/project").pipe(Effect.flip);
-    assert.strictEqual(preError._tag, "ProviderWorkspaceDisconnectedError");
-    assert.strictEqual(requestCalls, 0);
+    for (const helper of [HELPER, NATIVE_HELPER]) {
+      let requestCalls = 0;
+      const pre = makeAdapter({
+        helper,
+        handler: () => {
+          requestCalls += 1;
+          return Effect.die("must not request");
+        },
+        ensureCurrent: () => Effect.fail(unavailable),
+      });
+      const preError = yield* pre.adapter.openRoot("/srv/project").pipe(Effect.flip);
+      assert.strictEqual(preError._tag, "ProviderWorkspaceDisconnectedError");
+      assert.strictEqual(requestCalls, 0);
 
-    let checks = 0;
-    const post = makeAdapter({
-      handler: () =>
-        Effect.succeed(
-          success({
-            operation: "validate",
-            root: ROOT,
-            metadata: { kind: "directory" },
-          }),
-        ),
-      ensureCurrent: () => {
-        checks += 1;
-        return checks === 1 ? Effect.void : Effect.fail(unavailable);
-      },
-    });
-    const postError = yield* post.adapter.openRoot("/srv/project").pipe(Effect.flip);
-    assert.strictEqual(postError._tag, "ProviderWorkspaceDisconnectedError");
+      let checks = 0;
+      const post = makeAdapter({
+        helper,
+        handler: () =>
+          Effect.succeed(
+            success({
+              operation: "validate",
+              root: ROOT,
+              metadata: { kind: "directory" },
+            }),
+          ),
+        ensureCurrent: () => {
+          checks += 1;
+          return checks === 1 ? Effect.void : Effect.fail(unavailable);
+        },
+      });
+      const postError = yield* post.adapter.openRoot("/srv/project").pipe(Effect.flip);
+      assert.strictEqual(postError._tag, "ProviderWorkspaceDisconnectedError");
+    }
   }),
 );
 
-it.effect("reports the packaged native helper as unsupported until its launcher is wired", () =>
+it.effect("invokes the packaged native helper without Python flags or an inline script", () =>
   Effect.gen(function* () {
-    let borrowed = false;
-    const adapter = makeCodexWorkspaceAdapter({
-      providerInstanceId: INSTANCE_ID,
-      helper: {
-        type: "cocoa-workspace-helper-v1",
-        executablePath: "/run/current-system/sw/bin/cocoa-workspace-helper",
-        expectedProtocol: 1,
+    const commands: Array<ReadonlyArray<string>> = [];
+    const { adapter, counts } = makeAdapter({
+      helper: NATIVE_HELPER,
+      handler: (_method, payload) => {
+        const command = (payload as { readonly command: ReadonlyArray<string> }).command;
+        commands.push(command);
+        const request = decodeRequest(payload);
+        switch (request.operation) {
+          case "validate":
+            return Effect.succeed(
+              success({
+                operation: "validate",
+                root: ROOT,
+                metadata: { kind: "directory" },
+              }),
+            );
+          case "stat":
+            return Effect.succeed(
+              success({ operation: "stat", metadata: { kind: "file", size: 5 } }),
+            );
+          case "list":
+            return Effect.succeed(
+              success({
+                operation: "list",
+                entries: [{ path: "README.md", kind: "file" }],
+                truncated: false,
+              }),
+            );
+          case "read":
+            return Effect.succeed(
+              success({
+                operation: "read",
+                dataBase64: Encoding.encodeBase64(new TextEncoder().encode("hello")),
+                byteLength: 5,
+                truncated: false,
+              }),
+            );
+          default:
+            return Effect.die("unexpected helper operation");
+        }
       },
-      borrowConnection: Effect.sync(() => {
-        borrowed = true;
-        return yieldNeverBorrow();
-      }),
     });
-    const error = yield* adapter.openRoot("/srv/project").pipe(Effect.flip);
-    assert.strictEqual(error._tag, "ProviderWorkspaceUnsupportedError");
-    assert.isFalse(borrowed);
+
+    const root = yield* adapter.openRoot("/srv/project");
+    yield* root.getMetadata({ relativePath: "README.md" });
+    yield* root.listDirectory({
+      relativePath: "",
+      maxEntries: ProviderWorkspaceMaxEntries.make(1),
+    });
+    yield* root.readFile({
+      relativePath: "README.md",
+      maxBytes: ProviderWorkspaceReadByteLimit.make(5),
+    });
+
+    assert.deepStrictEqual(counts(), { borrows: 4, currentChecks: 8 });
+    assert.strictEqual(commands.length, 4);
+    for (const command of commands) {
+      assert.strictEqual(command.length, 2);
+      assert.strictEqual(command[0], NATIVE_HELPER.executablePath);
+      assert.notInclude(command, "-I");
+      assert.notInclude(command, "-S");
+      assert.notInclude(command, "-c");
+      assert.notInclude(command, CODEX_WORKSPACE_INLINE_PYTHON);
+      assert.deepStrictEqual(decodeRequest({ command }).protocol, 1);
+    }
   }),
 );
 
@@ -481,7 +541,3 @@ it("confines the inline Python helper with descriptors and enforces read/list bo
     NodeFS.rmSync(temporary, { recursive: true, force: true });
   }
 });
-
-function yieldNeverBorrow(): never {
-  throw new Error("native helper must not borrow an endpoint connection");
-}
