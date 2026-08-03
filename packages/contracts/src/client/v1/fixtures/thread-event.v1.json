@@ -1,0 +1,29 @@
+{
+  "sequence": 42,
+  "eventId": "event-42",
+  "threadId": "thread-1",
+  "occurredAt": "2026-08-04T10:00:00.000Z",
+  "commandId": "command-1",
+  "type": "thread.message-sent",
+  "payload": {
+    "threadId": "thread-1",
+    "messageId": "message-1",
+    "role": "assistant",
+    "text": "A normalized Cocoa message.",
+    "attachments": [],
+    "turnId": "turn-1",
+    "streaming": false,
+    "createdAt": "2026-08-04T10:00:00.000Z",
+    "updatedAt": "2026-08-04T10:00:00.000Z"
+  },
+  "metadata": {
+    "providerTurnId": "native-turn-9",
+    "providerItemId": "native-item-3",
+    "adapterKey": "codex",
+    "requestId": "native-request-2"
+  },
+  "providerTurnId": "native-turn-9",
+  "providerItemId": "native-item-3",
+  "adapterKey": "codex",
+  "nativeRequestId": "native-request-2"
+}

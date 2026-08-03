@@ -1,0 +1,12 @@
+{
+  "code": "protocol_version_mismatch",
+  "clientRange": {
+    "minimum": 2,
+    "maximum": 3
+  },
+  "serverRange": {
+    "minimum": 1,
+    "maximum": 1
+  },
+  "message": "The client and gateway do not share a Cocoa client protocol version."
+}

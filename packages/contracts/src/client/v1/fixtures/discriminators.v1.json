@@ -1,0 +1,41 @@
+{
+  "commandTypes": [
+    "project.create",
+    "project.meta.update",
+    "project.delete",
+    "thread.create",
+    "thread.delete",
+    "thread.archive",
+    "thread.unarchive",
+    "thread.settle",
+    "thread.unsettle",
+    "thread.snooze",
+    "thread.unsnooze",
+    "thread.meta.update",
+    "thread.runtime-mode.set",
+    "thread.interaction-mode.set",
+    "thread.turn.start",
+    "thread.turn.interrupt",
+    "thread.approval.respond",
+    "thread.user-input.respond",
+    "thread.checkpoint.revert",
+    "thread.session.stop"
+  ],
+  "shellStreamKinds": [
+    "synchronized",
+    "snapshot",
+    "project-upserted",
+    "project-removed",
+    "thread-upserted",
+    "thread-removed"
+  ],
+  "threadEventTypes": [
+    "thread.deleted",
+    "thread.message-sent",
+    "thread.proposed-plan-upserted",
+    "thread.turn-diff-completed",
+    "thread.activity-appended",
+    "thread.reverted",
+    "thread.session-set"
+  ]
+}

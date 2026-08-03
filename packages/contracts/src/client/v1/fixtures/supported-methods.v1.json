@@ -1,0 +1,12 @@
+[
+  "client.info",
+  "client.probe",
+  "orchestration.dispatchCommand",
+  "orchestration.getShellSnapshot",
+  "orchestration.getThreadSnapshot",
+  "orchestration.subscribeShell",
+  "orchestration.subscribeThread",
+  "orchestration.searchThreads",
+  "orchestration.getTurnDiff",
+  "orchestration.getFullThreadDiff"
+]

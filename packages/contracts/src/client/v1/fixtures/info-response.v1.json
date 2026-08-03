@@ -1,0 +1,35 @@
+{
+  "protocolVersion": 1,
+  "protocolRange": {
+    "minimum": 1,
+    "maximum": 1
+  },
+  "capabilities": [
+    "orchestration.core",
+    "orchestration.resume",
+    "orchestration.search",
+    "orchestration.diff",
+    "workspace.future-capability"
+  ],
+  "environment": {
+    "environmentId": "gateway-1",
+    "label": "Cocoa Gateway",
+    "serverVersion": "0.0.31",
+    "futureEnvironmentField": true
+  },
+  "providers": [
+    {
+      "instanceId": "codex_main",
+      "displayName": "Main Codex",
+      "enabled": true,
+      "available": true,
+      "status": "ready",
+      "authStatus": "authenticated",
+      "models": [],
+      "futureProviderField": "ignored by v1"
+    }
+  ],
+  "futureInfoField": {
+    "enabled": true
+  }
+}

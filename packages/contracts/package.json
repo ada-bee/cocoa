@@ -30,6 +30,10 @@
     "./relay": {
       "types": "./src/relay.ts",
       "import": "./src/relay.ts"
+    },
+    "./client/v1": {
+      "types": "./src/client/v1/index.ts",
+      "import": "./src/client/v1/index.ts"
     }
   },
   "scripts": {
