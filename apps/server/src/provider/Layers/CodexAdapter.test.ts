@@ -23,6 +23,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, vi } from "@effect/vitest";
 
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -40,6 +41,7 @@ import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import {
+  type CodexSessionRuntimeError,
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeShape,
@@ -121,7 +123,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     this.options = options;
   }
 
-  start() {
+  start(): Effect.Effect<ProviderSession, CodexSessionRuntimeError> {
     return Effect.promise(() => this.startImpl());
   }
 
@@ -157,6 +159,43 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
 
   emit(event: ProviderEvent) {
     return Queue.offer(this.eventQueue, event).pipe(Effect.asVoid);
+  }
+}
+
+class GatedCodexRuntime extends FakeCodexRuntime {
+  private readonly eventsStarted: Deferred.Deferred<void>;
+  private readonly startEntered: Deferred.Deferred<void>;
+  private readonly startGate: Deferred.Deferred<void, CodexSessionRuntimeError>;
+  private readonly onEventsClosed: () => void;
+
+  constructor(
+    options: CodexSessionRuntimeOptions,
+    eventsStarted: Deferred.Deferred<void>,
+    startEntered: Deferred.Deferred<void>,
+    startGate: Deferred.Deferred<void, CodexSessionRuntimeError>,
+    onEventsClosed: () => void,
+  ) {
+    super(options);
+    this.eventsStarted = eventsStarted;
+    this.startEntered = startEntered;
+    this.startGate = startGate;
+    this.onEventsClosed = onEventsClosed;
+  }
+
+  override start() {
+    return Deferred.await(this.eventsStarted).pipe(
+      Effect.andThen(Deferred.succeed(this.startEntered, undefined)),
+      Effect.andThen(Deferred.await(this.startGate)),
+      Effect.andThen(super.start()),
+    );
+  }
+
+  override get events() {
+    return Stream.fromEffect(Deferred.succeed(this.eventsStarted, undefined)).pipe(
+      Stream.drain,
+      Stream.concat(super.events),
+      Stream.ensuring(Effect.sync(this.onEventsClosed)),
+    );
   }
 }
 
@@ -206,6 +245,49 @@ function makeScopedRuntimeFactory(options?: { readonly failConstruction?: boolea
     factory,
     releasedThreadIds,
     get lastRuntime(): FakeCodexRuntime | undefined {
+      return runtimes.at(-1);
+    },
+  };
+}
+
+function makeGatedScopedRuntimeFactory() {
+  const runtimes: Array<GatedCodexRuntime> = [];
+  const releasedThreadIds: Array<ThreadId> = [];
+  const closedEventThreadIds: Array<ThreadId> = [];
+  const eventsStarted = Effect.runSync(Deferred.make<void>());
+  const startEntered = Effect.runSync(Deferred.make<void>());
+  const startGate = Effect.runSync(Deferred.make<void, CodexSessionRuntimeError>());
+
+  const factory = vi.fn((runtimeOptions: CodexSessionRuntimeOptions) =>
+    Effect.gen(function* () {
+      yield* Scope.Scope;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          releasedThreadIds.push(runtimeOptions.threadId);
+        }),
+      );
+
+      const runtime = new GatedCodexRuntime(
+        runtimeOptions,
+        eventsStarted,
+        startEntered,
+        startGate,
+        () => {
+          closedEventThreadIds.push(runtimeOptions.threadId);
+        },
+      );
+      runtimes.push(runtime);
+      return runtime;
+    }),
+  );
+
+  return {
+    factory,
+    startEntered,
+    startGate,
+    releasedThreadIds,
+    closedEventThreadIds,
+    get lastRuntime(): GatedCodexRuntime | undefined {
       return runtimes.at(-1);
     },
   };
@@ -1272,6 +1354,119 @@ scopedFailureLayer("CodexAdapterLive scoped startup failure", (it) => {
         asThreadId("thread-fail"),
       ]);
       NodeAssert.equal(yield* adapter.hasSession(asThreadId("thread-fail")), false);
+    }),
+  );
+});
+
+const startingStopAllRuntimeFactory = makeGatedScopedRuntimeFactory();
+const startingStopAllLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        makeRuntime: startingStopAllRuntimeFactory.factory,
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+startingStopAllLayer("CodexAdapterLive starting-session shutdown", (it) => {
+  it.effect("keeps a starting session visible to stopAll and rejects a late success", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-starting-stop-all");
+      const startFiber = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(startingStopAllRuntimeFactory.startEntered);
+      NodeAssert.equal(yield* adapter.hasSession(threadId), true);
+
+      yield* adapter.stopAll();
+
+      const runtime = startingStopAllRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      NodeAssert.equal(yield* adapter.hasSession(threadId), false);
+      NodeAssert.equal(runtime.closeImpl.mock.calls.length, 1);
+      NodeAssert.deepStrictEqual(startingStopAllRuntimeFactory.releasedThreadIds, [threadId]);
+      NodeAssert.deepStrictEqual(startingStopAllRuntimeFactory.closedEventThreadIds, [threadId]);
+
+      yield* Deferred.succeed(startingStopAllRuntimeFactory.startGate, undefined);
+      const result = yield* Fiber.join(startFiber).pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      NodeAssert.equal(result.failure._tag, "ProviderAdapterSessionClosedError");
+      NodeAssert.equal(yield* adapter.hasSession(threadId), false);
+      NodeAssert.equal(runtime.closeImpl.mock.calls.length, 1);
+      NodeAssert.deepStrictEqual(startingStopAllRuntimeFactory.releasedThreadIds, [threadId]);
+      NodeAssert.deepStrictEqual(startingStopAllRuntimeFactory.closedEventThreadIds, [threadId]);
+    }),
+  );
+});
+
+const gatedStartupFailureRuntimeFactory = makeGatedScopedRuntimeFactory();
+const gatedStartupFailureLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        makeRuntime: gatedStartupFailureRuntimeFactory.factory,
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+gatedStartupFailureLayer("CodexAdapterLive gated startup failure", (it) => {
+  it.effect("cleans a registered starting session exactly once when startup fails", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("thread-gated-start-fail");
+      const startFiber = yield* adapter
+        .startSession({
+          provider: ProviderDriverKind.make("codex"),
+          threadId,
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+
+      yield* Deferred.await(gatedStartupFailureRuntimeFactory.startEntered);
+      NodeAssert.equal(yield* adapter.hasSession(threadId), true);
+
+      yield* Deferred.fail(
+        gatedStartupFailureRuntimeFactory.startGate,
+        new CodexErrors.CodexAppServerTransportError({
+          operation: "read-input-stream",
+          cause: new Error("startup failed"),
+        }),
+      );
+      const result = yield* Fiber.join(startFiber).pipe(Effect.result);
+
+      const runtime = gatedStartupFailureRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      NodeAssert.equal(result._tag, "Failure");
+      NodeAssert.equal(result.failure._tag, "ProviderAdapterProcessError");
+      NodeAssert.equal(yield* adapter.hasSession(threadId), false);
+      NodeAssert.equal(runtime.closeImpl.mock.calls.length, 1);
+      NodeAssert.deepStrictEqual(gatedStartupFailureRuntimeFactory.releasedThreadIds, [threadId]);
+      NodeAssert.deepStrictEqual(gatedStartupFailureRuntimeFactory.closedEventThreadIds, [
+        threadId,
+      ]);
     }),
   );
 });

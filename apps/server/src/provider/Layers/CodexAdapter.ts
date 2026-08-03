@@ -1478,6 +1478,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           }),
         ).pipe(Effect.forkChild);
 
+        const sessionContext: CodexAdapterSessionContext = {
+          threadId: input.threadId,
+          scope: sessionScope,
+          runtime,
+          eventFiber,
+          stopped: false,
+        };
+        sessions.set(input.threadId, sessionContext);
+        sessionScopeTransferred = true;
+
         const started = yield* runtime.start().pipe(
           Effect.mapError(
             (cause) =>
@@ -1488,23 +1498,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 cause,
               }),
           ),
-          Effect.onError(() =>
-            runtime.close.pipe(
-              Effect.andThen(Effect.ignore(Scope.close(sessionScope, Exit.void))),
-              Effect.andThen(Fiber.interrupt(eventFiber)),
-              Effect.ignore,
-            ),
-          ),
+          Effect.onError(() => Effect.suspend(() => stopSessionInternal(sessionContext))),
         );
 
-        sessions.set(input.threadId, {
-          threadId: input.threadId,
-          scope: sessionScope,
-          runtime,
-          eventFiber,
-          stopped: false,
-        });
-        sessionScopeTransferred = true;
+        if (sessionContext.stopped || sessions.get(input.threadId) !== sessionContext) {
+          return yield* new ProviderAdapterSessionClosedError({
+            provider: PROVIDER,
+            threadId: input.threadId,
+            cause: new Error("Codex session closed while starting."),
+          });
+        }
 
         return started;
       }),
