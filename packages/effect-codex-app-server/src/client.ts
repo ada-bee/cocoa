@@ -21,6 +21,7 @@ import { makeChildStdio, makeTerminationError } from "./_internal/stdio.ts";
 export interface CodexAppServerClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
+  readonly rawObservation?: CodexProtocol.CodexAppServerRawObservationOptions;
   readonly logger?: (
     event: CodexProtocol.CodexAppServerProtocolLogEvent,
   ) => Effect.Effect<void, never>;
@@ -189,6 +190,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     ...(terminationError ? { terminationError } : {}),
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
+    ...(options.rawObservation ? { rawObservation: options.rawObservation } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
     onNotification: dispatchNotification,
     onRequest: dispatchRequest,

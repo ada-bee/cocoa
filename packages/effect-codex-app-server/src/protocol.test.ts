@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -32,6 +33,21 @@ const decodeConsumeRateLimitResetCreditParams = Schema.decodeUnknownEffect(
 const decodeConsumeRateLimitResetCreditResponse = Schema.decodeUnknownEffect(
   CodexRpc.CLIENT_REQUEST_RESPONSES["account/rateLimitResetCredit/consume"],
 );
+
+const makeInMemoryFramedTransport = Effect.fn("makeInMemoryFramedTransport")(function* () {
+  const input = yield* Queue.unbounded<string, Cause.Done<void>>();
+  const output = yield* Queue.unbounded<string>();
+  return {
+    input,
+    output,
+    incoming: Stream.fromQueue(input),
+    outgoing: (frames: Stream.Stream<string>) =>
+      frames.pipe(
+        Stream.runForEach((frame) => Queue.offer(output, frame)),
+        Effect.asVoid,
+      ),
+  };
+});
 
 it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
   it.effect("maps account usage responses to the upstream token usage schema", () =>
@@ -133,7 +149,10 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     () =>
       Effect.gen(function* () {
         const { stdio, input, output } = yield* makeInMemoryStdio();
-        const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({ stdio });
+        const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+          stdio,
+          rawObservation: { capacity: 16 },
+        });
 
         const notificationDeferred =
           yield* Deferred.make<ReadonlyArray<CodexProtocol.CodexAppServerIncomingNotification>>();
@@ -442,6 +461,149 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
       assert.instanceOf(error, CodexError.CodexAppServerInputStreamEndedError);
       assert.equal(error.message, "Codex App Server input stream ended.");
       assert.equal("cause" in error, false);
+    }),
+  );
+
+  it.effect("exchanges whole JSON messages without adding JSONL delimiters", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol(frames);
+
+      const pending = yield* transport
+        .request("initialize", { clientInfo: {} })
+        .pipe(Effect.forkScoped);
+      assert.equal(
+        yield* Queue.take(frames.output),
+        '{"id":1,"method":"initialize","params":{"clientInfo":{}}}',
+      );
+
+      yield* Queue.offer(frames.input, '{"id":1,"result":{"userAgent":"framed-codex-app-server"}}');
+      assert.deepEqual(yield* Fiber.join(pending), {
+        userAgent: "framed-codex-app-server",
+      });
+
+      yield* transport.notify("initialized");
+      assert.equal(yield* Queue.take(frames.output), '{"method":"initialized"}');
+    }),
+  );
+
+  it.effect("continues reading frames while a server-request handler is waiting", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const handlerStarted = yield* Deferred.make<void>();
+      const releaseHandler = yield* Deferred.make<void>();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...frames,
+        onRequest: () =>
+          Deferred.succeed(handlerStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseHandler)),
+            Effect.as({ approved: true }),
+          ),
+      });
+
+      const pending = yield* transport
+        .request("thread/read", { threadId: "thread-1" })
+        .pipe(Effect.forkScoped);
+      yield* Queue.take(frames.output);
+
+      yield* Queue.offer(
+        frames.input,
+        '{"id":77,"method":"item/tool/requestUserInput","params":{}}',
+      );
+      yield* Deferred.await(handlerStarted);
+      yield* Queue.offer(frames.input, '{"id":1,"result":{"thread":{"id":"thread-1"}}}');
+
+      assert.deepEqual(yield* Fiber.join(pending), {
+        thread: { id: "thread-1" },
+      });
+
+      yield* Deferred.succeed(releaseHandler, undefined);
+      assert.deepEqual(yield* decodeJson(yield* Queue.take(frames.output)), {
+        id: 77,
+        result: { approved: true },
+      });
+    }),
+  );
+
+  it.effect("fails pending requests when a framed transport disconnects", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol(frames);
+      const pending = yield* transport
+        .request("thread/read", { threadId: "thread-1" })
+        .pipe(Effect.forkScoped);
+      yield* Queue.take(frames.output);
+
+      yield* Queue.end(frames.input);
+
+      const error = yield* Fiber.join(pending).pipe(
+        Effect.match({
+          onFailure: (error) => error,
+          onSuccess: () => assert.fail("Expected the pending request to fail"),
+        }),
+      );
+      assert.instanceOf(error, CodexError.CodexAppServerInputStreamEndedError);
+    }),
+  );
+
+  it.effect("keeps raw observation disabled unless explicitly requested", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const handled = yield* Deferred.make<void>();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...frames,
+        onNotification: () => Deferred.succeed(handled, undefined).pipe(Effect.asVoid),
+      });
+
+      yield* Queue.offer(frames.input, '{"method":"thread/started","params":{}}');
+      yield* Deferred.await(handled);
+
+      assert.deepEqual(yield* Stream.runCollect(transport.incomingNotifications), []);
+      assert.deepEqual(yield* Stream.runCollect(transport.incomingRequests), []);
+    }),
+  );
+
+  it.effect("drops raw observations beyond the configured per-observer capacity", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const firstObserved = yield* Deferred.make<void>();
+      const releaseObserver = yield* Deferred.make<void>();
+      const thirdHandled = yield* Deferred.make<void>();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...frames,
+        rawObservation: { capacity: 1 },
+        onNotification: (notification) =>
+          notification.method === "three"
+            ? Deferred.succeed(thirdHandled, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+      });
+
+      const observed = yield* transport.incomingNotifications.pipe(
+        Stream.take(2),
+        Stream.mapEffect((notification) =>
+          notification.method === "one"
+            ? Deferred.succeed(firstObserved, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseObserver)),
+                Effect.as(notification),
+              )
+            : Effect.succeed(notification),
+        ),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+
+      yield* Queue.offer(frames.input, '{"method":"one"}');
+      yield* Deferred.await(firstObserved);
+      yield* Queue.offer(frames.input, '{"method":"two"}');
+      yield* Queue.offer(frames.input, '{"method":"three"}');
+      yield* Deferred.await(thirdHandled);
+      yield* Deferred.succeed(releaseObserver, undefined);
+
+      assert.deepEqual(
+        (yield* Fiber.join(observed)).map(({ method }) => method),
+        ["one", "two"],
+      );
     }),
   );
 });
