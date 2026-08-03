@@ -6,6 +6,7 @@ import { AddProjectRepositoryScreen } from "./AddProjectScreen";
 
 type AddProjectRepositoryRouteParams = {
   readonly environmentId?: string | string[];
+  readonly providerInstanceId?: string | string[];
   readonly source?: string | string[];
 };
 

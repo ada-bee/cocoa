@@ -6,8 +6,11 @@ import {
   buildProjectCreateCommand,
   canCreateProjectInEnvironment,
   findExistingAddProject,
+  getAvailableProjectProviderInstances,
   getAddProjectInitialQuery,
+  resolveProjectCreationProviderInstanceId,
   resolveAddProjectPath,
+  resolveProjectCreationModelSelection,
   sortAddProjectProviderSources,
   type AddProjectRemoteSource,
 } from "@t3tools/client-runtime/operations/projects";
@@ -30,7 +33,8 @@ import {
   CommandId,
   type EnvironmentId,
   ProjectId,
-  type ProviderInstanceId,
+  ProviderInstanceId,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { SymbolView } from "../../components/AppSymbol";
@@ -60,14 +64,17 @@ import {
   useRemoteEnvironmentRuntime,
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
-import { resolveAddProjectEnvironment } from "./AddProjectScreen.logic";
+import {
+  resolveAddProjectEnvironment,
+  resolveAddProjectProviderSelection,
+} from "./AddProjectScreen.logic";
 
 interface EnvironmentOption {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly platform: string;
   readonly baseDirectory: string | null;
-  readonly providerInstanceId: ProviderInstanceId | null;
+  readonly providers: ReadonlyArray<ServerProvider>;
   readonly connectionState: EnvironmentConnectionPhase;
   readonly connectionError: string | null;
   readonly connectionErrorTraceId: string | null;
@@ -96,6 +103,11 @@ function errorMessage(error: unknown): string {
 function stringParam(value: string | string[] | undefined): string | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+function providerInstanceParam(value: string | string[] | undefined): ProviderInstanceId | null {
+  const instanceId = stringParam(value);
+  return instanceId ? ProviderInstanceId.make(instanceId) : null;
 }
 
 function sourceFromParam(value: string | string[] | undefined): AddProjectRemoteSource {
@@ -315,15 +327,13 @@ function useEnvironmentOptions(): ReadonlyArray<EnvironmentOption> {
     const options = Object.values(savedConnectionsById).map((connection) => {
       const config = serverConfigByEnvironmentId.get(connection.environmentId);
       const runtime = runtimeByEnvironmentId.get(connection.environmentId);
-      const availableProviders =
-        config?.providers.filter((provider) => provider.enabled && provider.installed) ?? [];
+      const availableProviders = getAvailableProjectProviderInstances(config?.providers ?? []);
       return {
         environmentId: connection.environmentId,
         label: connection.environmentLabel,
         platform: platformFromOs(config?.environment.platform.os ?? null),
         baseDirectory: config?.settings.addProjectBaseDirectory ?? null,
-        providerInstanceId:
-          availableProviders.length === 1 ? (availableProviders[0]?.instanceId ?? null) : null,
+        providers: availableProviders,
         connectionState: runtime?.connectionState ?? "available",
         connectionError: runtime?.connectionError ?? null,
         connectionErrorTraceId: runtime?.connectionErrorTraceId ?? null,
@@ -380,6 +390,7 @@ function EmptyEnvironmentState() {
 function SourceControlRow(props: {
   readonly source: AddProjectRemoteSource;
   readonly selectedEnvironmentId: EnvironmentId;
+  readonly providerInstanceId: ProviderInstanceId;
   readonly ready: boolean;
   readonly hint: string;
   readonly isFirst: boolean;
@@ -416,6 +427,7 @@ function SourceControlRow(props: {
           screen: "AddProjectRepository",
           params: {
             environmentId: props.selectedEnvironmentId,
+            providerInstanceId: props.providerInstanceId,
             source: props.source,
           },
         })
@@ -430,6 +442,30 @@ export function AddProjectSourceScreen() {
   const iconColor = useThemeColor("--color-icon");
   const { environmentOptions, selectedEnvironment, setSelectedEnvironmentId } =
     useSelectedEnvironment();
+  const [selectedProviderTarget, setSelectedProviderTarget] = useState<{
+    readonly environmentId: EnvironmentId;
+    readonly providerInstanceId: ProviderInstanceId;
+  } | null>(null);
+  const providerSelection = selectedEnvironment
+    ? resolveAddProjectProviderSelection(
+        selectedEnvironment.providers,
+        selectedProviderTarget?.environmentId === selectedEnvironment.environmentId
+          ? selectedProviderTarget.providerInstanceId
+          : null,
+      )
+    : null;
+  const selectedProviderInstanceId = providerSelection?.selectedProviderInstanceId ?? null;
+  useEffect(() => {
+    if (!selectedProviderTarget) return;
+    if (
+      selectedEnvironment?.environmentId !== selectedProviderTarget.environmentId ||
+      !selectedEnvironment.providers.some(
+        (provider) => provider.instanceId === selectedProviderTarget.providerInstanceId,
+      )
+    ) {
+      setSelectedProviderTarget(null);
+    }
+  }, [selectedEnvironment, selectedProviderTarget]);
   const discoveryState = useEnvironmentQuery(
     selectedEnvironment === null
       ? null
@@ -494,34 +530,79 @@ export function AddProjectSourceScreen() {
 
       {selectedEnvironment ? (
         <>
-          <ListSection>
-            <ListRow
-              title="Local folder"
-              subtitle="Browse a folder on disk"
-              icon={
-                <SymbolView
-                  name="folder.badge.plus"
-                  size={17}
-                  tintColor={iconColor}
-                  type="monochrome"
-                />
-              }
-              isFirst
-              onPress={() =>
-                navigation.navigate("NewTaskSheet", {
-                  screen: "AddProjectLocal",
-                  params: {
-                    environmentId: selectedEnvironment.environmentId,
-                  },
-                })
-              }
-            />
-            {(["url", ...sortAddProjectProviderSources(readiness)] as AddProjectRemoteSource[]).map(
-              (candidate) => (
+          {selectedEnvironment.providers.length > 1 ? (
+            <>
+              <SectionTitle>Codex endpoints</SectionTitle>
+              <ListSection>
+                {selectedEnvironment.providers.map((provider, index) => (
+                  <ListRow
+                    key={provider.instanceId}
+                    title={provider.displayName ?? provider.instanceId}
+                    subtitle={provider.instanceId}
+                    icon={
+                      <SymbolView
+                        name="server.rack"
+                        size={17}
+                        tintColor={iconColor}
+                        type="monochrome"
+                      />
+                    }
+                    selected={provider.instanceId === selectedProviderInstanceId}
+                    isFirst={index === 0}
+                    right={
+                      provider.instanceId === selectedProviderInstanceId ? (
+                        <SymbolView
+                          name="checkmark"
+                          size={14}
+                          tintColor={iconColor}
+                          type="monochrome"
+                        />
+                      ) : null
+                    }
+                    onPress={() =>
+                      setSelectedProviderTarget({
+                        environmentId: selectedEnvironment.environmentId,
+                        providerInstanceId: provider.instanceId,
+                      })
+                    }
+                  />
+                ))}
+              </ListSection>
+            </>
+          ) : null}
+
+          {selectedProviderInstanceId ? (
+            <ListSection>
+              <ListRow
+                title="Local folder"
+                subtitle="Browse a folder on disk"
+                icon={
+                  <SymbolView
+                    name="folder.badge.plus"
+                    size={17}
+                    tintColor={iconColor}
+                    type="monochrome"
+                  />
+                }
+                isFirst
+                onPress={() =>
+                  navigation.navigate("NewTaskSheet", {
+                    screen: "AddProjectLocal",
+                    params: {
+                      environmentId: selectedEnvironment.environmentId,
+                      providerInstanceId: selectedProviderInstanceId,
+                    },
+                  })
+                }
+              />
+              {(
+                ["url", ...sortAddProjectProviderSources(readiness)] as AddProjectRemoteSource[]
+              ).map((candidate) => (
                 <SourceControlRow
                   key={candidate}
                   source={candidate}
                   selectedEnvironmentId={selectedEnvironment.environmentId}
+                  providerInstanceId={selectedProviderInstanceId}
                   ready={readiness[candidate].ready}
                   hint={
                     readiness[candidate].ready
@@ -530,9 +611,13 @@ export function AddProjectSourceScreen() {
                   }
                   isFirst={false}
                 />
-              ),
-            )}
-          </ListSection>
+              ))}
+            </ListSection>
+          ) : (
+            <Text className="px-1 text-sm text-foreground-muted">
+              Choose the Codex endpoint that owns this workspace.
+            </Text>
+          )}
           {discoveryState.isPending ? <ActivityIndicator color={accentColor} /> : null}
         </>
       ) : null}
@@ -540,7 +625,10 @@ export function AddProjectSourceScreen() {
   );
 }
 
-function useCreateProject(environment: EnvironmentOption | null) {
+function useCreateProject(
+  environment: EnvironmentOption | null,
+  preferredProviderInstanceId: ProviderInstanceId | null,
+) {
   const navigation = useNavigation();
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
   const projects = useProjects();
@@ -548,15 +636,30 @@ function useCreateProject(environment: EnvironmentOption | null) {
   return useCallback(
     async (workspaceRoot: string) => {
       if (!environment || !canCreateProjectInEnvironment(environment.connectionState)) return;
-      if (!environment.providerInstanceId) {
+      const providerInstanceId = resolveProjectCreationProviderInstanceId(
+        environment.providers,
+        preferredProviderInstanceId,
+      );
+      if (!providerInstanceId) {
         Alert.alert("Choose a provider", "Select a Codex endpoint before adding this project.");
+        return;
+      }
+      const defaultModelSelection = resolveProjectCreationModelSelection(
+        environment.providers,
+        providerInstanceId,
+      );
+      if (!defaultModelSelection) {
+        Alert.alert(
+          "Endpoint unavailable",
+          "The selected Codex endpoint does not advertise a usable model.",
+        );
         return;
       }
 
       const existing = findExistingAddProject({
         projects,
         environmentId: environment.environmentId,
-        providerInstanceId: environment.providerInstanceId,
+        providerInstanceId,
         path: workspaceRoot,
       });
       if (existing) {
@@ -575,7 +678,8 @@ function useCreateProject(environment: EnvironmentOption | null) {
       const command = buildProjectCreateCommand({
         commandId: CommandId.make(uuidv4()),
         projectId,
-        providerInstanceId: environment.providerInstanceId,
+        providerInstanceId,
+        defaultModelSelection,
         workspaceRoot,
         createdAt: new Date().toISOString(),
       });
@@ -595,7 +699,7 @@ function useCreateProject(environment: EnvironmentOption | null) {
       );
       return result;
     },
-    [createProject, environment, projects, navigation],
+    [createProject, environment, navigation, preferredProviderInstanceId, projects],
   );
 }
 
@@ -609,6 +713,7 @@ function useEnvironmentFromParam(
 
 export function AddProjectRepositoryScreen(props: {
   readonly environmentId?: string | string[];
+  readonly providerInstanceId?: string | string[];
   readonly source?: string | string[];
 }) {
   const lookupRepositoryQuery = useAtomQueryRunner(sourceControlEnvironment.repository, {
@@ -632,6 +737,7 @@ export function AddProjectRepositoryScreen(props: {
         screen: "AddProjectDestination",
         params: {
           environmentId: environment.environmentId,
+          providerInstanceId: props.providerInstanceId,
           source,
           remoteUrl,
           repositoryTitle: remoteUrl,
@@ -656,6 +762,7 @@ export function AddProjectRepositoryScreen(props: {
         screen: "AddProjectDestination",
         params: {
           environmentId: environment.environmentId,
+          providerInstanceId: props.providerInstanceId,
           source,
           remoteUrl: repository.sshUrl,
           repositoryTitle: repository.nameWithOwner,
@@ -663,7 +770,15 @@ export function AddProjectRepositoryScreen(props: {
       });
     }
     setIsSubmitting(false);
-  }, [environment, isSubmitting, lookupRepositoryQuery, repositoryInput, navigation, source]);
+  }, [
+    environment,
+    isSubmitting,
+    lookupRepositoryQuery,
+    navigation,
+    props.providerInstanceId,
+    repositoryInput,
+    source,
+  ]);
 
   return (
     <AddProjectShell>
@@ -777,9 +892,15 @@ function FolderBrowser(props: {
   );
 }
 
-export function AddProjectLocalFolderScreen(props: { readonly environmentId?: string | string[] }) {
+export function AddProjectLocalFolderScreen(props: {
+  readonly environmentId?: string | string[];
+  readonly providerInstanceId?: string | string[];
+}) {
   const environment = useEnvironmentFromParam(props.environmentId);
-  const createProject = useCreateProject(environment);
+  const createProject = useCreateProject(
+    environment,
+    providerInstanceParam(props.providerInstanceId),
+  );
   const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } =
     useBrowsePathInput(environment);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -838,6 +959,7 @@ export function AddProjectLocalFolderScreen(props: { readonly environmentId?: st
 
 export function AddProjectDestinationScreen(props: {
   readonly environmentId?: string | string[];
+  readonly providerInstanceId?: string | string[];
   readonly remoteUrl?: string | string[];
   readonly repositoryTitle?: string | string[];
 }) {
@@ -845,7 +967,10 @@ export function AddProjectDestinationScreen(props: {
     reportFailure: false,
   });
   const environment = useEnvironmentFromParam(props.environmentId);
-  const createProject = useCreateProject(environment);
+  const createProject = useCreateProject(
+    environment,
+    providerInstanceParam(props.providerInstanceId),
+  );
   const remoteUrl = stringParam(props.remoteUrl);
   const repositoryTitle = stringParam(props.repositoryTitle);
   const { isBrowseNavigating, navigateToBrowsePath, pathInput, setPathInput } =

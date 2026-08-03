@@ -112,6 +112,18 @@ export interface CommandPaletteView {
   readonly initialQuery?: string;
 }
 
+export function orderAddProjectProviderChoices<
+  T extends { readonly instanceId: string; readonly displayName?: string | undefined },
+>(providers: ReadonlyArray<T>, preferredInstanceId: string | null): ReadonlyArray<T> {
+  return [...providers].sort((left, right) => {
+    if (left.instanceId === preferredInstanceId) return -1;
+    if (right.instanceId === preferredInstanceId) return 1;
+    return (left.displayName ?? left.instanceId).localeCompare(
+      right.displayName ?? right.instanceId,
+    );
+  });
+}
+
 export function enumerateCommandPaletteItems(
   items: ReadonlyArray<CommandPaletteActionItem>,
 ): CommandPaletteActionItem[] {

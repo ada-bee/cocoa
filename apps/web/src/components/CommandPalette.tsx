@@ -1,7 +1,11 @@
 "use client";
 
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { canCreateProjectInEnvironment } from "@t3tools/client-runtime/operations/projects";
+import {
+  canCreateProjectInEnvironment,
+  getAvailableProjectProviderInstances,
+  resolveProjectCreationProviderInstanceId,
+} from "@t3tools/client-runtime/operations/projects";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import {
@@ -20,6 +24,8 @@ import {
   type EnvironmentId,
   type FilesystemBrowseResult,
   type ProjectId,
+  type ProviderInstanceId,
+  type ServerProvider,
   type SourceControlDiscoveryResult,
   type SourceControlProviderKind,
   type SourceControlRepositoryInfo,
@@ -109,6 +115,7 @@ import {
   getCommandPaletteInputPlaceholder,
   getCommandPaletteMode,
   ITEM_ICON_CLASS,
+  orderAddProjectProviderChoices,
   RECENT_THREAD_LIMIT,
   reduceCommandPaletteUiState,
   type SearchOverlayMode,
@@ -170,6 +177,11 @@ interface AddProjectEnvironmentOption {
   readonly isPrimary: boolean;
   readonly isConnected: boolean;
   readonly status: string;
+}
+
+interface AddProjectProviderTarget {
+  readonly environmentId: EnvironmentId;
+  readonly providerInstanceId: ProviderInstanceId;
 }
 
 type AddProjectRemoteProviderKind = Extract<
@@ -590,6 +602,8 @@ function OpenCommandPaletteDialog(props: {
   const [addProjectEnvironmentId, setAddProjectEnvironmentId] = useState<EnvironmentId | null>(
     null,
   );
+  const [addProjectProviderTarget, setAddProjectProviderTarget] =
+    useState<AddProjectProviderTarget | null>(null);
   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
   const [addProjectCloneFlow, setAddProjectCloneFlow] = useState<AddProjectCloneFlow | null>(null);
   const [isRemoteProjectLookingUp, setIsRemoteProjectLookingUp] = useState(false);
@@ -709,6 +723,24 @@ function OpenCommandPaletteDialog(props: {
   }, [environments]);
   const defaultAddProjectEnvironmentId =
     addProjectEnvironmentOptions.find((option) => option.isConnected)?.environmentId ?? null;
+  const getEnvironmentProjectProviders = useCallback(
+    (environmentId: EnvironmentId): ReadonlyArray<ServerProvider> =>
+      getAvailableProjectProviderInstances(
+        environments.find((environment) => environment.environmentId === environmentId)
+          ?.serverConfig?.providers ?? (environmentId === primaryEnvironmentId ? providers : []),
+      ),
+    [environments, primaryEnvironmentId, providers],
+  );
+  useEffect(() => {
+    if (!addProjectProviderTarget) return;
+    if (
+      !getEnvironmentProjectProviders(addProjectProviderTarget.environmentId).some(
+        (provider) => provider.instanceId === addProjectProviderTarget.providerInstanceId,
+      )
+    ) {
+      setAddProjectProviderTarget(null);
+    }
+  }, [addProjectProviderTarget, getEnvironmentProjectProviders]);
   const wslAddProjectEnvironmentOption = useMemo(
     () =>
       addProjectEnvironmentOptions.find((option) => {
@@ -1209,7 +1241,7 @@ function OpenCommandPaletteDialog(props: {
   );
 
   const startAddProjectSourceSelection = useCallback(
-    (environmentId: EnvironmentId): void => {
+    (environmentId: EnvironmentId, providerInstanceId: ProviderInstanceId): void => {
       const environment = environments.find(
         (candidate) => candidate.environmentId === environmentId,
       );
@@ -1223,7 +1255,22 @@ function OpenCommandPaletteDialog(props: {
         );
         return;
       }
+      if (
+        !getEnvironmentProjectProviders(environmentId).some(
+          (provider) => provider.instanceId === providerInstanceId,
+        )
+      ) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Codex endpoint unavailable",
+            description: "Choose an enabled endpoint before adding this project.",
+          }),
+        );
+        return;
+      }
       setAddProjectEnvironmentId(environmentId);
+      setAddProjectProviderTarget({ environmentId, providerInstanceId });
       setAddProjectCloneFlow(null);
       pushPaletteView({
         addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
@@ -1239,8 +1286,79 @@ function OpenCommandPaletteDialog(props: {
       browseEnvironmentId,
       buildAddProjectSourceGroups,
       environments,
+      getEnvironmentProjectProviders,
       pushPaletteView,
       sourceControlDiscovery.data,
+    ],
+  );
+
+  const startAddProjectProviderSelection = useCallback(
+    (environmentId: EnvironmentId): void => {
+      const availableProviders = getEnvironmentProjectProviders(environmentId);
+      const implicitProviderInstanceId =
+        resolveProjectCreationProviderInstanceId(availableProviders);
+      if (implicitProviderInstanceId) {
+        startAddProjectSourceSelection(environmentId, implicitProviderInstanceId);
+        return;
+      }
+      if (availableProviders.length === 0) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "No Codex endpoint available",
+            description: "Enable a provider endpoint before adding a project.",
+          }),
+        );
+        return;
+      }
+
+      const currentProviderInstanceId =
+        currentProjectEnvironmentId === environmentId && currentProjectId
+          ? (projects.find(
+              (project) =>
+                project.environmentId === environmentId && project.id === currentProjectId,
+            )?.providerInstanceId ?? null)
+          : null;
+      const orderedProviders = orderAddProjectProviderChoices(
+        availableProviders,
+        currentProviderInstanceId,
+      );
+
+      setAddProjectEnvironmentId(environmentId);
+      setAddProjectProviderTarget(null);
+      setAddProjectCloneFlow(null);
+      pushPaletteView({
+        addonIcon: <FolderPlusIcon className={ADDON_ICON_CLASS} />,
+        groups: [
+          {
+            value: `providers:${environmentId}`,
+            label: "Codex endpoints",
+            items: orderedProviders.map((provider) => ({
+              kind: "action" as const,
+              value: `action:add-project:provider:${environmentId}:${provider.instanceId}`,
+              searchTerms: [provider.displayName ?? "", provider.instanceId],
+              title: provider.displayName ?? provider.instanceId,
+              description:
+                provider.instanceId === currentProviderInstanceId
+                  ? `${provider.instanceId} · Current endpoint`
+                  : provider.instanceId,
+              icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+              keepOpen: true,
+              run: async () => {
+                startAddProjectSourceSelection(environmentId, provider.instanceId);
+              },
+            })),
+          },
+        ],
+      });
+    },
+    [
+      currentProjectEnvironmentId,
+      currentProjectId,
+      getEnvironmentProjectProviders,
+      projects,
+      pushPaletteView,
+      startAddProjectSourceSelection,
     ],
   );
 
@@ -1259,7 +1377,7 @@ function OpenCommandPaletteDialog(props: {
       icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
       keepOpen: true,
       run: async () => {
-        startAddProjectSourceSelection(option.environmentId);
+        startAddProjectProviderSelection(option.environmentId);
       },
     }),
   );
@@ -1296,13 +1414,13 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
 
-    void startAddProjectSourceSelection(environmentId);
+    void startAddProjectProviderSelection(environmentId);
   }, [
     addProjectEnvironmentGroups,
     addProjectEnvironmentOptions.length,
     defaultAddProjectEnvironmentId,
     pushPaletteView,
-    startAddProjectSourceSelection,
+    startAddProjectProviderSelection,
   ]);
 
   useLayoutEffect(() => {
@@ -1459,7 +1577,7 @@ function OpenCommandPaletteDialog(props: {
       icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
       keepOpen: true,
       run: async () => {
-        await startAddProjectBrowse(wslAddProjectEnvironmentOption.environmentId);
+        startAddProjectProviderSelection(wslAddProjectEnvironmentOption.environmentId);
       },
     });
   }
@@ -1502,6 +1620,7 @@ function OpenCommandPaletteDialog(props: {
       readonly rawCwd: string;
       readonly platform: string;
       readonly currentProjectCwd: string | null;
+      readonly providerInstanceId: ProviderInstanceId;
     }) => {
       const environment = environments.find(
         (candidate) => candidate.environmentId === input.environmentId,
@@ -1543,14 +1662,20 @@ function OpenCommandPaletteDialog(props: {
       const cwd = resolveProjectPathForDispatch(rawCwd, input.currentProjectCwd);
       if (cwd.length === 0) return;
 
-      const targetEnvironmentProviders =
-        environments.find((environment) => environment.environmentId === input.environmentId)
-          ?.serverConfig?.providers ??
-        (input.environmentId === primaryEnvironmentId ? providers : []);
-      const defaultModelSelection = resolveDefaultProviderModelSelection(
-        targetEnvironmentProviders,
-        null,
+      const selectedProvider = getEnvironmentProjectProviders(input.environmentId).find(
+        (provider) => provider.instanceId === input.providerInstanceId,
       );
+      if (!selectedProvider) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to add project",
+            description: "The selected Codex endpoint is no longer available.",
+          }),
+        );
+        return;
+      }
+      const defaultModelSelection = resolveDefaultProviderModelSelection([selectedProvider], null);
       if (!defaultModelSelection) {
         toastManager.add(
           stackedThreadToast({
@@ -1650,9 +1775,8 @@ function OpenCommandPaletteDialog(props: {
       createProject,
       environments,
       navigate,
-      primaryEnvironmentId,
+      getEnvironmentProjectProviders,
       projects,
-      providers,
       setOpen,
       clientSettings.sidebarThreadSortOrder,
       threads,
@@ -1661,9 +1785,23 @@ function OpenCommandPaletteDialog(props: {
 
   const handleAddProject = useCallback(
     async (rawCwd: string) => {
-      if (!browseEnvironmentId) return;
+      if (
+        !browseEnvironmentId ||
+        !addProjectProviderTarget ||
+        addProjectProviderTarget.environmentId !== browseEnvironmentId
+      ) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Choose a Codex endpoint",
+            description: "Select the endpoint that owns this workspace.",
+          }),
+        );
+        return;
+      }
       await handleAddProjectForEnvironment({
         environmentId: browseEnvironmentId,
+        providerInstanceId: addProjectProviderTarget.providerInstanceId,
         rawCwd,
         platform: browseEnvironmentPlatform,
         currentProjectCwd: currentProjectCwdForBrowse,
@@ -1674,6 +1812,7 @@ function OpenCommandPaletteDialog(props: {
       browseEnvironmentPlatform,
       currentProjectCwdForBrowse,
       handleAddProjectForEnvironment,
+      addProjectProviderTarget,
     ],
   );
 
@@ -2129,8 +2268,25 @@ function OpenCommandPaletteDialog(props: {
         );
         return;
       }
+      const providerInstanceId = resolveProjectCreationProviderInstanceId(
+        getEnvironmentProjectProviders(selection.environmentId),
+        addProjectProviderTarget?.environmentId === selection.environmentId
+          ? addProjectProviderTarget.providerInstanceId
+          : null,
+      );
+      if (!providerInstanceId) {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Choose a Codex endpoint",
+            description: "Choose the endpoint for the selected WSL environment, then try again.",
+          }),
+        );
+        return;
+      }
       await handleAddProjectForEnvironment({
         environmentId: selection.environmentId,
+        providerInstanceId,
         rawCwd: selection.linuxPath,
         platform: "Linux",
         currentProjectCwd: null,
@@ -2139,6 +2295,7 @@ function OpenCommandPaletteDialog(props: {
     }
     await handleAddProject(pickedPath);
   }, [
+    addProjectProviderTarget,
     browseDesktopInstanceId,
     browseEnvironmentId,
     browseEnvironmentPlatform,
@@ -2148,6 +2305,7 @@ function OpenCommandPaletteDialog(props: {
     fileManagerInitialPath,
     handleAddProject,
     handleAddProjectForEnvironment,
+    getEnvironmentProjectProviders,
     isPickingProjectFolder,
     primaryEnvironmentId,
   ]);

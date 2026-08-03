@@ -2,6 +2,7 @@ import type { EnvironmentConnectionPhase } from "../connection/presentation.ts";
 import type {
   CommandId,
   EnvironmentId,
+  ModelSelection,
   OrchestrationCommand,
   ProjectId,
   ProviderInstanceId,
@@ -28,6 +29,56 @@ export type AddProjectRemoteProviderKind = Extract<
   "github" | "gitlab" | "bitbucket" | "azure-devops"
 >;
 export type AddProjectRemoteSource = AddProjectRemoteProviderKind | "url";
+
+export type ProjectProviderCandidate = {
+  readonly instanceId: ProviderInstanceId;
+  readonly enabled: boolean;
+  readonly installed: boolean;
+};
+
+export function getAvailableProjectProviderInstances<T extends ProjectProviderCandidate>(
+  providers: ReadonlyArray<T>,
+): ReadonlyArray<T> {
+  return providers.filter((provider) => provider.enabled && provider.installed);
+}
+
+/** Resolve only an explicit available choice or an unambiguous single endpoint. */
+export function resolveProjectCreationProviderInstanceId(
+  providers: ReadonlyArray<ProjectProviderCandidate>,
+  preferredInstanceId?: ProviderInstanceId | null,
+): ProviderInstanceId | null {
+  const available = getAvailableProjectProviderInstances(providers);
+  if (
+    preferredInstanceId &&
+    available.some((provider) => provider.instanceId === preferredInstanceId)
+  ) {
+    return preferredInstanceId;
+  }
+  return available.length === 1 ? (available[0]?.instanceId ?? null) : null;
+}
+
+export function resolveProjectCreationModelSelection(
+  providers: ReadonlyArray<
+    ProjectProviderCandidate & {
+      readonly models: ReadonlyArray<{
+        readonly slug: string;
+        readonly isCustom: boolean;
+        readonly isDefault?: boolean | undefined;
+      }>;
+    }
+  >,
+  instanceId: ProviderInstanceId,
+): ModelSelection | null {
+  const provider = getAvailableProjectProviderInstances(providers).find(
+    (candidate) => candidate.instanceId === instanceId,
+  );
+  if (!provider) return null;
+  const model =
+    provider.models.find((candidate) => candidate.isDefault && !candidate.isCustom) ??
+    provider.models.find((candidate) => !candidate.isCustom) ??
+    provider.models[0];
+  return model ? { instanceId, model: model.slug } : null;
+}
 
 export function canCreateProjectInEnvironment(
   connectionPhase: EnvironmentConnectionPhase | null | undefined,
@@ -218,6 +269,7 @@ export function buildProjectCreateCommand(input: {
   readonly commandId: CommandId;
   readonly projectId: ProjectId;
   readonly providerInstanceId: ProviderInstanceId;
+  readonly defaultModelSelection?: ModelSelection | null;
   readonly workspaceRoot: string;
   readonly createdAt: string;
 }): Extract<OrchestrationCommand, { type: "project.create" }> {
@@ -229,7 +281,7 @@ export function buildProjectCreateCommand(input: {
     title: inferProjectTitleFromPath(input.workspaceRoot),
     workspaceRoot: input.workspaceRoot,
     createWorkspaceRootIfMissing: true,
-    defaultModelSelection: null,
+    defaultModelSelection: input.defaultModelSelection ?? null,
     createdAt: input.createdAt,
   };
 }

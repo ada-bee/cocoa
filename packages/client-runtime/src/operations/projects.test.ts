@@ -13,8 +13,11 @@ import {
   buildProjectCreateCommand,
   canCreateProjectInEnvironment,
   findExistingAddProject,
+  getAvailableProjectProviderInstances,
   getAddProjectInitialQuery,
   resolveAddProjectPath,
+  resolveProjectCreationProviderInstanceId,
+  resolveProjectCreationModelSelection,
   sortAddProjectProviderSources,
 } from "./projects.ts";
 import type { EnvironmentProject } from "../state/models.ts";
@@ -22,6 +25,62 @@ import type { EnvironmentProject } from "../state/models.ts";
 const providerInstanceId = ProviderInstanceId.make("codex");
 
 describe("add project shared logic", () => {
+  it("only resolves an endpoint when explicit or unambiguous", () => {
+    const personal = {
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      enabled: true,
+      installed: true,
+    };
+    const work = {
+      instanceId: ProviderInstanceId.make("codex_work"),
+      enabled: true,
+      installed: true,
+    };
+    const disabled = {
+      instanceId: ProviderInstanceId.make("codex_disabled"),
+      enabled: false,
+      installed: true,
+    };
+
+    expect(getAvailableProjectProviderInstances([personal, disabled])).toEqual([personal]);
+    expect(resolveProjectCreationProviderInstanceId([personal, disabled])).toBe(
+      personal.instanceId,
+    );
+    expect(resolveProjectCreationProviderInstanceId([personal, work])).toBeNull();
+    expect(resolveProjectCreationProviderInstanceId([personal, work], work.instanceId)).toBe(
+      work.instanceId,
+    );
+    expect(resolveProjectCreationProviderInstanceId([personal], disabled.instanceId)).toBe(
+      personal.instanceId,
+    );
+  });
+
+  it("resolves a default model only from the selected endpoint", () => {
+    const personal = {
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      enabled: true,
+      installed: true,
+      models: [
+        { slug: "custom", isCustom: true },
+        { slug: "personal-default", isCustom: false, isDefault: true },
+      ],
+    };
+    const work = {
+      instanceId: ProviderInstanceId.make("codex_work"),
+      enabled: true,
+      installed: true,
+      models: [{ slug: "work-default", isCustom: false, isDefault: true }],
+    };
+
+    expect(resolveProjectCreationModelSelection([personal, work], work.instanceId)).toEqual({
+      instanceId: work.instanceId,
+      model: "work-default",
+    });
+    expect(
+      resolveProjectCreationModelSelection([personal], ProviderInstanceId.make("missing")),
+    ).toBeNull();
+  });
+
   it("only allows project creation in connected environments", () => {
     expect(canCreateProjectInEnvironment("connected")).toBe(true);
     expect(canCreateProjectInEnvironment("available")).toBe(false);

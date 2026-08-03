@@ -6,9 +6,23 @@ import {
   buildThreadActionItems,
   enumerateCommandPaletteItems,
   filterCommandPaletteGroups,
+  orderAddProjectProviderChoices,
   reduceCommandPaletteUiState,
   type CommandPaletteGroup,
 } from "./CommandPalette.logic";
+
+describe("orderAddProjectProviderChoices", () => {
+  const personal = { instanceId: "personal", displayName: "Personal" };
+  const work = { instanceId: "work", displayName: "Work" };
+
+  it("keeps every endpoint visible and puts an existing choice first", () => {
+    expect(orderAddProjectProviderChoices([personal, work], "work")).toEqual([work, personal]);
+  });
+
+  it("uses a deterministic label order without choosing an endpoint", () => {
+    expect(orderAddProjectProviderChoices([work, personal], null)).toEqual([personal, work]);
+  });
+});
 
 describe("reduceCommandPaletteUiState", () => {
   const closedState = { open: false, mode: "command", openIntent: null } as const;
