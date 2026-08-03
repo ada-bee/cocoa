@@ -1,4 +1,5 @@
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { resolveElectronLaunchCommand } from "./electron-launcher.mjs";
@@ -6,11 +7,19 @@ import { resolveElectronLaunchCommand } from "./electron-launcher.mjs";
 const __dirname = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const desktopDir = NodePath.resolve(__dirname, "..");
 const mainJs = NodePath.resolve(desktopDir, "dist-electron/main.cjs");
+const rendererIndex = NodePath.resolve(desktopDir, "../web/dist/index.html");
+
+for (const requiredFile of [mainJs, rendererIndex]) {
+  if (!NodeFS.existsSync(requiredFile)) {
+    throw new Error(`Desktop smoke test requires ${requiredFile}`);
+  }
+}
 
 console.log("\nLaunching Electron smoke test...");
 
 const electronCommand = resolveElectronLaunchCommand([mainJs]);
 const child = NodeChildProcess.spawn(electronCommand.electronPath, electronCommand.args, {
+  cwd: desktopDir,
   stdio: ["pipe", "pipe", "pipe"],
   env: {
     ...process.env,

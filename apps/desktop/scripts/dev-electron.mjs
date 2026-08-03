@@ -21,14 +21,9 @@ if (!Number.isInteger(port) || port <= 0) {
   throw new Error(`VITE_DEV_SERVER_URL must include an explicit port: ${devServerUrl}`);
 }
 
-const requiredFiles = [
-  "dist-electron/main.cjs",
-  "dist-electron/preload.cjs",
-  "../server/dist/bin.mjs",
-];
+const requiredFiles = ["dist-electron/main.cjs", "dist-electron/preload.cjs"];
 const watchedDirectories = [
   { directory: "dist-electron", files: new Set(["main.cjs", "preload.cjs"]) },
-  { directory: "../server/dist", files: new Set(["bin.mjs"]) },
 ];
 const forcedShutdownTimeoutMs = 1_500;
 const restartDebounceMs = 120;
