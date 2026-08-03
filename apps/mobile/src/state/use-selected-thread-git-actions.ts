@@ -5,9 +5,8 @@ import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import {
   type GitActionRequestInput,
   type VcsActionOperation,
-  type VcsRef,
 } from "@t3tools/client-runtime/state/vcs";
-import type { GitRunStackedActionResult } from "@t3tools/contracts";
+import type { GitRunStackedActionResult, VcsRef } from "@t3tools/contracts";
 import {
   dedupeRemoteBranchesWithLocalMatches,
   sanitizeFeatureBranchName,
@@ -16,6 +15,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { useBranches } from "../state/queries";
+import { repositoryStatusInput } from "../state/repository-read";
 import { threadEnvironment } from "../state/threads";
 import { vcsActionManager, vcsEnvironment } from "../state/vcs";
 import { uuidv4 } from "../lib/uuid";
@@ -45,14 +45,16 @@ export function useSelectedThreadGitActions() {
     { reportFailure: false },
   );
 
-  const selectedThreadGitRootCwd = selectedThreadProject?.workspaceRoot ?? null;
   const branchTarget = useMemo(
     () => ({
       environmentId: selectedThread?.environmentId ?? null,
-      cwd: selectedThreadGitRootCwd,
+      target:
+        selectedThread === null
+          ? null
+          : { projectId: selectedThread.projectId, threadId: selectedThread.id },
       query: null,
     }),
-    [selectedThread?.environmentId, selectedThreadGitRootCwd],
+    [selectedThread],
   );
   const branchState = useBranches(branchTarget);
   const updateThreadGitContext = useCallback(
@@ -90,7 +92,7 @@ export function useSelectedThreadGitActions() {
       const execute = () =>
         refreshStatus({
           environmentId: selectedThread.environmentId,
-          input: { cwd },
+          input: repositoryStatusInput(selectedThread.projectId, selectedThread.id),
         });
       const result = options?.quiet
         ? await execute()

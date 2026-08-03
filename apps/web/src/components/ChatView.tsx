@@ -209,7 +209,13 @@ import {
 } from "../state/server";
 import { terminalEnvironment } from "../state/terminal";
 import { threadEnvironment } from "../state/threads";
-import { vcsEnvironment } from "../state/vcs";
+import {
+  repositoryStatusForLegacyUi,
+  repositoryStatusInput,
+  repositoryStatusIsRepository,
+  repositoryStatusRefName,
+  vcsEnvironment,
+} from "../state/vcs";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import {
   useProject,
@@ -2445,13 +2451,12 @@ function ChatViewContent(props: ChatViewProps) {
         worktreePath: activeThread?.worktreePath ?? null,
       })
     : null;
-  const gitStatusCwd = activeThread?.worktreePath ?? gitCwd;
   const gitStatusQuery = useEnvironmentQuery(
-    gitStatusCwd === null
+    activeProject === null
       ? null
       : vcsEnvironment.status({
           environmentId,
-          input: { cwd: gitStatusCwd },
+          input: repositoryStatusInput(activeProject!.id, activeThread?.id),
         }),
   );
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -2500,10 +2505,12 @@ function ChatViewContent(props: ChatViewProps) {
   const activeTerminalLaunchContext =
     terminalUiLaunchContext?.threadId === activeThreadId ? terminalUiLaunchContext : null;
   // Default true while loading to avoid toolbar flicker.
-  const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  const isGitRepo = repositoryStatusIsRepository(gitStatusQuery.data) ?? true;
   const showComposerContextStrip = isGitRepo && activeProject !== null;
   const initialDiffPanelGitScope =
-    gitStatusQuery.data?.hasWorkingTreeChanges === true ? "unstaged" : "branch";
+    gitStatusQuery.data?._tag === "Repository" && gitStatusQuery.data.hasWorkingTreeChanges
+      ? "unstaged"
+      : "branch";
   const diffPanelGitStatusResolutionKey = gitStatusQuery.data ? "resolved" : "pending";
   const terminalShortcutLabelOptions = useMemo(
     () => ({
@@ -3952,10 +3959,10 @@ function ChatViewContent(props: ChatViewProps) {
             effectiveEnvMode: envMode,
             activeWorktreePath,
             activeThreadBranch,
-            currentGitBranch: gitStatusQuery.data?.refName ?? null,
+            currentGitBranch: repositoryStatusRefName(gitStatusQuery.data),
           })
         : null,
-    [activeThreadBranch, activeWorktreePath, envMode, gitStatusQuery.data?.refName, isServerThread],
+    [activeThreadBranch, activeWorktreePath, envMode, gitStatusQuery.data, isServerThread],
   );
   // Settled state of the open thread, resolved exactly like the sidebar
   // partition (same shell, same capability gate, same PR auto-settle input)
@@ -3964,7 +3971,7 @@ function ChatViewContent(props: ChatViewProps) {
   const autoSettleAfterDays = useClientSettings((settings) => settings.sidebarAutoSettleAfterDays);
   const activeThreadPr = resolveThreadPr({
     threadBranch: activeThread?.branch ?? null,
-    gitStatus: gitStatusQuery.data ?? null,
+    gitStatus: repositoryStatusForLegacyUi(gitStatusQuery.data),
   });
   const supportsSettlement = serverConfig?.environment.capabilities.threadSettlement === true;
   const supportsSnooze = serverConfig?.environment.capabilities.threadSnooze === true;
@@ -4210,12 +4217,12 @@ function ChatViewContent(props: ChatViewProps) {
     isUnsettling,
   ]);
   const handleRestoreThreadBranch = useCallback(() => {
-    if (gitStatusQuery.data?.hasWorkingTreeChanges) {
+    if (gitStatusQuery.data?._tag === "Repository" && gitStatusQuery.data.hasWorkingTreeChanges) {
       setBranchRestoreConfirmOpen(true);
       return;
     }
     void handleSwitchCheckoutToThread();
-  }, [gitStatusQuery.data?.hasWorkingTreeChanges, handleSwitchCheckoutToThread]);
+  }, [gitStatusQuery.data, handleSwitchCheckoutToThread]);
   const composerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
     const parkedThreadItems = parkedThreadBannerItem === null ? [] : [parkedThreadBannerItem];
     if (!localCheckoutBranchMismatch || !showBranchMismatchBanner || !activeBranchMismatchKey) {

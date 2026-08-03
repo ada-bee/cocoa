@@ -16,17 +16,13 @@ import type {
   ProjectEntryKind,
   ProjectWorkspaceTarget,
   ThreadId,
-  VcsListRefsResult,
   VcsRef,
 } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/unstable/reactivity";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { appAtomRegistry } from "../rpc/atomRegistry";
 import { orchestrationEnvironment } from "./orchestration";
-import { isPaginatedBranchesNextPagePending } from "./paginatedBranches";
 import { projectContentSearch, projectEnvironment } from "./projects";
 import { useEnvironmentQuery } from "./query";
 import { useEnvironmentThread } from "./threads";
@@ -40,7 +36,6 @@ const THREAD_SEARCH_DEBOUNCE_MS = 200;
 const VCS_REF_LIST_LIMIT = 100;
 const EMPTY_REFS: ReadonlyArray<VcsRef> = [];
 const EMPTY_CONTENT_MATCHES: ReadonlyArray<ProjectContentMatch> = [];
-const INITIAL_BRANCH_CURSORS = [undefined] as const;
 const EMPTY_THREAD_SEARCH_MATCHES: ReadonlyArray<EnvironmentThreadSearchMatch> = Object.freeze([]);
 const EMPTY_THREAD_SEARCH_ATOM = Atom.make({
   matches: EMPTY_THREAD_SEARCH_MATCHES,
@@ -119,13 +114,14 @@ export function useThreadDetail(
 export function useBranches(target: VcsRefTarget) {
   const query = target.query?.trim() ?? "";
   return useEnvironmentQuery(
-    target.environmentId !== null && target.cwd !== null
+    target.environmentId !== null && target.target !== null
       ? vcsEnvironment.listRefs({
           environmentId: target.environmentId,
           input: {
-            cwd: target.cwd,
+            target: target.target,
+            scope: "all",
             ...(query.length > 0 ? { query } : {}),
-            limit: VCS_REF_LIST_LIMIT,
+            maxRefs: VCS_REF_LIST_LIMIT,
           },
         })
       : null,
@@ -133,103 +129,35 @@ export function useBranches(target: VcsRefTarget) {
 }
 
 export function usePaginatedBranches(target: VcsRefTarget) {
-  const query = target.query?.trim() ?? "";
-  const targetKey =
-    target.environmentId !== null && target.cwd !== null
-      ? JSON.stringify([target.environmentId, target.cwd, query])
-      : null;
-  const [pagination, setPagination] = useState<{
-    readonly targetKey: string | null;
-    readonly cursors: ReadonlyArray<number | undefined>;
-  }>({
-    targetKey,
-    cursors: INITIAL_BRANCH_CURSORS,
-  });
-  const cursors = pagination.targetKey === targetKey ? pagination.cursors : INITIAL_BRANCH_CURSORS;
-  const pageAtoms = useMemo(
-    () =>
-      target.environmentId !== null && target.cwd !== null
-        ? cursors.map((cursor) =>
-            vcsEnvironment.listRefs({
-              environmentId: target.environmentId!,
-              input: {
-                cwd: target.cwd!,
-                ...(query.length > 0 ? { query } : {}),
-                ...(cursor === undefined ? {} : { cursor }),
-                limit: VCS_REF_LIST_LIMIT,
-              },
-            }),
-          )
-        : [],
-    [cursors, query, target.cwd, target.environmentId],
-  );
-  const pagesAtom = useMemo(
-    () =>
-      Atom.make((get) => pageAtoms.map((atom) => get(atom))).pipe(
-        Atom.withLabel(`web:vcs-ref-pages:${targetKey ?? "empty"}`),
-      ),
-    [pageAtoms, targetKey],
-  );
-  const results = useAtomValue(pagesAtom);
-  const values = results.flatMap((result) => {
-    const value = Option.getOrNull(AsyncResult.value(result));
-    return value === null ? [] : [value];
-  });
-  const refs = new Map<string, VcsRef>();
-  for (const value of values) {
-    for (const ref of value.refs) {
-      refs.set(ref.name, ref);
-    }
-  }
-  const first = values[0] ?? null;
-  const last = values.at(-1) ?? null;
-  const data: VcsListRefsResult | null =
-    first === null || last === null
-      ? null
-      : {
-          refs: [...refs.values()],
-          isRepo: first.isRepo,
-          hasPrimaryRemote: first.hasPrimaryRemote,
-          nextCursor: last.nextCursor,
-          totalCount: Math.max(...values.map((value) => value.totalCount)),
-        };
-  const failed = results.find((result) => result._tag === "Failure");
-  const isFetchingNextPage = isPaginatedBranchesNextPagePending(results);
-  const error =
-    failed?._tag === "Failure"
-      ? (() => {
-          const cause = Cause.squash(failed.cause);
-          return cause instanceof Error && cause.message.trim().length > 0
-            ? cause.message
-            : "Failed to load refs.";
-        })()
-      : null;
-  const refresh = useCallback(() => {
-    const firstPage = pageAtoms[0];
-    setPagination({ targetKey, cursors: INITIAL_BRANCH_CURSORS });
-    if (firstPage !== undefined) {
-      appAtomRegistry.refresh(firstPage);
-    }
-  }, [pageAtoms, targetKey]);
-  const loadNext = useCallback(() => {
-    if (targetKey === null || data?.nextCursor === null || data?.nextCursor === undefined) {
-      return;
-    }
-    setPagination((current) => {
-      const currentCursors =
-        current.targetKey === targetKey ? current.cursors : INITIAL_BRANCH_CURSORS;
-      return currentCursors.includes(data.nextCursor!)
-        ? { targetKey, cursors: currentCursors }
-        : { targetKey, cursors: [...currentCursors, data.nextCursor!] };
-    });
-  }, [data?.nextCursor, targetKey]);
+  const result = useBranches(target);
+  const data = result.data;
+  const refresh = result.refresh;
+  const loadNext = useCallback(() => undefined, []);
 
   return {
     data,
-    refs: data?.refs ?? EMPTY_REFS,
-    error,
-    isPending: results.some((result) => result.waiting),
-    isFetchingNextPage,
+    refs:
+      data?._tag === "Repository"
+        ? data.refs.map(
+            (ref): VcsRef => ({
+              name: ref.name,
+              ...(ref.kind === "knownRemote"
+                ? {
+                    isRemote: true,
+                    ...(ref.name.includes("/")
+                      ? { remoteName: ref.name.slice(0, ref.name.indexOf("/")) }
+                      : {}),
+                  }
+                : {}),
+              current: ref.current,
+              isDefault: ref.isDefault,
+              worktreePath: null,
+            }),
+          )
+        : EMPTY_REFS,
+    error: result.error,
+    isPending: result.isPending,
+    isFetchingNextPage: false,
     refresh,
     loadNext,
   };

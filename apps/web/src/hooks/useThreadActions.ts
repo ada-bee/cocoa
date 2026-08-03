@@ -16,7 +16,7 @@ import { getFallbackThreadIdAfterDelete } from "../components/Sidebar.logic";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { terminalEnvironment } from "../state/terminal";
 import { threadEnvironment } from "../state/threads";
-import { vcsEnvironment } from "../state/vcs";
+import { repositoryStatusInput, vcsEnvironment } from "../state/vcs";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsState";
 import { readLocalApi } from "../localApi";
@@ -367,7 +367,7 @@ export function useThreadActions() {
         removeResult._tag === "Success"
           ? await refreshVcsStatus({
               environmentId: threadRef.environmentId,
-              input: { cwd: threadProject.workspaceRoot },
+              input: repositoryStatusInput(threadProject.id),
             })
           : null;
       const cleanupFailure =

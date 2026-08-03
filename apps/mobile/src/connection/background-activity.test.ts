@@ -15,11 +15,11 @@ describe("mobile background activity", () => {
       const release = yield* observeMobileBackgroundActivitySubscription({
         environmentId,
         method: WS_METHODS.subscribeVcsStatus,
-        input: { cwd: "/workspace" },
+        input: { target: { projectId: "project-a" }, maxChangedPaths: 1_000 },
       });
 
       expect(retainedMobileBackgroundScopes(environmentId)).toEqual([
-        { type: "vcs-status", cwd: "/workspace" },
+        { type: "repository-status", target: { projectId: "project-a" } },
       ]);
 
       yield* release;
@@ -34,19 +34,19 @@ describe("mobile background activity", () => {
       const releaseFirst = yield* observeMobileBackgroundActivitySubscription({
         environmentId: firstEnvironmentId,
         method: WS_METHODS.subscribeVcsStatus,
-        input: { cwd: "b:vcs-status:c" },
+        input: { target: { projectId: "b:vcs-status:c" }, maxChangedPaths: 1_000 },
       });
       const releaseSecond = yield* observeMobileBackgroundActivitySubscription({
         environmentId: secondEnvironmentId,
         method: WS_METHODS.subscribeVcsStatus,
-        input: { cwd: "c" },
+        input: { target: { projectId: "c" }, maxChangedPaths: 1_000 },
       });
 
       expect(retainedMobileBackgroundScopes(firstEnvironmentId)).toEqual([
-        { type: "vcs-status", cwd: "b:vcs-status:c" },
+        { type: "repository-status", target: { projectId: "b:vcs-status:c" } },
       ]);
       expect(retainedMobileBackgroundScopes(secondEnvironmentId)).toEqual([
-        { type: "vcs-status", cwd: "c" },
+        { type: "repository-status", target: { projectId: "c" } },
       ]);
 
       yield* Effect.all([releaseFirst, releaseSecond]);
@@ -63,10 +63,10 @@ describe("mobile background activity", () => {
       const release = yield* observeMobileBackgroundActivitySubscription({
         environmentId,
         method: WS_METHODS.subscribeVcsStatus,
-        input: { cwd: "/workspace" },
+        input: { target: { projectId: "project-a" }, maxChangedPaths: 1_000 },
       });
       expect(retainedMobileBackgroundScopes(environmentId)).toEqual([
-        { type: "vcs-status", cwd: "/workspace" },
+        { type: "repository-status", target: { projectId: "project-a" } },
       ]);
 
       yield* release;

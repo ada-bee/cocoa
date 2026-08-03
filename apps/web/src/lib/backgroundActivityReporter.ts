@@ -8,6 +8,8 @@ import {
   type BackgroundScope,
   type ClientActivityReportInput,
   type EnvironmentId,
+  ProjectId,
+  ThreadId,
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -56,6 +58,13 @@ function stableScopeKey(environmentId: EnvironmentId, scope: BackgroundScope): s
     case "vcs-status":
     case "git-refs":
       return JSON.stringify([environmentId, scope.type, scope.cwd]);
+    case "repository-status":
+      return JSON.stringify([
+        environmentId,
+        scope.type,
+        scope.target.projectId,
+        scope.target.threadId ?? null,
+      ]);
     case "thread":
       return JSON.stringify([environmentId, scope.type, scope.threadId]);
   }
@@ -118,8 +127,19 @@ function scopeForSubscription(
   if (observation.method !== WS_METHODS.subscribeVcsStatus) {
     return null;
   }
-  const input = observation.input as { readonly cwd?: unknown };
-  return typeof input.cwd === "string" ? { type: "vcs-status", cwd: input.cwd } : null;
+  const input = observation.input as {
+    readonly target?: { readonly projectId?: unknown; readonly threadId?: unknown };
+  };
+  if (typeof input.target?.projectId !== "string") return null;
+  return {
+    type: "repository-status",
+    target: {
+      projectId: ProjectId.make(input.target.projectId),
+      ...(typeof input.target.threadId === "string"
+        ? { threadId: ThreadId.make(input.target.threadId) }
+        : {}),
+    },
+  };
 }
 
 function retainBackgroundScope(environmentId: EnvironmentId, scope: BackgroundScope): () => void {

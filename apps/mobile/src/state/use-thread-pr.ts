@@ -1,8 +1,7 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 
-import { useEnvironmentQuery } from "./query";
+import { useRepositoryStatus } from "./queries";
 import { presentThreadPr, type ThreadPrPresentation } from "./thread-pr-presentation";
-import { vcsEnvironment } from "./vcs";
 
 export {
   presentThreadPr,
@@ -12,23 +11,14 @@ export {
 
 /**
  * Live PR status for a thread's branch. Subscriptions are deduplicated per
- * (environmentId, cwd) by the atom family, so many rows on the same worktree
- * or project root share one stream — and virtualization means only visible
- * rows subscribe at all.
+ * (environmentId, projectId, threadId) by the atom family, and virtualization
+ * means only visible rows subscribe at all.
  */
-export function useThreadPr(
-  thread: EnvironmentThreadShell,
-  projectCwd: string | null,
-): ThreadPrPresentation | null {
-  const cwd = thread.worktreePath ?? projectCwd;
-  const gitStatus = useEnvironmentQuery(
-    thread.branch !== null && cwd !== null
-      ? vcsEnvironment.status({
-          environmentId: thread.environmentId,
-          input: { cwd },
-        })
-      : null,
-  );
+export function useThreadPr(thread: EnvironmentThreadShell): ThreadPrPresentation | null {
+  const gitStatus = useRepositoryStatus({
+    environmentId: thread.branch === null ? null : thread.environmentId,
+    target: thread.branch === null ? null : { projectId: thread.projectId, threadId: thread.id },
+  });
 
   const status = gitStatus.data;
   if (status === null || thread.branch === null || status.refName !== thread.branch) {

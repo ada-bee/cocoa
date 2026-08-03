@@ -7,6 +7,7 @@ import type {
   ProviderOptionSelection,
   RuntimeMode,
   ServerProviderSkill,
+  VcsRef,
 } from "@t3tools/contracts";
 import {
   CommandId,
@@ -58,7 +59,6 @@ import {
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
 import { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import { type VcsRef } from "@t3tools/client-runtime/state/vcs";
 
 type WorkspaceMode = "local" | "worktree";
 
@@ -495,11 +495,10 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const branchTarget = useMemo(
     () => ({
       environmentId: selectedProject?.environmentId ?? null,
-      // `|| null` also skips the stand-in project's empty workspaceRoot.
-      cwd: selectedProject?.workspaceRoot || null,
+      target: selectedProject === null ? null : { projectId: selectedProject.id },
       query: null,
     }),
-    [selectedProject?.environmentId, selectedProject?.workspaceRoot],
+    [selectedProject],
   );
   const branchState = useBranches(branchTarget);
   const branchesLoading = branchState.isPending;

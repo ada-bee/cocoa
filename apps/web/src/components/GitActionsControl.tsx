@@ -83,7 +83,12 @@ import { serverEnvironment } from "~/state/server";
 import { sourceControlEnvironment } from "~/state/sourceControl";
 import { threadEnvironment } from "~/state/threads";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { vcsEnvironment } from "~/state/vcs";
+import {
+  repositoryStatusForLegacyUi,
+  repositoryStatusInput,
+  repositoryStatusIsRepository,
+  vcsEnvironment,
+} from "~/state/vcs";
 import { randomUUID } from "~/lib/utils";
 import { resolvePathLinkTarget } from "~/terminal-links";
 import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
@@ -140,18 +145,19 @@ const GIT_STATUS_WINDOW_REFRESH_DEBOUNCE_MS = 250;
 
 type RefreshVcsStatus = (target: {
   readonly environmentId: ScopedThreadRef["environmentId"];
-  readonly input: { readonly cwd: string };
+  readonly input: ReturnType<typeof repositoryStatusInput>;
 }) => Promise<unknown>;
 
 function requestVcsStatusRefresh(
   refresh: RefreshVcsStatus,
   environmentId: ScopedThreadRef["environmentId"] | null,
-  cwd: string | null,
+  projectId: Parameters<typeof repositoryStatusInput>[0] | null,
+  threadId: ScopedThreadRef["threadId"] | null,
 ): void {
-  if (environmentId === null || cwd === null) {
+  if (environmentId === null || projectId === null || threadId === null) {
     return;
   }
-  void refresh({ environmentId, input: { cwd } });
+  void refresh({ environmentId, input: repositoryStatusInput(projectId, threadId) });
 }
 const RUNNING_SOURCE_CONTROL_ACTIONS = ["runStackedAction", "pull", "publishRepository"] as const;
 
@@ -1079,10 +1085,10 @@ export default function GitActionsControl({
   );
 
   const gitStatusQuery = useEnvironmentQuery(
-    activeEnvironmentId !== null && gitCwd !== null
+    activeEnvironmentId !== null && activeServerThread !== null
       ? vcsEnvironment.status({
           environmentId: activeEnvironmentId,
-          input: { cwd: gitCwd },
+          input: repositoryStatusInput(activeServerThread.projectId, activeServerThread.id),
         })
       : null,
   );
@@ -1090,16 +1096,13 @@ export default function GitActionsControl({
     reportFailure: false,
   });
   const { data: gitStatus, error: gitStatusError } = gitStatusQuery;
-  const sourceControlPresentation = useMemo(
-    () => getSourceControlPresentation(gitStatus?.sourceControlProvider),
-    [gitStatus?.sourceControlProvider],
-  );
+  const sourceControlPresentation = useMemo(() => getSourceControlPresentation(undefined), []);
   const changeRequestTerminology = sourceControlPresentation.terminology;
   const SourceControlIcon = sourceControlPresentation.Icon;
   // Default to true while loading so we don't flash init controls.
-  const isRepo = gitStatus?.isRepo ?? true;
-  const hasPrimaryRemote = gitStatus?.hasPrimaryRemote ?? false;
-  const gitStatusForActions = gitStatus;
+  const isRepo = repositoryStatusIsRepository(gitStatus) ?? true;
+  const hasPrimaryRemote = gitStatus?._tag === "Repository" && gitStatus.hasPrimaryRemote;
+  const gitStatusForActions = repositoryStatusForLegacyUi(gitStatus);
 
   const allFiles = gitStatusForActions?.workingTree.files ?? [];
   const selectedFiles = allFiles.filter((f) => !excludedFiles.has(f.path));
@@ -1191,7 +1194,12 @@ export default function GitActionsControl({
       }
       refreshTimeout = window.setTimeout(() => {
         refreshTimeout = null;
-        requestVcsStatusRefresh(refreshVcsStatus, activeEnvironmentId, gitCwd);
+        requestVcsStatusRefresh(
+          refreshVcsStatus,
+          activeEnvironmentId,
+          activeServerThread?.projectId ?? null,
+          activeServerThread?.id ?? null,
+        );
       }, GIT_STATUS_WINDOW_REFRESH_DEBOUNCE_MS);
     };
     const handleVisibilityChange = () => {
@@ -1210,7 +1218,7 @@ export default function GitActionsControl({
       window.removeEventListener("focus", scheduleRefreshCurrentGitStatus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [activeEnvironmentId, gitCwd, refreshVcsStatus]);
+  }, [activeEnvironmentId, activeServerThread, gitCwd, refreshVcsStatus]);
 
   const openExistingPr = useCallback(async () => {
     const api = readLocalApi();
@@ -1729,7 +1737,12 @@ export default function GitActionsControl({
           <Menu
             onOpenChange={(open) => {
               if (open) {
-                requestVcsStatusRefresh(refreshVcsStatus, activeEnvironmentId, gitCwd);
+                requestVcsStatusRefresh(
+                  refreshVcsStatus,
+                  activeEnvironmentId,
+                  activeServerThread?.projectId ?? null,
+                  activeServerThread?.id ?? null,
+                );
               }
             }}
           >

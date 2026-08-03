@@ -29,8 +29,6 @@ import {
   VcsCreateWorktreeInput,
   VcsCreateWorktreeResult,
   VcsInitInput,
-  VcsListRefsInput,
-  VcsListRefsResult,
   GitManagerServiceError,
   GitPreparePullRequestThreadInput,
   GitPreparePullRequestThreadResult,
@@ -40,15 +38,17 @@ import {
   VcsRemoveWorktreeInput,
   GitResolvePullRequestResult,
   GitRunStackedActionInput,
-  VcsStatusInput,
-  VcsStatusResult,
-  VcsStatusStreamEvent,
 } from "./git.ts";
 import {
-  ReviewDiffPreviewError,
-  ReviewDiffPreviewInput,
-  ReviewDiffPreviewResult,
-} from "./review.ts";
+  RepositoryListRefsInput,
+  RepositoryListRefsResult,
+  RepositoryReadError,
+  RepositoryReviewDiffInput,
+  RepositoryReviewDiffResult,
+  RepositoryStatusInput,
+  RepositoryStatusResult,
+  RepositoryStatusStreamEvent,
+} from "./repositoryRead.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
 import {
   ClientOrchestrationCommand,
@@ -484,9 +484,9 @@ export const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
 });
 
 export const WsSubscribeVcsStatusRpc = Rpc.make(WS_METHODS.subscribeVcsStatus, {
-  payload: VcsStatusInput,
-  success: VcsStatusStreamEvent,
-  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
+  payload: RepositoryStatusInput,
+  success: RepositoryStatusStreamEvent,
+  error: Schema.Union([RepositoryReadError, EnvironmentAuthorizationError]),
   stream: true,
 });
 
@@ -497,9 +497,9 @@ export const WsVcsPullRpc = Rpc.make(WS_METHODS.vcsPull, {
 });
 
 export const WsVcsRefreshStatusRpc = Rpc.make(WS_METHODS.vcsRefreshStatus, {
-  payload: VcsStatusInput,
-  success: VcsStatusResult,
-  error: Schema.Union([GitManagerServiceError, EnvironmentAuthorizationError]),
+  payload: RepositoryStatusInput,
+  success: RepositoryStatusResult,
+  error: Schema.Union([RepositoryReadError, EnvironmentAuthorizationError]),
 });
 
 export const WsGitRunStackedActionRpc = Rpc.make(WS_METHODS.gitRunStackedAction, {
@@ -522,9 +522,9 @@ export const WsGitPreparePullRequestThreadRpc = Rpc.make(WS_METHODS.gitPreparePu
 });
 
 export const WsVcsListRefsRpc = Rpc.make(WS_METHODS.vcsListRefs, {
-  payload: VcsListRefsInput,
-  success: VcsListRefsResult,
-  error: Schema.Union([GitCommandError, EnvironmentAuthorizationError]),
+  payload: RepositoryListRefsInput,
+  success: RepositoryListRefsResult,
+  error: Schema.Union([RepositoryReadError, EnvironmentAuthorizationError]),
 });
 
 export const WsVcsCreateWorktreeRpc = Rpc.make(WS_METHODS.vcsCreateWorktree, {
@@ -561,9 +561,9 @@ export const WsVcsInitRpc = Rpc.make(WS_METHODS.vcsInit, {
  * review.open* + review.getSnapshot.
  */
 export const WsReviewGetDiffPreviewRpc = Rpc.make(WS_METHODS.reviewGetDiffPreview, {
-  payload: ReviewDiffPreviewInput,
-  success: ReviewDiffPreviewResult,
-  error: Schema.Union([ReviewDiffPreviewError, EnvironmentAuthorizationError]),
+  payload: RepositoryReviewDiffInput,
+  success: RepositoryReviewDiffResult,
+  error: Schema.Union([RepositoryReadError, EnvironmentAuthorizationError]),
 });
 
 export const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {

@@ -8,6 +8,7 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { RepositoryReadTarget } from "./repositoryRead.ts";
 
 export const BackgroundBooleanState = Schema.Literals(["true", "false", "unknown"]);
 export type BackgroundBooleanState = typeof BackgroundBooleanState.Type;
@@ -52,6 +53,7 @@ export const BackgroundScope = Schema.Union([
     instanceId: Schema.optionalKey(ProviderInstanceId),
   }),
   Schema.Struct({ type: Schema.Literal("vcs-status"), cwd: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("repository-status"), target: RepositoryReadTarget }),
   Schema.Struct({ type: Schema.Literal("git-refs"), cwd: Schema.String }),
   Schema.Struct({ type: Schema.Literal("diagnostics") }),
   Schema.Struct({ type: Schema.Literal("thread"), threadId: ThreadId }),

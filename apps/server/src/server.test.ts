@@ -108,6 +108,8 @@ import * as ProjectWorkspace from "./project/ProjectWorkspace.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
+import * as RepositoryReadService from "./project/RepositoryReadService.ts";
+import * as RepositoryStatusBroadcaster from "./project/RepositoryStatusBroadcaster.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
@@ -351,6 +353,10 @@ const buildAppUnderTest = (options?: {
     >;
     reviewService?: Partial<ReviewService.ReviewService["Service"]>;
     vcsStatusBroadcaster?: Partial<VcsStatusBroadcaster.VcsStatusBroadcaster["Service"]>;
+    repositoryReadService?: Partial<RepositoryReadService.RepositoryReadService["Service"]>;
+    repositoryStatusBroadcaster?: Partial<
+      RepositoryStatusBroadcaster.RepositoryStatusBroadcaster["Service"]
+    >;
     projectSetupScriptRunner?: Partial<
       ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]
     >;
@@ -686,7 +692,26 @@ const buildAppUnderTest = (options?: {
           ...options?.layers?.sourceControlRepositoryService,
         }),
       ),
-      Layer.provideMerge(vcsStatusBroadcasterLayer),
+      Layer.provide(
+        Layer.mergeAll(
+          vcsStatusBroadcasterLayer,
+          Layer.mock(RepositoryReadService.RepositoryReadService)({
+            status: () => Effect.succeed({ _tag: "NotRepository" as const }),
+            listRefs: () => Effect.succeed({ _tag: "NotRepository" as const }),
+            getReviewDiff: () => Effect.succeed({ _tag: "NotRepository" as const }),
+            ...options?.layers?.repositoryReadService,
+          }),
+          Layer.mock(RepositoryStatusBroadcaster.RepositoryStatusBroadcaster)({
+            refreshStatus: () => Effect.succeed({ _tag: "NotRepository" as const }),
+            streamStatus: () =>
+              Stream.make({
+                _tag: "snapshot" as const,
+                status: { _tag: "NotRepository" as const },
+              }),
+            ...options?.layers?.repositoryStatusBroadcaster,
+          }),
+        ),
+      ),
       Layer.provide(
         Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({
           runForThread: () => Effect.succeed({ status: "no-script" as const }),
@@ -5540,6 +5565,52 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                 pr: null,
               }),
           },
+          repositoryStatusBroadcaster: {
+            refreshStatus: () =>
+              Effect.succeed({
+                _tag: "Repository" as const,
+                head: { _tag: "Branch" as const, name: "main", commit: "abc123" },
+                defaultRef: "main",
+                upstreamRef: "origin/main",
+                aheadCount: 0,
+                behindCount: 0,
+                hasPrimaryRemote: true,
+                hasWorkingTreeChanges: false,
+                changedPaths: [],
+                truncated: false,
+              }),
+          },
+          repositoryReadService: {
+            listRefs: () =>
+              Effect.succeed({
+                _tag: "Repository" as const,
+                refs: [
+                  {
+                    kind: "local" as const,
+                    name: "main",
+                    target: "abc123",
+                    current: true,
+                    isDefault: true,
+                  },
+                ],
+                truncated: false,
+              }),
+            getReviewDiff: () =>
+              Effect.succeed({
+                _tag: "Repository" as const,
+                sources: [
+                  {
+                    kind: "workingTree" as const,
+                    baseRef: "HEAD",
+                    headRef: null,
+                    patch: "dirty-diff",
+                    byteLength: 10,
+                    truncated: false,
+                  },
+                ],
+                truncated: false,
+              }),
+          },
           reviewService: {
             getDiffPreview: (input) =>
               Effect.succeed({
@@ -5581,10 +5652,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       const refreshedStatus = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.vcsRefreshStatus]({ cwd: "/tmp/repo" }),
+          client[WS_METHODS.vcsRefreshStatus]({
+            target: { projectId: defaultProjectId },
+            maxChangedPaths: 1_000,
+          }),
         ),
       );
-      assert.equal(refreshedStatus.isRepo, true);
+      assert.equal(refreshedStatus._tag, "Repository");
 
       const stackedEvents = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
@@ -5626,9 +5700,16 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(prepared.branch, "feature/demo");
 
       const refs = yield* Effect.scoped(
-        withWsRpcClient(wsUrl, (client) => client[WS_METHODS.vcsListRefs]({ cwd: "/tmp/repo" })),
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.vcsListRefs]({
+            target: { projectId: defaultProjectId },
+            scope: "all",
+            maxRefs: 100,
+          }),
+        ),
       );
-      assert.equal(refs.refs[0]?.name, "main");
+      assert.equal(refs._tag, "Repository");
+      if (refs._tag === "Repository") assert.equal(refs.refs[0]?.name, "main");
 
       const worktree = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
@@ -5678,10 +5759,17 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
 
       const diffPreview = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
-          client[WS_METHODS.reviewGetDiffPreview]({ cwd: "/tmp/repo" }),
+          client[WS_METHODS.reviewGetDiffPreview]({
+            target: { projectId: defaultProjectId },
+            ignoreWhitespace: false,
+            maxBytes: 4 * 1024 * 1024,
+          }),
         ),
       );
-      assert.equal(diffPreview.sources[0]?.diff, "dirty-diff");
+      assert.equal(diffPreview._tag, "Repository");
+      if (diffPreview._tag === "Repository") {
+        assert.equal(diffPreview.sources[0]?.patch, "dirty-diff");
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

@@ -30,7 +30,12 @@ import { useProject, useThread } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
-import { vcsEnvironment } from "../state/vcs";
+import {
+  repositoryStatusForLegacyUi,
+  repositoryStatusInput,
+  repositoryStatusRefName,
+  vcsEnvironment,
+} from "../state/vcs";
 import { cn } from "../lib/utils";
 import { parsePullRequestReference } from "../pullRequestReference";
 import { getSourceControlPresentation } from "../sourceControlPresentation";
@@ -210,11 +215,11 @@ export function BranchToolbarBranchSelector({
   const deferredBranchQuery = useDeferredValue(branchQuery);
 
   const branchStatusQuery = useEnvironmentQuery(
-    branchCwd === null
+    activeProject === null
       ? null
       : vcsEnvironment.status({
           environmentId,
-          input: { cwd: branchCwd },
+          input: repositoryStatusInput(activeProject.id, activeThreadId ?? undefined),
         }),
   );
   const trimmedBranchQuery = branchQuery.trim();
@@ -222,23 +227,27 @@ export function BranchToolbarBranchSelector({
   const branchRefTarget = useMemo(
     () => ({
       environmentId,
-      cwd: branchCwd,
+      target:
+        activeProject === null
+          ? null
+          : {
+              projectId: activeProject.id,
+              ...(activeThreadId === null ? {} : { threadId: activeThreadId }),
+            },
       query: deferredTrimmedBranchQuery,
     }),
-    [branchCwd, deferredTrimmedBranchQuery, environmentId],
+    [activeProject, activeThreadId, deferredTrimmedBranchQuery, environmentId],
   );
   const branchRefState = usePaginatedBranches(branchRefTarget);
   const refs = branchRefState.refs;
-  const hasNextPage =
-    branchRefState.data?.nextCursor !== null && branchRefState.data?.nextCursor !== undefined;
+  const hasNextPage = false;
   const isFetchingNextPage = branchRefState.isFetchingNextPage;
   const isInitialBranchesLoadPending = branchRefState.isPending && branchRefState.data === null;
   const currentGitBranch =
-    branchStatusQuery.data?.refName ?? refs.find((refName) => refName.current)?.name ?? null;
-  const sourceControlPresentation = useMemo(
-    () => getSourceControlPresentation(branchStatusQuery.data?.sourceControlProvider),
-    [branchStatusQuery.data?.sourceControlProvider],
-  );
+    repositoryStatusRefName(branchStatusQuery.data) ??
+    refs.find((refName) => refName.current)?.name ??
+    null;
+  const sourceControlPresentation = useMemo(() => getSourceControlPresentation(undefined), []);
   const SourceControlIcon = sourceControlPresentation.Icon;
   const canonicalActiveBranch = resolveBranchToolbarValue({
     envMode: effectiveEnvMode,
@@ -298,28 +307,33 @@ export function BranchToolbarBranchSelector({
   const listedActiveBranch =
     resolvedActiveBranch === null ? null : (branchByName.get(resolvedActiveBranch) ?? null);
   const activeBranchRefQuery = useEnvironmentQuery(
-    branchCwd !== null && resolvedActiveBranch !== null
+    activeProject !== null && resolvedActiveBranch !== null
       ? vcsEnvironment.listRefs({
           environmentId,
           input: {
-            cwd: branchCwd,
+            target: {
+              projectId: activeProject.id,
+              ...(activeThreadId === null ? {} : { threadId: activeThreadId }),
+            },
+            scope: "all",
             query: resolvedActiveBranch,
-            limit: 10,
+            maxRefs: 10,
           },
         })
       : null,
   );
-  const queriedActiveBranch = activeBranchRefQuery.data?.refs.find(
-    (refName) => refName.name === resolvedActiveBranch,
-  );
+  const queriedActiveBranch =
+    activeBranchRefQuery.data?._tag === "Repository"
+      ? activeBranchRefQuery.data.refs.find((refName) => refName.name === resolvedActiveBranch)
+      : undefined;
   const resolvedActiveBranchIsRemote =
     listedActiveBranch !== null
       ? listedActiveBranch.isRemote === true
       : queriedActiveBranch
-        ? queriedActiveBranch.isRemote === true
+        ? queriedActiveBranch.kind === "knownRemote"
         : null;
   const [isBranchActionPending, startBranchActionTransition] = useTransition();
-  const totalBranchCount = branchRefState.data?.totalCount ?? 0;
+  const totalBranchCount = refs.length;
   const branchStatusText = isInitialBranchesLoadPending
     ? "Loading refs..."
     : isFetchingNextPage
@@ -607,9 +621,9 @@ export function BranchToolbarBranchSelector({
       activeThreadBranch,
       resolvedActiveBranch,
     }),
-    gitStatus: branchStatusQuery.data ?? null,
+    gitStatus: repositoryStatusForLegacyUi(branchStatusQuery.data),
   });
-  const branchPrStatus = prStatusIndicator(branchPr, branchStatusQuery.data?.sourceControlProvider);
+  const branchPrStatus = prStatusIndicator(branchPr, undefined);
   // Action-oriented tooltip (the pill opens the PR), distinct from the sidebar's
   // state-description tooltip.
   const branchPrTooltip = branchPr

@@ -65,6 +65,9 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as ProjectTerminal from "./project/ProjectTerminal.ts";
 import * as ProjectWorkspace from "./project/ProjectWorkspace.ts";
+import * as ProjectRepository from "./project/ProjectRepository.ts";
+import * as RepositoryReadService from "./project/RepositoryReadService.ts";
+import * as RepositoryStatusBroadcaster from "./project/RepositoryStatusBroadcaster.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
@@ -270,6 +273,21 @@ const ReviewLayerLive = ReviewService.layer.pipe(
   Layer.provideMerge(VcsDriverRegistryLayerLive),
 );
 
+const ProjectRepositoryLayerLive = ProjectRepository.layer.pipe(
+  Layer.provide(ProviderInstanceRegistryHydrationLive),
+  Layer.provide(OrchestrationLayerLive),
+  Layer.provide(ProviderEventLoggers.layer),
+  Layer.provide(OpenCodeRuntime.OpenCodeRuntimeLive),
+);
+
+const RepositoryReadLayerLive = RepositoryReadService.layer.pipe(
+  Layer.provide(ProjectRepositoryLayerLive),
+);
+
+const RepositoryStatusLayerLive = RepositoryStatusBroadcaster.layer.pipe(
+  Layer.provide(RepositoryReadLayerLive),
+);
+
 const VcsLayerLive = Layer.empty.pipe(
   Layer.provideMerge(VcsProjectConfig.layer),
   Layer.provideMerge(VcsDriverRegistryLayerLive),
@@ -278,6 +296,8 @@ const VcsLayerLive = Layer.empty.pipe(
   Layer.provideMerge(ReviewLayerLive),
   Layer.provideMerge(SourceControlRepositoryServiceLayerLive),
   Layer.provideMerge(VcsStatusBroadcaster.layer.pipe(Layer.provide(GitWorkflowLayerLive))),
+  Layer.provideMerge(RepositoryReadLayerLive),
+  Layer.provideMerge(RepositoryStatusLayerLive),
 );
 
 const CheckpointingLayerLive = Layer.empty.pipe(

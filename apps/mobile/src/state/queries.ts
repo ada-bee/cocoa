@@ -2,6 +2,7 @@ import type {
   EnvironmentId,
   OrchestrationThread,
   ProjectWorkspaceTarget,
+  RepositoryReadTarget,
   ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -20,6 +21,12 @@ import { useEnvironmentQuery } from "./query";
 import { useEnvironmentThread } from "./threads";
 import { vcsEnvironment } from "./vcs";
 import {
+  presentRepositoryRefs,
+  presentRepositoryStatus,
+  repositoryListRefsInput,
+  repositoryStatusInput,
+} from "./repository-read";
+import {
   buildCheckpointDiffTargets,
   normalizeComposerPathSearchQuery,
   type CheckpointDiffTarget,
@@ -28,7 +35,6 @@ import {
 const COMPOSER_PATH_SEARCH_DEBOUNCE_MS = 200;
 const COMPOSER_PATH_SEARCH_LIMIT = 20;
 const THREAD_SEARCH_DEBOUNCE_MS = 200;
-const VCS_REF_LIST_LIMIT = 100;
 const EMPTY_THREAD_SEARCH_MATCHES: ReadonlyArray<EnvironmentThreadSearchMatch> = Object.freeze([]);
 const EMPTY_THREAD_SEARCH_ATOM = Atom.make({
   matches: EMPTY_THREAD_SEARCH_MATCHES,
@@ -112,22 +118,37 @@ export function useThreadDetail(
 
 export function useBranches(input: {
   readonly environmentId: EnvironmentId | null;
-  readonly cwd: string | null;
+  readonly target: RepositoryReadTarget | null;
   readonly query?: string | null;
 }) {
   const query = input.query?.trim() ?? "";
-  return useEnvironmentQuery(
-    input.environmentId !== null && input.cwd !== null
+  const result = useEnvironmentQuery(
+    input.environmentId !== null && input.target !== null
       ? vcsEnvironment.listRefs({
           environmentId: input.environmentId,
-          input: {
-            cwd: input.cwd,
+          input: repositoryListRefsInput({
+            ...input.target,
             ...(query.length > 0 ? { query } : {}),
-            limit: VCS_REF_LIST_LIMIT,
-          },
+          }),
         })
       : null,
   );
+  return { ...result, data: presentRepositoryRefs(result.data) };
+}
+
+export function useRepositoryStatus(input: {
+  readonly environmentId: EnvironmentId | null;
+  readonly target: RepositoryReadTarget | null;
+}) {
+  const result = useEnvironmentQuery(
+    input.environmentId !== null && input.target !== null
+      ? vcsEnvironment.status({
+          environmentId: input.environmentId,
+          input: repositoryStatusInput(input.target.projectId, input.target.threadId),
+        })
+      : null,
+  );
+  return { ...result, data: presentRepositoryStatus(result.data) };
 }
 
 export function useComposerPathSearch(target: ComposerPathSearchTarget) {

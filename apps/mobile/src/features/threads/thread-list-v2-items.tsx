@@ -372,7 +372,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   } = props;
   const snoozedRow = props.snoozed === true;
 
-  const pr = useThreadPr(thread, props.projectCwd ?? props.project?.workspaceRoot ?? null);
+  const pr = useThreadPr(thread);
   const prState = pr?.state ?? null;
   const threadKey = `${thread.environmentId}:${thread.id}`;
   useEffect(() => {

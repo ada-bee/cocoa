@@ -21,11 +21,14 @@ describe("wasRecentlyInteracted", () => {
   it.effect("retains an observed subscription until its returned finalizer runs", () =>
     Effect.gen(function* () {
       const environmentId = EnvironmentId.make("environment-observation-test");
-      const scope = { type: "vcs-status" as const, cwd: "/repo" };
+      const scope = {
+        type: "repository-status" as const,
+        target: { projectId: "project-a" as never, threadId: "thread-a" as never },
+      };
       const release = yield* observeBackgroundActivitySubscription({
         environmentId,
         method: WS_METHODS.subscribeVcsStatus,
-        input: { cwd: scope.cwd },
+        input: { target: scope.target, maxChangedPaths: 1_000 },
       });
 
       expect(retainedBackgroundScopes(environmentId)).toEqual([scope]);
@@ -42,19 +45,19 @@ describe("wasRecentlyInteracted", () => {
       const releaseFirst = yield* observeBackgroundActivitySubscription({
         environmentId: firstEnvironmentId,
         method: WS_METHODS.subscribeVcsStatus,
-        input: { cwd: "b:vcs-status:c" },
+        input: { target: { projectId: "b:vcs-status:c" }, maxChangedPaths: 1_000 },
       });
       const releaseSecond = yield* observeBackgroundActivitySubscription({
         environmentId: secondEnvironmentId,
         method: WS_METHODS.subscribeVcsStatus,
-        input: { cwd: "c" },
+        input: { target: { projectId: "c" }, maxChangedPaths: 1_000 },
       });
 
       expect(retainedBackgroundScopes(firstEnvironmentId)).toEqual([
-        { type: "vcs-status", cwd: "b:vcs-status:c" },
+        { type: "repository-status", target: { projectId: "b:vcs-status:c" } },
       ]);
       expect(retainedBackgroundScopes(secondEnvironmentId)).toEqual([
-        { type: "vcs-status", cwd: "c" },
+        { type: "repository-status", target: { projectId: "c" } },
       ]);
 
       yield* Effect.all([releaseFirst, releaseSecond]);

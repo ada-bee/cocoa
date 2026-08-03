@@ -5,7 +5,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
-import type { ScopedThreadRef, TurnId } from "@t3tools/contracts";
+import { REPOSITORY_REVIEW_MAX_BYTES, type ScopedThreadRef, type TurnId } from "@t3tools/contracts";
 import {
   ArrowRightIcon,
   CheckIcon,
@@ -69,7 +69,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
 import { reviewEnvironment } from "../state/review";
-import { vcsEnvironment } from "../state/vcs";
+import { repositoryStatusInput, repositoryStatusIsRepository, vcsEnvironment } from "../state/vcs";
 import { buildBaseRefChoices, filterBaseRefChoices } from "../lib/baseRefChoices";
 
 type DiffRenderMode = "stacked" | "split";
@@ -231,10 +231,10 @@ export default function DiffPanel({
     serverConfig?.availableEditors ?? [],
   );
   const gitStatusQuery = useEnvironmentQuery(
-    activeThread !== null && activeThread !== undefined && activeCwd != null
+    activeThread !== null && activeThread !== undefined
       ? vcsEnvironment.status({
           environmentId: activeThread.environmentId,
-          input: { cwd: activeCwd },
+          input: repositoryStatusInput(activeThread.projectId, activeThread.id),
         })
       : null,
   );
@@ -245,7 +245,7 @@ export default function DiffPanel({
       initialGitScope === "unstaged",
     ),
   );
-  const isGitRepo = gitStatusQuery.data?.isRepo ?? true;
+  const isGitRepo = repositoryStatusIsRepository(gitStatusQuery.data) ?? true;
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
   const orderedTurnDiffSummaries = useMemo(
@@ -329,77 +329,59 @@ export default function DiffPanel({
     { enabled: isGitRepo && selectedTurn !== undefined },
   );
   const primaryBranchDiffPreview = useEnvironmentQuery(
-    selectedTurnId === null && activeThread && activeCwd
+    selectedTurnId === null && activeThread
       ? reviewEnvironment.diffPreview({
           environmentId: activeThread.environmentId,
           input: {
-            cwd: activeCwd,
+            target: { projectId: activeThread.projectId, threadId: activeThread.id },
             ...(selectedBaseRef ? { baseRef: selectedBaseRef } : {}),
             ignoreWhitespace: diffIgnoreWhitespace,
+            maxBytes: REPOSITORY_REVIEW_MAX_BYTES,
           },
         })
       : null,
   );
-  const shouldRetryBranchDiffAtEnvironmentCwd =
-    selectedTurnId === null &&
-    primaryBranchDiffPreview.error?.includes("configured workspace root") === true &&
-    serverConfig?.cwd !== undefined &&
-    serverConfig.cwd !== activeCwd;
-  const fallbackBranchDiffPreview = useEnvironmentQuery(
-    shouldRetryBranchDiffAtEnvironmentCwd && activeThread && serverConfig
-      ? reviewEnvironment.diffPreview({
-          environmentId: activeThread.environmentId,
-          input: {
-            cwd: serverConfig.cwd,
-            ...(selectedBaseRef ? { baseRef: selectedBaseRef } : {}),
-            ignoreWhitespace: diffIgnoreWhitespace,
-          },
-        })
-      : null,
-  );
-  const branchDiffPreview = shouldRetryBranchDiffAtEnvironmentCwd
-    ? fallbackBranchDiffPreview
-    : primaryBranchDiffPreview;
-  const selectedGitSource = branchDiffPreview.data?.sources.find(
-    (source) => source.kind === (selectedGitScope === "unstaged" ? "working-tree" : "branch-range"),
-  );
-  const localBranchRefs = useEnvironmentQuery(
-    selectedTurnId === null &&
-      selectedGitScope === "branch" &&
-      activeThread &&
-      branchDiffPreview.data?.cwd
+  const branchDiffPreview = primaryBranchDiffPreview;
+  const selectedGitSource =
+    branchDiffPreview.data?._tag === "Repository"
+      ? branchDiffPreview.data.sources.find(
+          (source) =>
+            source.kind === (selectedGitScope === "unstaged" ? "workingTree" : "baseRange"),
+        )
+      : undefined;
+  const branchRefs = useEnvironmentQuery(
+    selectedTurnId === null && selectedGitScope === "branch" && activeThread
       ? vcsEnvironment.listRefs({
           environmentId: activeThread.environmentId,
           input: {
-            cwd: branchDiffPreview.data.cwd,
-            includeMatchingRemoteRefs: true,
-            refKind: "local",
+            target: { projectId: activeThread.projectId, threadId: activeThread.id },
+            scope: "all",
             ...(baseRefQuery.trim().length > 0 ? { query: baseRefQuery.trim() } : {}),
-            limit: 100,
+            maxRefs: 200,
           },
         })
       : null,
   );
-  const remoteBranchRefs = useEnvironmentQuery(
-    selectedTurnId === null &&
-      selectedGitScope === "branch" &&
-      activeThread &&
-      branchDiffPreview.data?.cwd
-      ? vcsEnvironment.listRefs({
-          environmentId: activeThread.environmentId,
-          input: {
-            cwd: branchDiffPreview.data.cwd,
-            includeMatchingRemoteRefs: true,
-            refKind: "remote",
-            ...(baseRefQuery.trim().length > 0 ? { query: baseRefQuery.trim() } : {}),
-            limit: 100,
-          },
-        })
-      : null,
-  );
+  const allBranchRefs = branchRefs.data?._tag === "Repository" ? branchRefs.data.refs : [];
   const baseRefChoices = buildBaseRefChoices(
-    localBranchRefs.data?.refs.filter((ref) => ref.name !== selectedGitSource?.headRef) ?? [],
-    remoteBranchRefs.data?.refs ?? [],
+    allBranchRefs
+      .filter((ref) => ref.kind === "local" && ref.name !== selectedGitSource?.headRef)
+      .map((ref) => ({
+        name: ref.name,
+        current: ref.current,
+        isDefault: ref.isDefault,
+        worktreePath: null,
+      })),
+    allBranchRefs
+      .filter((ref) => ref.kind === "knownRemote")
+      .map((ref) => ({
+        name: ref.name,
+        isRemote: true,
+        remoteName: ref.name.includes("/") ? ref.name.slice(0, ref.name.indexOf("/")) : undefined,
+        current: ref.current,
+        isDefault: ref.isDefault,
+        worktreePath: null,
+      })),
   );
   const matchingBaseRefChoices = filterBaseRefChoices(baseRefChoices, baseRefQuery);
   const valueForBaseRefChoice = (choice: (typeof baseRefChoices)[number]) =>
@@ -411,7 +393,7 @@ export default function DiffPanel({
     ...(baseRefQuery.trim().length === 0 ? [AUTOMATIC_BASE_REF] : []),
     ...matchingBaseRefChoices.map(valueForBaseRefChoice),
   ];
-  const gitDiff = selectedGitSource?.diff;
+  const gitDiff = selectedGitSource?.patch;
 
   const selectedPatch = selectedTurn ? activeCheckpointDiff.data?.diff : gitDiff;
   const isSelectedPatchTruncated = !selectedTurn && selectedGitSource?.truncated === true;

@@ -12,9 +12,8 @@ import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/proje
 import { Platform, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useWorkspaceState } from "../../state/workspace";
-import { useEnvironmentQuery } from "../../state/query";
+import { useRepositoryStatus } from "../../state/queries";
 import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
-import { vcsEnvironment } from "../../state/vcs";
 
 import { EmptyState } from "../../components/EmptyState";
 import {
@@ -287,14 +286,13 @@ function ThreadRouteContent(
     .filter(Boolean)
     .join(" · ");
   /* ─── Git status for native header trigger ───────────────────────── */
-  const gitStatus = useEnvironmentQuery(
-    selectedThread !== null && selectedThreadCwd !== null
-      ? vcsEnvironment.status({
-          environmentId: selectedThread.environmentId,
-          input: { cwd: selectedThreadCwd },
-        })
-      : null,
-  );
+  const gitStatus = useRepositoryStatus({
+    environmentId: selectedThread?.environmentId ?? null,
+    target:
+      selectedThread === null
+        ? null
+        : { projectId: selectedThread.projectId, threadId: selectedThread.id },
+  });
   const knownTerminalSessions = useKnownTerminalSessions({
     environmentId: selectedThread?.environmentId ?? null,
     threadId: selectedThread?.id ?? null,

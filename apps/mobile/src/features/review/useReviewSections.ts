@@ -4,9 +4,12 @@ import type { EnvironmentId, OrchestrationCheckpointSummary, ThreadId } from "@t
 
 import { useCheckpointDiff } from "../../state/queries";
 import { useEnvironmentQuery } from "../../state/query";
+import {
+  presentRepositoryReviewSources,
+  repositoryReviewDiffInput,
+} from "../../state/repository-read";
 import { reviewEnvironment } from "../../state/review";
 import { useSelectedThreadDetail } from "../../state/use-thread-detail";
-import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import {
   buildReviewSectionItems,
   getDefaultReviewSectionId,
@@ -21,6 +24,7 @@ import {
   setReviewTurnDiffLoading,
   type ReviewCacheForThread,
 } from "./reviewState";
+import { hashReviewDiffKey } from "./reviewDiffBridgeKeys";
 
 export function useReviewSections(input: {
   readonly enabled?: boolean;
@@ -31,12 +35,15 @@ export function useReviewSections(input: {
   const { environmentId, reviewCache, threadId } = input;
   const enabled = input.enabled ?? true;
   const selectedThread = useSelectedThreadDetail();
-  const { selectedThreadCwd } = useSelectedThreadWorktree();
   const diffPreview = useEnvironmentQuery(
-    enabled && environmentId !== undefined && selectedThreadCwd !== null
+    enabled &&
+      environmentId !== undefined &&
+      threadId !== undefined &&
+      selectedThread !== null &&
+      selectedThread.id === threadId
       ? reviewEnvironment.diffPreview({
           environmentId,
-          input: { cwd: selectedThreadCwd },
+          input: repositoryReviewDiffInput(selectedThread.projectId, threadId),
         })
       : null,
   );
@@ -44,7 +51,10 @@ export function useReviewSections(input: {
 
   useEffect(() => {
     if (reviewCache.threadKey && diffPreview.data) {
-      setReviewGitSections(reviewCache.threadKey, diffPreview.data.sources);
+      setReviewGitSections(
+        reviewCache.threadKey,
+        presentRepositoryReviewSources(diffPreview.data, hashReviewDiffKey),
+      );
     }
   }, [diffPreview.data, reviewCache.threadKey]);
 

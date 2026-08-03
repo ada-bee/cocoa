@@ -4,8 +4,6 @@ import type {
   VcsCreateWorktreeInput,
   VcsCreateWorktreeResult,
   VcsInitInput,
-  VcsListRefsInput,
-  VcsListRefsResult,
   VcsPullInput,
   VcsPullResult,
   VcsRemoveWorktreeInput,
@@ -15,10 +13,15 @@ import type {
   GitPreparePullRequestThreadResult,
   GitPullRequestRefInput,
   GitResolvePullRequestResult,
-  VcsStatusInput,
-  VcsStatusResult,
 } from "./git.ts";
-import type { ReviewDiffPreviewInput, ReviewDiffPreviewResult } from "./review.ts";
+import type {
+  RepositoryListRefsInput,
+  RepositoryListRefsResult,
+  RepositoryReviewDiffInput,
+  RepositoryReviewDiffResult,
+  RepositoryStatusInput,
+  RepositoryStatusResult,
+} from "./repositoryRead.ts";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem.ts";
 import type { AssetCreateUrlInput, AssetCreateUrlResult } from "./assets.ts";
 import type {
@@ -1179,17 +1182,17 @@ export interface EnvironmentApi {
     ) => Promise<SourceControlPublishRepositoryResult>;
   };
   vcs: {
-    listRefs: (input: VcsListRefsInput) => Promise<VcsListRefsResult>;
+    listRefs: (input: RepositoryListRefsInput) => Promise<RepositoryListRefsResult>;
     createWorktree: (input: VcsCreateWorktreeInput) => Promise<VcsCreateWorktreeResult>;
     removeWorktree: (input: VcsRemoveWorktreeInput) => Promise<void>;
     createRef: (input: VcsCreateRefInput) => Promise<VcsCreateRefResult>;
     switchRef: (input: VcsSwitchRefInput) => Promise<VcsSwitchRefResult>;
     init: (input: VcsInitInput) => Promise<void>;
     pull: (input: VcsPullInput) => Promise<VcsPullResult>;
-    refreshStatus: (input: VcsStatusInput) => Promise<VcsStatusResult>;
+    refreshStatus: (input: RepositoryStatusInput) => Promise<RepositoryStatusResult>;
     onStatus: (
-      input: VcsStatusInput,
-      callback: (status: VcsStatusResult) => void,
+      input: RepositoryStatusInput,
+      callback: (status: RepositoryStatusResult) => void,
       options?: {
         onResubscribe?: () => void;
       },
@@ -1202,7 +1205,7 @@ export interface EnvironmentApi {
     ) => Promise<GitPreparePullRequestThreadResult>;
   };
   review: {
-    getDiffPreview: (input: ReviewDiffPreviewInput) => Promise<ReviewDiffPreviewResult>;
+    getDiffPreview: (input: RepositoryReviewDiffInput) => Promise<RepositoryReviewDiffResult>;
   };
   orchestration: {
     dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;

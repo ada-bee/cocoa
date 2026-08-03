@@ -69,6 +69,8 @@ function scopeKey(scope: BackgroundScope): string {
     case "vcs-status":
     case "git-refs":
       return `${scope.type}:${scope.cwd}`;
+    case "repository-status":
+      return JSON.stringify([scope.type, scope.target.projectId, scope.target.threadId ?? null]);
     case "thread":
       return `${scope.type}:${scope.threadId}`;
   }
