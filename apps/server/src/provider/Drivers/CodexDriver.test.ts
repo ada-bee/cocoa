@@ -208,7 +208,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           let workspaceFactoryCalls = 0;
           const workspaceGenerations: Array<number> = [];
 
-          const router = { registerSession: () => Effect.die("unused") } as CodexEndpointRouter;
+          const router = {
+            registerSession: () => Effect.die("unused"),
+            registerInternalOperation: () => Effect.die("unused"),
+          } as CodexEndpointRouter;
           const adapter = {
             stopAll: () =>
               Effect.sync(() => {
@@ -439,6 +442,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
                     ensureCurrent: Effect.void,
                   };
                 }),
+                borrowRoutedConnection: Effect.die("routed borrow unused"),
                 getState: Effect.succeed({
                   _tag: "Ready" as const,
                   generationId: 1,
@@ -541,7 +545,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         if (directTransport?.type !== "direct-websocket") {
           return yield* Effect.die("expected direct WebSocket endpoint test config");
         }
-        const router = { registerSession: () => Effect.die("unused") } as CodexEndpointRouter;
+        const router = {
+          registerSession: () => Effect.die("unused"),
+          registerInternalOperation: () => Effect.die("unused"),
+        } as CodexEndpointRouter;
         const adapter = { stopAll: () => Effect.void } as unknown as CodexAdapterShape;
         let transientCalls = 0;
         const transientDriver = makeCodexDriver({
@@ -641,7 +648,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         const adapterOptions = new Map<string, CodexAdapterLiveOptions>();
         const stopCalls = new Map<string, number>();
         const releases = new Map<string, number>();
-        const router = { registerSession: () => Effect.die("unused") } as CodexEndpointRouter;
+        const router = {
+          registerSession: () => Effect.die("unused"),
+          registerInternalOperation: () => Effect.die("unused"),
+        } as CodexEndpointRouter;
 
         const driver = makeCodexDriver({
           makeEndpointSupervisor: supervisorOverride({

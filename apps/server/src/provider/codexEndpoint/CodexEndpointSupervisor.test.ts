@@ -34,7 +34,10 @@ const TRANSPORT = {
   url: "ws://127.0.0.1:7777",
   authentication: { type: "none" },
 } as const satisfies CodexEndpointTransport;
-const ROUTER = { registerSession: () => Effect.die("unused") } as CodexEndpointRouter;
+const ROUTER = {
+  registerSession: () => Effect.die("unused"),
+  registerInternalOperation: () => Effect.die("unused"),
+} as CodexEndpointRouter;
 
 const transientOpenError = (label: string) =>
   new CodexEndpointWebSocketOpenError({
@@ -165,6 +168,12 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
         assert.equal(connectionBorrow.generationId, 1);
         assert.equal(connectionBorrow.connection, connection);
         yield* connectionBorrow.ensureCurrent;
+
+        const routedBorrow = yield* supervisor.borrowRoutedConnection;
+        assert.equal(routedBorrow.generationId, 1);
+        assert.equal(routedBorrow.connection, connection);
+        assert.equal(routedBorrow.router, ROUTER);
+        yield* routedBorrow.ensureCurrent;
       }),
     ),
   );
@@ -361,11 +370,16 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
         yield* supervisor.start({ onGenerationInvalidated: noopInvalidation });
         const oldBorrow = yield* supervisor.borrow(THREAD_ID);
         const oldConnectionBorrow = yield* supervisor.borrowConnection;
+        const oldRoutedBorrow = yield* supervisor.borrowRoutedConnection;
 
         yield* first.terminate();
         const request = yield* Queue.take(gated.requests);
         assert.equal((yield* supervisor.borrow(THREAD_ID).pipe(Effect.result))._tag, "Failure");
         assert.equal((yield* supervisor.borrowConnection.pipe(Effect.result))._tag, "Failure");
+        assert.equal(
+          (yield* supervisor.borrowRoutedConnection.pipe(Effect.result))._tag,
+          "Failure",
+        );
         const ready = yield* awaitState(supervisor, (state) => state._tag === "Ready").pipe(
           Effect.forkChild,
         );
@@ -379,11 +393,21 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
         const nextConnectionBorrow = yield* supervisor.borrowConnection;
         assert.equal(nextConnectionBorrow.generationId, 2);
         assert.equal(nextConnectionBorrow.connection, second);
+        const nextRoutedBorrow = yield* supervisor.borrowRoutedConnection;
+        assert.equal(nextRoutedBorrow.generationId, 2);
+        assert.equal(nextRoutedBorrow.connection, second);
+        assert.equal(nextRoutedBorrow.router, ROUTER);
         const staleConnectionBorrow = yield* oldConnectionBorrow.ensureCurrent.pipe(Effect.result);
         assert.equal(staleConnectionBorrow._tag, "Failure");
         if (staleConnectionBorrow._tag === "Failure") {
           assert.equal(staleConnectionBorrow.failure.providerInstanceId, INSTANCE_ID);
           assert.isFalse("threadId" in staleConnectionBorrow.failure);
+        }
+        const staleRoutedBorrow = yield* oldRoutedBorrow.ensureCurrent.pipe(Effect.result);
+        assert.equal(staleRoutedBorrow._tag, "Failure");
+        if (staleRoutedBorrow._tag === "Failure") {
+          assert.equal(staleRoutedBorrow.failure.providerInstanceId, INSTANCE_ID);
+          assert.isFalse("threadId" in staleRoutedBorrow.failure);
         }
       }),
     ),

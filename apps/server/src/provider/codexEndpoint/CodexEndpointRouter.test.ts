@@ -97,6 +97,12 @@ const registerInScope = (
   scope: Scope.Closeable,
 ) => router.registerSession(input).pipe(Effect.provideService(Scope.Scope, scope));
 
+const registerInternalInScope = (
+  router: CodexEndpointRouter,
+  input: Parameters<CodexEndpointRouter["registerInternalOperation"]>[0],
+  scope: Scope.Closeable,
+) => router.registerInternalOperation(input).pipe(Effect.provideService(Scope.Scope, scope));
+
 it.effect("installs one shared handler for every notification and interactive request", () =>
   Effect.gen(function* () {
     const fake = makeFakeClient();
@@ -183,6 +189,153 @@ it.effect("drains notifications which race native-thread binding in order", () =
     assert.equal(yield* Queue.take(delivered), 1);
     assert.equal(yield* Queue.take(delivered), 2);
   }),
+);
+
+it.effect(
+  "registers an opaque internal operation before binding and drains its early backlog",
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeClient();
+      const router = yield* makeCodexEndpointRouter(fake.client);
+      const delivered = yield* Queue.unbounded<number>();
+      const operationScope = yield* Scope.make();
+      const registration = yield* registerInternalInScope(
+        router,
+        {
+          callbacks: makeCallbacks({
+            onNotification: (_method, params) =>
+              Queue.offer(delivered, (params as { sequence: number }).sequence).pipe(Effect.asVoid),
+          }),
+        },
+        operationScope,
+      );
+
+      yield* fake.emitUnknownNotification("future/internal-event", {
+        threadId: "native-internal",
+        sequence: 1,
+      });
+      yield* fake.emitNotification("thread/status/changed", {
+        threadId: "native-internal",
+        sequence: 2,
+      });
+      yield* registration.bindNativeThreadId("native-internal");
+
+      assert.equal(yield* Queue.take(delivered), 1);
+      assert.equal(yield* Queue.take(delivered), 2);
+      const rebound = yield* registration.bindNativeThreadId("native-other").pipe(Effect.result);
+      assert.equal(rebound._tag, "Failure");
+      if (rebound._tag === "Failure") {
+        assert.equal(rebound.failure.reason, "operation-already-bound");
+      }
+      yield* Scope.close(operationScope, Exit.void);
+    }),
+);
+
+it.effect(
+  "isolates internal operations from Cocoa sessions and leaves native unsubscribe to the owner",
+  () =>
+    Effect.gen(function* () {
+      const fake = makeFakeClient();
+      const router = yield* makeCodexEndpointRouter(fake.client);
+      const sessionDelivered = yield* Queue.unbounded<string>();
+      const operationDelivered = yield* Queue.unbounded<string>();
+      const session = yield* router.registerSession({
+        threadId: ThreadId.make("cocoa-thread"),
+        callbacks: makeCallbacks({
+          onNotification: (method) => Queue.offer(sessionDelivered, method).pipe(Effect.asVoid),
+          onRequest: () => Effect.succeed({ decision: "accept" }),
+        }),
+      });
+      yield* session.bindNativeThreadId("native-session");
+
+      const operationScope = yield* Scope.make();
+      const operation = yield* registerInternalInScope(
+        router,
+        {
+          callbacks: makeCallbacks({
+            onNotification: (method) => Queue.offer(operationDelivered, method).pipe(Effect.asVoid),
+            onRequest: () => Effect.succeed({ decision: "decline" }),
+          }),
+        },
+        operationScope,
+      );
+
+      const sessionCollision = yield* operation
+        .bindNativeThreadId("native-session")
+        .pipe(Effect.result);
+      assert.equal(sessionCollision._tag, "Failure");
+      if (sessionCollision._tag === "Failure") {
+        assert.equal(sessionCollision.failure.reason, "native-thread-already-bound");
+      }
+
+      yield* operation.bindNativeThreadId("native-internal");
+      const competingSession = yield* router.registerSession({
+        threadId: ThreadId.make("cocoa-competing"),
+        callbacks: makeCallbacks(),
+      });
+      const operationCollision = yield* competingSession
+        .bindNativeThreadId("native-internal")
+        .pipe(Effect.result);
+      assert.equal(operationCollision._tag, "Failure");
+      if (operationCollision._tag === "Failure") {
+        assert.equal(operationCollision.failure.reason, "native-thread-already-bound");
+      }
+
+      yield* fake.emitNotification("thread/status/changed", { threadId: "native-session" });
+      yield* fake.emitNotification("thread/status/changed", { threadId: "native-internal" });
+      assert.equal(yield* Queue.take(sessionDelivered), "thread/status/changed");
+      assert.equal(yield* Queue.take(operationDelivered), "thread/status/changed");
+
+      assert.deepEqual(
+        yield* fake.request("item/commandExecution/requestApproval", {
+          itemId: "session-item",
+          startedAtMs: 1,
+          threadId: "native-session",
+          turnId: "session-turn",
+        }),
+        { decision: "accept" },
+      );
+      assert.deepEqual(
+        yield* fake.request("item/commandExecution/requestApproval", {
+          itemId: "internal-item",
+          startedAtMs: 1,
+          threadId: "native-internal",
+          turnId: "internal-turn",
+        }),
+        { decision: "decline" },
+      );
+
+      yield* Scope.close(operationScope, Exit.void);
+      yield* fake.emitNotification("thread/status/changed", { threadId: "native-internal" });
+      assert.equal(yield* Queue.size(operationDelivered), 0);
+      const removedRequest = yield* fake
+        .request("item/commandExecution/requestApproval", {
+          itemId: "removed-item",
+          startedAtMs: 1,
+          threadId: "native-internal",
+          turnId: "removed-turn",
+        })
+        .pipe(Effect.result);
+      assert.equal(removedRequest._tag, "Failure");
+
+      const closedBind = yield* operation.bindNativeThreadId("native-other").pipe(Effect.result);
+      assert.equal(closedBind._tag, "Failure");
+      if (closedBind._tag === "Failure") {
+        assert.equal(closedBind.failure.reason, "operation-not-registered");
+      }
+
+      yield* fake.emitNotification("thread/status/changed", { threadId: "native-session" });
+      assert.equal(yield* Queue.take(sessionDelivered), "thread/status/changed");
+      assert.deepEqual(
+        yield* fake.request("item/commandExecution/requestApproval", {
+          itemId: "session-item-2",
+          startedAtMs: 1,
+          threadId: "native-session",
+          turnId: "session-turn-2",
+        }),
+        { decision: "accept" },
+      );
+    }),
 );
 
 it.effect("routes turn approval requests to the owning session", () =>

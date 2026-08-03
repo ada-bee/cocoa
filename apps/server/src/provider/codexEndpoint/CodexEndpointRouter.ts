@@ -45,7 +45,7 @@ interface RoutedNotification {
   readonly known: boolean;
 }
 
-export interface CodexEndpointSessionCallbacks {
+export interface CodexEndpointRouteCallbacks {
   readonly onNotification: <M extends CodexRpc.ServerNotificationMethod>(
     method: M,
     params: CodexRpc.ServerNotificationParamsByMethod[M],
@@ -59,6 +59,8 @@ export interface CodexEndpointSessionCallbacks {
     params: CodexRpc.ServerRequestParamsByMethod[M],
   ) => Effect.Effect<CodexRpc.ServerRequestResponsesByMethod[M], CodexErrors.CodexAppServerError>;
 }
+
+export type CodexEndpointSessionCallbacks = CodexEndpointRouteCallbacks;
 
 export interface CodexEndpointRouterClient {
   readonly handleServerNotification: CodexClient.CodexAppServerClient["Service"]["handleServerNotification"];
@@ -100,17 +102,44 @@ export class CodexEndpointRouterRegistrationError extends Schema.TaggedErrorClas
   }
 }
 
-interface SessionEntry {
-  readonly threadId: ThreadId;
-  readonly callbacks: CodexEndpointSessionCallbacks;
+export class CodexEndpointInternalOperationRegistrationError extends Schema.TaggedErrorClass<CodexEndpointInternalOperationRegistrationError>()(
+  "CodexEndpointInternalOperationRegistrationError",
+  {
+    reason: Schema.Literals([
+      "operation-not-registered",
+      "operation-already-bound",
+      "native-thread-already-bound",
+    ]),
+    nativeThreadId: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Codex endpoint internal-operation routing failed for native thread '${this.nativeThreadId}': ${this.reason}.`;
+  }
+}
+
+interface RouteEntryBase {
+  readonly callbacks: CodexEndpointRouteCallbacks;
   readonly notifications: Queue.Queue<RoutedNotification>;
   readonly childAliases: Set<string>;
   nativeThreadId: string | undefined;
 }
 
+interface SessionEntry extends RouteEntryBase {
+  readonly _tag: "Session";
+  readonly threadId: ThreadId;
+}
+
+interface InternalOperationEntry extends RouteEntryBase {
+  readonly _tag: "InternalOperation";
+}
+
+type RouteEntry = SessionEntry | InternalOperationEntry;
+
 interface RouterState {
   readonly sessions: Map<ThreadId, SessionEntry>;
-  readonly sessionsByNativeThreadId: Map<string, SessionEntry>;
+  readonly internalOperations: Set<InternalOperationEntry>;
+  readonly routesByNativeThreadId: Map<string, RouteEntry>;
   readonly notificationBacklogs: Map<string, Array<RoutedNotification>>;
 }
 
@@ -124,6 +153,12 @@ export interface CodexEndpointSessionRegistration {
   ) => Effect.Effect<void, CodexEndpointRouterRegistrationError>;
 }
 
+export interface CodexEndpointInternalOperationRegistration {
+  readonly bindNativeThreadId: (
+    nativeThreadId: string,
+  ) => Effect.Effect<void, CodexEndpointInternalOperationRegistrationError>;
+}
+
 export interface CodexEndpointRouter {
   readonly registerSession: (input: {
     readonly threadId: ThreadId;
@@ -133,6 +168,13 @@ export interface CodexEndpointRouter {
     CodexEndpointRouterRegistrationError,
     Scope.Scope
   >;
+  /**
+   * Register one opaque provider-internal route. Scope cleanup releases only
+   * local routing; the caller owns native lifecycle such as `thread/unsubscribe`.
+   */
+  readonly registerInternalOperation: (input: {
+    readonly callbacks: CodexEndpointRouteCallbacks;
+  }) => Effect.Effect<CodexEndpointInternalOperationRegistration, never, Scope.Scope>;
 }
 
 function normalizeCapacity(value: number | undefined, fallback: number, minimum: number): number {
@@ -201,27 +243,24 @@ function makeNotification<M extends CodexRpc.ServerNotificationMethod>(
 }
 
 function deliverNotification(
-  session: SessionEntry,
+  route: RouteEntry,
   notification: RoutedNotification,
 ): Effect.Effect<void, CodexErrors.CodexAppServerError> {
   if (!notification.known) {
     return (
-      session.callbacks.onUnknownNotification?.(notification.method, notification.params) ??
+      route.callbacks.onUnknownNotification?.(notification.method, notification.params) ??
       Effect.void
     );
   }
-  return session.callbacks.onNotification(
-    notification.method as never,
-    notification.params as never,
-  );
+  return route.callbacks.onNotification(notification.method as never, notification.params as never);
 }
 
 function deliverRequest<M extends CodexInteractiveServerRequestMethod>(
-  session: SessionEntry,
+  route: RouteEntry,
   method: M,
   params: CodexRpc.ServerRequestParamsByMethod[M],
 ): Effect.Effect<CodexRpc.ServerRequestResponsesByMethod[M], CodexErrors.CodexAppServerError> {
-  return session.callbacks.onRequest(method, params);
+  return route.callbacks.onRequest(method, params);
 }
 
 function requestRoutingError(
@@ -230,7 +269,7 @@ function requestRoutingError(
   turnId: string,
 ): CodexErrors.CodexAppServerRequestError {
   return CodexErrors.CodexAppServerRequestError.internalError(
-    `No active Cocoa session route for Codex request '${method}', native thread '${nativeThreadId}', and turn '${turnId}'.`,
+    `No active Codex endpoint route for request '${method}', native thread '${nativeThreadId}', and turn '${turnId}'.`,
     { nativeThreadId, turnId },
     { method, operation: "handle-request" },
   );
@@ -263,7 +302,8 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
   const routingLock = yield* Semaphore.make(1);
   const state: RouterState = {
     sessions: new Map(),
-    sessionsByNativeThreadId: new Map(),
+    internalOperations: new Set(),
+    routesByNativeThreadId: new Map(),
     notificationBacklogs: new Map(),
   };
 
@@ -289,46 +329,51 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
     backlog.push(notification);
   };
 
-  const removeChildAlias = (session: SessionEntry, nativeThreadId: string): void => {
-    if (!session.childAliases.delete(nativeThreadId)) return;
-    if (state.sessionsByNativeThreadId.get(nativeThreadId) === session) {
-      state.sessionsByNativeThreadId.delete(nativeThreadId);
+  const removeChildAlias = (route: RouteEntry, nativeThreadId: string): void => {
+    if (!route.childAliases.delete(nativeThreadId)) return;
+    if (state.routesByNativeThreadId.get(nativeThreadId) === route) {
+      state.routesByNativeThreadId.delete(nativeThreadId);
     }
   };
+
+  const routeLogContext = (route: RouteEntry) =>
+    route._tag === "Session"
+      ? { routeKind: "cocoa-session", threadId: route.threadId }
+      : { routeKind: "internal-operation" };
 
   const aliasCollaborationChild = Effect.fn("CodexEndpointRouter.aliasCollaborationChild")(
     function* (
       childNativeThreadId: string,
       parentNativeThreadId: string,
-    ): Effect.fn.Return<SessionEntry | undefined> {
-      const childOwner = state.sessionsByNativeThreadId.get(childNativeThreadId);
+    ): Effect.fn.Return<RouteEntry | undefined> {
+      const childOwner = state.routesByNativeThreadId.get(childNativeThreadId);
       if (childOwner !== undefined) {
-        const parentOwner = state.sessionsByNativeThreadId.get(parentNativeThreadId);
+        const parentOwner = state.routesByNativeThreadId.get(parentNativeThreadId);
         if (parentOwner !== undefined && parentOwner !== childOwner) {
           yield* Effect.logWarning("ignored conflicting Codex collaboration-child alias", {
             childNativeThreadId,
             parentNativeThreadId,
-            childOwnerThreadId: childOwner.threadId,
-            parentOwnerThreadId: parentOwner.threadId,
+            childOwner: routeLogContext(childOwner),
+            parentOwner: routeLogContext(parentOwner),
           });
         }
         return childOwner;
       }
-      const parentOwner = state.sessionsByNativeThreadId.get(parentNativeThreadId);
+      const parentOwner = state.routesByNativeThreadId.get(parentNativeThreadId);
       if (parentOwner === undefined || collaborationChildAliasCapacity === 0) return undefined;
       if (parentOwner.childAliases.size >= collaborationChildAliasCapacity) {
         const oldestAlias = parentOwner.childAliases.values().next().value;
         if (oldestAlias !== undefined) {
           removeChildAlias(parentOwner, oldestAlias);
           yield* Effect.logWarning("evicted oldest Codex collaboration-child alias", {
-            threadId: parentOwner.threadId,
+            ...routeLogContext(parentOwner),
             nativeThreadId: oldestAlias,
             capacity: collaborationChildAliasCapacity,
           });
         }
       }
       parentOwner.childAliases.add(childNativeThreadId);
-      state.sessionsByNativeThreadId.set(childNativeThreadId, parentOwner);
+      state.routesByNativeThreadId.set(childNativeThreadId, parentOwner);
       const backlog = state.notificationBacklogs.get(childNativeThreadId) ?? [];
       state.notificationBacklogs.delete(childNativeThreadId);
       for (const notification of backlog) {
@@ -351,24 +396,24 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
         const nativeThreadId = readNotificationThreadId(notification);
         if (nativeThreadId === undefined) return;
         const parentNativeThreadId = readThreadStartedParentId(notification);
-        const session =
+        const route =
           parentNativeThreadId === undefined
-            ? state.sessionsByNativeThreadId.get(nativeThreadId)
+            ? state.routesByNativeThreadId.get(nativeThreadId)
             : yield* aliasCollaborationChild(nativeThreadId, parentNativeThreadId);
-        if (!session) {
+        if (!route) {
           appendNotificationBacklog(nativeThreadId, notification);
           return;
         }
-        const accepted = yield* Queue.offer(session.notifications, notification);
+        const accepted = yield* Queue.offer(route.notifications, notification);
         if (!accepted) {
-          yield* Effect.logWarning("dropped Codex session notification from a full mailbox", {
-            threadId: session.threadId,
+          yield* Effect.logWarning("dropped Codex endpoint notification from a full mailbox", {
+            ...routeLogContext(route),
             nativeThreadId,
             method,
           });
         }
-        if (method === "thread/closed" && session.childAliases.has(nativeThreadId)) {
-          removeChildAlias(session, nativeThreadId);
+        if (method === "thread/closed" && route.childAliases.has(nativeThreadId)) {
+          removeChildAlias(route, nativeThreadId);
         }
       }),
     );
@@ -379,12 +424,12 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
         const notification: RoutedNotification = { method, params, known: false };
         const nativeThreadId = readNotificationThreadId(notification);
         if (nativeThreadId === undefined) return;
-        const session = state.sessionsByNativeThreadId.get(nativeThreadId);
-        if (!session) {
+        const route = state.routesByNativeThreadId.get(nativeThreadId);
+        if (!route) {
           appendNotificationBacklog(nativeThreadId, notification);
           return;
         }
-        yield* Queue.offer(session.notifications, notification);
+        yield* Queue.offer(route.notifications, notification);
       }),
     );
 
@@ -393,11 +438,11 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
     params: CodexRpc.ServerRequestParamsByMethod[M],
   ): Effect.Effect<CodexRpc.ServerRequestResponsesByMethod[M], CodexErrors.CodexAppServerError> =>
     routingLock
-      .withPermits(1)(Effect.sync(() => state.sessionsByNativeThreadId.get(params.threadId)))
+      .withPermits(1)(Effect.sync(() => state.routesByNativeThreadId.get(params.threadId)))
       .pipe(
-        Effect.flatMap((session) =>
-          session
-            ? deliverRequest(session, method, params)
+        Effect.flatMap((route) =>
+          route
+            ? deliverRequest(route, method, params)
             : requestRoutingError(method, params.threadId, params.turnId),
         ),
       );
@@ -424,12 +469,15 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
           if (state.sessions.get(session.threadId) !== session) return;
           state.sessions.delete(session.threadId);
           const nativeThreadId = session.nativeThreadId;
-          if (nativeThreadId !== undefined) {
-            state.sessionsByNativeThreadId.delete(nativeThreadId);
+          if (
+            nativeThreadId !== undefined &&
+            state.routesByNativeThreadId.get(nativeThreadId) === session
+          ) {
+            state.routesByNativeThreadId.delete(nativeThreadId);
           }
           for (const childAlias of session.childAliases) {
-            if (state.sessionsByNativeThreadId.get(childAlias) === session) {
-              state.sessionsByNativeThreadId.delete(childAlias);
+            if (state.routesByNativeThreadId.get(childAlias) === session) {
+              state.routesByNativeThreadId.delete(childAlias);
             }
           }
           session.childAliases.clear();
@@ -447,6 +495,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
   > {
     const notifications = yield* Queue.dropping<RoutedNotification>(sessionNotificationCapacity);
     const session: SessionEntry = {
+      _tag: "Session",
       threadId: input.threadId,
       callbacks: input.callbacks,
       notifications,
@@ -508,7 +557,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
               nativeThreadId,
             });
           }
-          const existing = state.sessionsByNativeThreadId.get(nativeThreadId);
+          const existing = state.routesByNativeThreadId.get(nativeThreadId);
           if (existing !== undefined && existing !== session) {
             return yield* new CodexEndpointRouterRegistrationError({
               reason: "native-thread-already-bound",
@@ -518,11 +567,11 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
           }
           const previousNativeThreadId = session.nativeThreadId;
           if (previousNativeThreadId !== undefined && previousNativeThreadId !== nativeThreadId) {
-            state.sessionsByNativeThreadId.delete(previousNativeThreadId);
+            state.routesByNativeThreadId.delete(previousNativeThreadId);
           }
           removeChildAlias(session, nativeThreadId);
           session.nativeThreadId = nativeThreadId;
-          state.sessionsByNativeThreadId.set(nativeThreadId, session);
+          state.routesByNativeThreadId.set(nativeThreadId, session);
           const backlog = state.notificationBacklogs.get(nativeThreadId) ?? [];
           state.notificationBacklogs.delete(nativeThreadId);
           for (const notification of backlog) {
@@ -547,5 +596,109 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
     };
   });
 
-  return { registerSession };
+  const unregisterInternalOperation = (operation: InternalOperationEntry): Effect.Effect<void> =>
+    routingLock
+      .withPermits(1)(
+        Effect.sync(() => {
+          if (!state.internalOperations.delete(operation)) return;
+          const nativeThreadId = operation.nativeThreadId;
+          if (
+            nativeThreadId !== undefined &&
+            state.routesByNativeThreadId.get(nativeThreadId) === operation
+          ) {
+            state.routesByNativeThreadId.delete(nativeThreadId);
+          }
+          for (const childAlias of operation.childAliases) {
+            if (state.routesByNativeThreadId.get(childAlias) === operation) {
+              state.routesByNativeThreadId.delete(childAlias);
+            }
+          }
+          operation.childAliases.clear();
+        }),
+      )
+      .pipe(Effect.andThen(Queue.shutdown(operation.notifications)), Effect.asVoid);
+
+  const registerInternalOperation = Effect.fn("CodexEndpointRouter.registerInternalOperation")(
+    function* (input: {
+      readonly callbacks: CodexEndpointRouteCallbacks;
+    }): Effect.fn.Return<CodexEndpointInternalOperationRegistration, never, Scope.Scope> {
+      const notifications = yield* Queue.dropping<RoutedNotification>(sessionNotificationCapacity);
+      const operation: InternalOperationEntry = {
+        _tag: "InternalOperation",
+        callbacks: input.callbacks,
+        notifications,
+        childAliases: new Set(),
+        nativeThreadId: undefined,
+      };
+
+      yield* Effect.acquireRelease(
+        routingLock.withPermits(1)(
+          Effect.sync(() => {
+            state.internalOperations.add(operation);
+          }),
+        ),
+        () => unregisterInternalOperation(operation),
+      );
+
+      yield* Stream.fromQueue(notifications).pipe(
+        Stream.runForEach((notification) =>
+          deliverNotification(operation, notification).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("Codex internal-operation notification callback failed", {
+                method: notification.method,
+                cause: error,
+              }),
+            ),
+          ),
+        ),
+        Effect.forkScoped,
+      );
+
+      const bindNativeThreadId = (nativeThreadId: string) =>
+        routingLock.withPermits(1)(
+          Effect.gen(function* () {
+            if (!state.internalOperations.has(operation)) {
+              return yield* new CodexEndpointInternalOperationRegistrationError({
+                reason: "operation-not-registered",
+                nativeThreadId,
+              });
+            }
+            if (
+              operation.nativeThreadId !== undefined &&
+              operation.nativeThreadId !== nativeThreadId
+            ) {
+              return yield* new CodexEndpointInternalOperationRegistrationError({
+                reason: "operation-already-bound",
+                nativeThreadId,
+              });
+            }
+            const existing = state.routesByNativeThreadId.get(nativeThreadId);
+            if (existing !== undefined && existing !== operation) {
+              return yield* new CodexEndpointInternalOperationRegistrationError({
+                reason: "native-thread-already-bound",
+                nativeThreadId,
+              });
+            }
+            removeChildAlias(operation, nativeThreadId);
+            operation.nativeThreadId = nativeThreadId;
+            state.routesByNativeThreadId.set(nativeThreadId, operation);
+            const backlog = state.notificationBacklogs.get(nativeThreadId) ?? [];
+            state.notificationBacklogs.delete(nativeThreadId);
+            for (const notification of backlog) {
+              const accepted = yield* Queue.offer(operation.notifications, notification);
+              if (!accepted) {
+                yield* Effect.logWarning(
+                  "dropped backlogged Codex notification from a full internal-operation mailbox",
+                  { nativeThreadId, method: notification.method },
+                );
+              }
+            }
+          }),
+        );
+
+      return { bindNativeThreadId };
+    },
+  );
+
+  return { registerSession, registerInternalOperation };
 });

@@ -85,6 +85,10 @@ export interface CodexEndpointConnectionBorrow {
   readonly ensureCurrent: Effect.Effect<void, CodexEndpointBorrowUnavailableError>;
 }
 
+export interface CodexEndpointRoutedConnectionBorrow extends CodexEndpointConnectionBorrow {
+  readonly router: CodexEndpointRouter;
+}
+
 export interface CodexEndpointSupervisorDependencies {
   readonly makeEndpoint: typeof CodexEndpointFactory.make;
   readonly makeRouter: typeof makeCodexEndpointRouter;
@@ -114,6 +118,11 @@ export interface CodexEndpointSupervisor {
   /** Borrow the current connection for provider-scoped work unrelated to a Cocoa session. */
   readonly borrowConnection: Effect.Effect<
     CodexEndpointConnectionBorrow,
+    CodexEndpointBorrowUnavailableError
+  >;
+  /** Borrow one immutable generation with its shared router for provider-internal operations. */
+  readonly borrowRoutedConnection: Effect.Effect<
+    CodexEndpointRoutedConnectionBorrow,
     CodexEndpointBorrowUnavailableError
   >;
   readonly getState: Effect.Effect<CodexEndpointSupervisorState>;
@@ -290,6 +299,20 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
     ),
     Effect.withSpan("CodexEndpointSupervisor.borrowConnection"),
   );
+
+  const borrowRoutedConnection: CodexEndpointSupervisor["borrowRoutedConnection"] =
+    currentGeneration(connectionUnavailable).pipe(
+      Effect.map(
+        (generation) =>
+          ({
+            generationId: generation.id,
+            connection: generation.connection,
+            router: generation.router,
+            ensureCurrent: ensureGenerationCurrent(generation, connectionUnavailable),
+          }) satisfies CodexEndpointRoutedConnectionBorrow,
+      ),
+      Effect.withSpan("CodexEndpointSupervisor.borrowRoutedConnection"),
+    );
 
   const acquireGeneration = Effect.fn("CodexEndpointSupervisor.acquireGeneration")(function* () {
     const generationScope = yield* Scope.make("sequential");
@@ -509,6 +532,7 @@ export const make = Effect.fn("CodexEndpointSupervisor.make")(function* (
     start,
     borrow,
     borrowConnection,
+    borrowRoutedConnection,
     getState: SynchronizedRef.get(stateRef).pipe(Effect.map((state) => state.publicState)),
     subscribeChanges: PubSub.subscribe(changes),
   } satisfies CodexEndpointSupervisor;
