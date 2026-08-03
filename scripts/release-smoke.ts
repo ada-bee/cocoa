@@ -25,6 +25,7 @@ const workspaceFiles = [
   "infra/relay/package.json",
   "oxlint-plugin-t3code/package.json",
   "packages/client-runtime/package.json",
+  "packages/cocoa-client/package.json",
   "packages/contracts/package.json",
   "packages/shared/package.json",
   "packages/ssh/package.json",
@@ -218,6 +219,7 @@ try {
     "apps/server/package.json",
     "apps/desktop/package.json",
     "apps/web/package.json",
+    "packages/cocoa-client/package.json",
     "packages/contracts/package.json",
   ]) {
     assertPackageVersion(NodePath.resolve(tempRoot, relativePath), "9.9.9-smoke.0");
