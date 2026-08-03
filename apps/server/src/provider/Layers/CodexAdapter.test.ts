@@ -5,6 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
   ApprovalRequestId,
+  ChatImageAttachment,
   CodexSettings,
   EventId,
   ProviderDriverKind,
@@ -27,6 +28,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -35,7 +37,9 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
+import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES } from "../../gatewayManagedImageAttachments.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
@@ -597,6 +601,173 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       });
     }).pipe(Effect.provide(customLayer));
   });
+});
+
+const attachmentRuntimeFactory = makeRuntimeFactory();
+const attachmentLayer = it.layer(
+  Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      const codexConfig = decodeCodexSettings({});
+      return yield* makeCodexAdapter(codexConfig, {
+        makeRuntime: attachmentRuntimeFactory.factory,
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(
+      ServerConfig.layerTest(process.cwd(), { prefix: "codex-adapter-attachments" }),
+    ),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+function makeImageAttachment(sizeBytes: number, suffix = "image") {
+  return ChatImageAttachment.make({
+    type: "image",
+    id: `thread-12345678-1234-1234-1234-123456789abc-${suffix}`,
+    name: `${suffix}.png`,
+    mimeType: "image/png",
+    sizeBytes,
+  });
+}
+
+attachmentLayer("CodexAdapterLive managed image attachments", (it) => {
+  it.effect("sends bounded gateway-managed images as data URLs without gateway paths", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverConfig = yield* ServerConfig;
+      const threadId = asThreadId("attachment-thread");
+      const attachment = makeImageAttachment(5);
+      const attachmentPath = NodePath.join(
+        serverConfig.attachmentsDir,
+        attachmentRelativePath(attachment),
+      );
+      yield* fileSystem.writeFile(attachmentPath, new TextEncoder().encode("hello"));
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = attachmentRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      yield* adapter.sendTurn({
+        threadId,
+        input: "inspect this image",
+        attachments: [attachment],
+      });
+
+      NodeAssert.deepStrictEqual(runtime.sendTurnImpl.mock.calls[0]?.[0], {
+        input: "inspect this image",
+        attachments: [{ type: "image", url: "data:image/png;base64,aGVsbG8=" }],
+      });
+    }),
+  );
+
+  it.effect("rejects declared aggregates above eight MiB before provider input", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("oversized-attachment-thread");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = attachmentRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+      const attachment = makeImageAttachment(
+        Math.ceil((CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES * 3) / 4),
+        "oversized",
+      );
+
+      const result = yield* adapter
+        .sendTurn({ threadId, input: "inspect", attachments: [attachment] })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        NodeAssert.equal(result.failure._tag, "ProviderAdapterRequestError");
+        if (result.failure._tag === "ProviderAdapterRequestError") {
+          NodeAssert.match(result.failure.detail, /size limit/i);
+        }
+      }
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("rejects files whose bytes do not match declared metadata", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverConfig = yield* ServerConfig;
+      const threadId = asThreadId("mismatched-attachment-thread");
+      const attachment = makeImageAttachment(1, "mismatch");
+      yield* fileSystem.writeFile(
+        NodePath.join(serverConfig.attachmentsDir, attachmentRelativePath(attachment)),
+        new Uint8Array(512 * 1024),
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = attachmentRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      const result = yield* adapter
+        .sendTurn({ threadId, input: "inspect", attachments: [attachment] })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        NodeAssert.equal(result.failure._tag, "ProviderAdapterRequestError");
+        if (result.failure._tag === "ProviderAdapterRequestError") {
+          NodeAssert.match(result.failure.detail, /could not be loaded/i);
+        }
+      }
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("rejects more than four images before provider input", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("too-many-attachments-thread");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const runtime = attachmentRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      runtime.sendTurnImpl.mockClear();
+
+      const result = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "inspect",
+          attachments: Array.from({ length: 5 }, (_, index) =>
+            makeImageAttachment(1, `image-${index}`),
+          ),
+        })
+        .pipe(Effect.result);
+
+      NodeAssert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        NodeAssert.equal(result.failure._tag, "ProviderAdapterRequestError");
+        if (result.failure._tag === "ProviderAdapterRequestError") {
+          NodeAssert.match(result.failure.detail, /too many/i);
+        }
+      }
+      NodeAssert.equal(runtime.sendTurnImpl.mock.calls.length, 0);
+    }),
+  );
 });
 
 const lifecycleRuntimeFactory = makeRuntimeFactory();

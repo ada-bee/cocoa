@@ -11,6 +11,10 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import {
+  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES,
+  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES,
+} from "../../gatewayManagedImageAttachments.ts";
 import { CodexEndpointTerminationError } from "./CodexEndpointConnection.ts";
 import {
   CodexEndpointInternalOperationRegistrationError,
@@ -26,9 +30,11 @@ export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_PROMPT_CHARS = 128_000;
 export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_PROMPT_BYTES = 256 * 1024;
 export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
 export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_OUTPUT_BYTES = 256 * 1024;
-export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES = 4;
-export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES = 8 * 1024 * 1024;
 export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_REMOTE_PATH_BYTES = 4096;
+export {
+  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES,
+  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES,
+} from "../../gatewayManagedImageAttachments.ts";
 
 const IMAGE_DATA_URL_PATTERN = /^data:image\/[a-zA-Z0-9.+-]+;base64,([a-zA-Z0-9+/]+={0,2})$/;
 const UTF8_ENCODER = new TextEncoder();

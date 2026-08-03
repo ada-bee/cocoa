@@ -5,16 +5,15 @@ import {
 } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { resolveAttachmentPath } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
 import {
-  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES,
-  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES,
+  type GatewayManagedImageAttachmentError,
+  materializeGatewayManagedImageDataUrls,
+} from "../gatewayManagedImageAttachments.ts";
+import {
   makeCodexEndpointStructuredGeneration,
   type CodexEndpointStructuredGenerationError,
   type MakeCodexEndpointStructuredGenerationOptions,
@@ -38,13 +37,6 @@ type TextGenerationOperation =
   | "generatePrContent"
   | "generateBranchName"
   | "generateThreadTitle";
-
-const IMAGE_MIME_TYPE_PATTERN = /^image\/[a-z0-9.+-]+$/i;
-
-class CodexEndpointAttachmentFileMismatchError extends Schema.TaggedErrorClass<CodexEndpointAttachmentFileMismatchError>()(
-  "CodexEndpointAttachmentFileMismatchError",
-  {},
-) {}
 
 interface CodexEndpointTextGenerationDependencies {
   readonly makeStructuredGeneration: typeof makeCodexEndpointStructuredGeneration;
@@ -86,45 +78,21 @@ function structuredGenerationFailureDetail(error: CodexEndpointStructuredGenerat
   }
 }
 
-function encodedDataUrlSize(attachment: ChatAttachment): number {
-  const mimeType = attachment.mimeType.toLowerCase();
-  return `data:${mimeType};base64,`.length + Math.ceil(attachment.sizeBytes / 3) * 4;
+function attachmentFailureDetail(error: GatewayManagedImageAttachmentError): string {
+  switch (error.reason) {
+    case "too-many-images":
+      return "Too many image attachments were supplied for text generation.";
+    case "invalid-image":
+      return "An image attachment is invalid for text generation.";
+    case "aggregate-too-large":
+      return "Image attachments exceed the text-generation size limit.";
+    case "unresolved-image":
+      return "A gateway-managed image attachment could not be resolved.";
+    case "file-mismatch":
+    case "read-failed":
+      return "A gateway-managed image attachment could not be loaded.";
+  }
 }
-
-const readManagedAttachmentBounded = Effect.fn(
-  "CodexEndpointTextGeneration.readManagedAttachmentBounded",
-)(function* (fileSystem: FileSystem.FileSystem, path: string, declaredSize: number) {
-  return yield* Effect.scoped(
-    Effect.gen(function* () {
-      const file = yield* fileSystem.open(path, { flag: "r" });
-      const info = yield* file.stat;
-      if (info.type !== "File" || info.size !== BigInt(declaredSize)) {
-        return yield* new CodexEndpointAttachmentFileMismatchError({});
-      }
-
-      const limit = declaredSize + 1;
-      const chunks: Array<Uint8Array> = [];
-      let total = 0;
-      while (total < limit) {
-        const chunk = yield* file.readAlloc(Math.min(64 * 1024, limit - total));
-        if (Option.isNone(chunk)) break;
-        chunks.push(chunk.value);
-        total += chunk.value.byteLength;
-      }
-      if (total !== declaredSize) {
-        return yield* new CodexEndpointAttachmentFileMismatchError({});
-      }
-
-      const bytes = new Uint8Array(total);
-      let offset = 0;
-      for (const chunk of chunks) {
-        bytes.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      return bytes;
-    }),
-  );
-});
 
 export const makeCodexEndpointTextGeneration = Effect.fn("makeCodexEndpointTextGeneration")(
   function* (
@@ -146,73 +114,15 @@ export const makeCodexEndpointTextGeneration = Effect.fn("makeCodexEndpointTextG
       operation: TextGenerationOperation,
       attachments: ReadonlyArray<ChatAttachment> | undefined,
     ): Effect.fn.Return<ReadonlyArray<string>, TextGenerationError> {
-      if (attachments === undefined || attachments.length === 0) return [];
-      if (attachments.length > CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES) {
-        return yield* textGenerationFailure(
-          operation,
-          "Too many image attachments were supplied for text generation.",
-        );
-      }
-
-      let estimatedBytes = 0;
-      for (const attachment of attachments) {
-        if (!IMAGE_MIME_TYPE_PATTERN.test(attachment.mimeType) || attachment.sizeBytes <= 0) {
-          return yield* textGenerationFailure(
-            operation,
-            "An image attachment is invalid for text generation.",
-          );
-        }
-        estimatedBytes += encodedDataUrlSize(attachment);
-        if (estimatedBytes > CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES) {
-          return yield* textGenerationFailure(
-            operation,
-            "Image attachments exceed the text-generation size limit.",
-          );
-        }
-      }
-
-      let aggregateBytes = 0;
-      const dataUrls: Array<string> = [];
-      for (const attachment of attachments) {
-        const attachmentPath = resolveAttachmentPath({
-          attachmentsDir: serverConfig.attachmentsDir,
-          attachment,
-        });
-        if (attachmentPath === null) {
-          return yield* textGenerationFailure(
-            operation,
-            "A gateway-managed image attachment could not be resolved.",
-          );
-        }
-        const bytes = yield* readManagedAttachmentBounded(
-          fileSystem,
-          attachmentPath,
-          attachment.sizeBytes,
-        ).pipe(
-          Effect.mapError(() =>
-            textGenerationFailure(
-              operation,
-              "A gateway-managed image attachment could not be loaded.",
-            ),
-          ),
-        );
-        if (bytes.byteLength === 0) {
-          return yield* textGenerationFailure(
-            operation,
-            "An image attachment is invalid for text generation.",
-          );
-        }
-        const dataUrl = `data:${attachment.mimeType.toLowerCase()};base64,${Encoding.encodeBase64(bytes)}`;
-        aggregateBytes += dataUrl.length;
-        if (aggregateBytes > CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES) {
-          return yield* textGenerationFailure(
-            operation,
-            "Image attachments exceed the text-generation size limit.",
-          );
-        }
-        dataUrls.push(dataUrl);
-      }
-      return dataUrls;
+      return yield* materializeGatewayManagedImageDataUrls({
+        attachmentsDir: serverConfig.attachmentsDir,
+        attachments,
+        fileSystem,
+      }).pipe(
+        Effect.mapError((error) =>
+          textGenerationFailure(operation, attachmentFailureDetail(error)),
+        ),
+      );
     });
 
     const runStructured = Effect.fn("CodexEndpointTextGeneration.runStructured")(function* <

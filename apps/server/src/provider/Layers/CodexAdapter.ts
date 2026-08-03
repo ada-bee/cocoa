@@ -22,7 +22,6 @@ import {
   RuntimeRequestId,
   ProviderApprovalDecision,
   ThreadId,
-  ProviderSendTurnInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
@@ -39,6 +38,10 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import {
+  type GatewayManagedImageAttachmentError,
+  materializeGatewayManagedImageDataUrls,
+} from "../../gatewayManagedImageAttachments.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
 import {
@@ -50,7 +53,6 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { type CodexAdapterShape } from "../Services/CodexAdapter.ts";
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   CodexResumeCursorSchema,
@@ -70,6 +72,22 @@ const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
 const isCodexResumeCursorSchema = Schema.is(CodexResumeCursorSchema);
 
 const PROVIDER = ProviderDriverKind.make("codex");
+
+function attachmentFailureDetail(error: GatewayManagedImageAttachmentError): string {
+  switch (error.reason) {
+    case "too-many-images":
+      return "Too many image attachments were supplied.";
+    case "invalid-image":
+      return "An image attachment is invalid.";
+    case "aggregate-too-large":
+      return "Image attachments exceed the supported size limit.";
+    case "unresolved-image":
+      return "A gateway-managed image attachment could not be resolved.";
+    case "file-mismatch":
+    case "read-failed":
+      return "A gateway-managed image attachment could not be loaded.";
+  }
+}
 
 export interface CodexAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -1513,46 +1531,24 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       }),
     );
 
-  const resolveAttachment = Effect.fn("resolveAttachment")(function* (
-    input: ProviderSendTurnInput,
-    attachment: NonNullable<ProviderSendTurnInput["attachments"]>[number],
-  ) {
-    const attachmentPath = resolveAttachmentPath({
+  const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
+    const session = yield* requireSession(input.threadId);
+    const imageDataUrls = yield* materializeGatewayManagedImageDataUrls({
       attachmentsDir: serverConfig.attachmentsDir,
-      attachment,
-    });
-    if (!attachmentPath) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/start",
-        detail: `Invalid attachment id '${attachment.id}'.`,
-      });
-    }
-    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+      attachments: input.attachments,
+      fileSystem,
+    }).pipe(
       Effect.mapError(
-        (cause) =>
+        (error) =>
           new ProviderAdapterRequestError({
             provider: PROVIDER,
             method: "turn/start",
-            detail: `Failed to read attachment file: ${cause.message}.`,
-            cause,
+            detail: attachmentFailureDetail(error),
           }),
       ),
     );
-    return {
-      type: "image" as const,
-      url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
-    };
-  });
+    const codexAttachments = imageDataUrls.map((url) => ({ type: "image" as const, url }));
 
-  const sendTurn: CodexAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
-    const codexAttachments = yield* Effect.forEach(
-      input.attachments ?? [],
-      (attachment) => resolveAttachment(input, attachment),
-      { concurrency: 1 },
-    );
-
-    const session = yield* requireSession(input.threadId);
     const reasoningEffort =
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")
