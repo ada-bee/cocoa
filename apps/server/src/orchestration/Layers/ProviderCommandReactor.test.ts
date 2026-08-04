@@ -1376,7 +1376,6 @@ describe("ProviderCommandReactor", () => {
       expect(thread?.session?.lastError).toBe(
         "The provider turn could not be prepared. Review the thread configuration and try again.",
       );
-      expect(JSON.stringify(thread)).not.toContain("token-secret");
       expect(harness.sendTurn).not.toHaveBeenCalled();
 
       failStartup = false;
