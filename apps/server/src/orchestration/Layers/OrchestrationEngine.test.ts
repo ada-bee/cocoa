@@ -2,12 +2,16 @@ import {
   CheckpointRef,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  ApprovalRequestId,
+  EventId,
   MessageId,
   ProjectId,
   ThreadId,
   TurnId,
   type OrchestrationEvent,
   ProviderInstanceId,
+  ProviderDriverKind,
+  type OrchestrationCommand,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
@@ -26,7 +30,11 @@ import { describe, expect, it } from "vite-plus/test";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
+import { CheckpointRevertIntentRepositoryLive } from "../../persistence/Layers/CheckpointRevertIntents.ts";
+import { CheckpointRevertSagaRepositoryLive } from "../../persistence/Layers/CheckpointRevertSagas.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { CheckpointRevertIntentRepository } from "../../persistence/Services/CheckpointRevertIntents.ts";
+import { CheckpointRevertSagaRepository } from "../../persistence/Services/CheckpointRevertSagas.ts";
 import {
   OrchestrationEventStore,
   type OrchestrationEventStoreShape,
@@ -46,6 +54,8 @@ import {
 } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
+import { makeRestoreCheckpointOperationId } from "../../checkpointing/CheckpointIds.ts";
+import { OrchestrationCommandBlockedByRevertError } from "../Errors.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
@@ -62,6 +72,8 @@ async function createOrchestrationSystem(options?: OrchestrationEngineLiveOption
       Layer.provide(OrchestrationProjectionPipelineLive),
     ),
     OrchestrationProjectionSnapshotQueryLive,
+    CheckpointRevertIntentRepositoryLive,
+    CheckpointRevertSagaRepositoryLive,
   ).pipe(
     Layer.provide(OrchestrationEventStoreLive),
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
@@ -73,8 +85,12 @@ async function createOrchestrationSystem(options?: OrchestrationEngineLiveOption
   const runtime = ManagedRuntime.make(orchestrationLayer);
   const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
   const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
+  const revertIntents = await runtime.runPromise(Effect.service(CheckpointRevertIntentRepository));
+  const revertSagas = await runtime.runPromise(Effect.service(CheckpointRevertSagaRepository));
   return {
     engine,
+    revertIntents,
+    revertSagas,
     readModel: () => runtime.runPromise(snapshotQuery.getSnapshot()),
     run: <A, E>(effect: Effect.Effect<A, E>) => runtime.runPromise(effect),
     dispose: () => runtime.dispose(),
@@ -1260,6 +1276,269 @@ describe("OrchestrationEngine", () => {
       ),
     ).rejects.toThrow("Thread 'thread-missing' does not exist");
 
+    await system.dispose();
+  });
+
+  it("serializes durable revert isolation across thread and project commands", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine, revertIntents, revertSagas } = system;
+    const projectId = asProjectId("project-revert-isolation");
+    const threadId = ThreadId.make("thread-revert-isolation");
+    const createdAt = now();
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-revert-isolation-project"),
+        projectId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        title: "Revert isolation",
+        workspaceRoot: "/remote/revert-isolation",
+        defaultModelSelection: null,
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-revert-isolation-thread"),
+        threadId,
+        projectId,
+        title: "Revert isolation",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-revert-isolation-request"),
+        threadId,
+        turnCount: 0,
+        createdAt,
+      }),
+    );
+
+    const intent = Option.getOrThrow(
+      await system.run(revertIntents.getActiveByThread({ threadId })),
+    );
+    const blockedMetaCommand = {
+      type: "thread.meta.update",
+      commandId: CommandId.make("cmd-revert-isolation-meta"),
+      threadId,
+      title: "blocked",
+    } as const satisfies OrchestrationCommand;
+    const conflictingCommands = [
+      {
+        type: "thread.delete",
+        commandId: CommandId.make("cmd-revert-isolation-delete"),
+        threadId,
+      },
+      {
+        type: "thread.archive",
+        commandId: CommandId.make("cmd-revert-isolation-archive"),
+        threadId,
+      },
+      blockedMetaCommand,
+      {
+        type: "thread.session.stop",
+        commandId: CommandId.make("cmd-revert-isolation-session"),
+        threadId,
+        createdAt,
+      },
+      {
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-revert-isolation-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-revert-isolation"),
+          role: "user",
+          text: "must wait",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt,
+      },
+      {
+        type: "thread.approval.respond",
+        commandId: CommandId.make("cmd-revert-isolation-approval"),
+        threadId,
+        requestId: ApprovalRequestId.make("approval-revert-isolation"),
+        decision: "accept",
+        createdAt,
+      },
+      {
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-revert-isolation-activity"),
+        threadId,
+        activity: {
+          id: EventId.make("activity-revert-isolation"),
+          tone: "error",
+          kind: "provider.command.failed",
+          summary: "must wait",
+          payload: {},
+          turnId: null,
+          createdAt,
+        },
+        createdAt,
+      },
+      {
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-revert-isolation-second-revert"),
+        threadId,
+        turnCount: 0,
+        createdAt,
+      },
+      {
+        type: "project.meta.update",
+        commandId: CommandId.make("cmd-revert-isolation-project-meta"),
+        projectId,
+        workspaceRoot: "/remote/revert-isolation-moved",
+      },
+      {
+        type: "project.delete",
+        commandId: CommandId.make("cmd-revert-isolation-project-delete"),
+        projectId,
+      },
+    ] as const satisfies ReadonlyArray<OrchestrationCommand>;
+
+    const blocked = await Promise.all(
+      conflictingCommands.map((command) =>
+        system.run(engine.dispatch(command)).then(
+          () => null,
+          (error: unknown) => error,
+        ),
+      ),
+    );
+    for (const error of blocked) {
+      expect(error).toBeInstanceOf(OrchestrationCommandBlockedByRevertError);
+      expect(error).toMatchObject({ threadId, retryable: true });
+    }
+
+    const terminalActivityId = `server:checkpoint-revert-terminal:${intent.sourceEventId}:failed`;
+    await expect(
+      system.run(
+        engine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make(terminalActivityId),
+          threadId,
+          activity: {
+            id: EventId.make(terminalActivityId),
+            tone: "error",
+            kind: "checkpoint.revert.failed",
+            summary: "Checkpoint revert failed",
+            payload: { turnCount: intent.requestedTurnCount, outcome: "failed" },
+            turnId: null,
+            createdAt: intent.requestedAt,
+          },
+          createdAt: intent.requestedAt,
+        }),
+      ),
+    ).resolves.toEqual({ sequence: intent.sourceSequence + 1 });
+
+    const saga = (
+      await system.run(
+        revertSagas.getOrCreate({
+          sourceRevertEventId: intent.sourceEventId,
+          sourceCommandId: intent.sourceCommandId,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          projectId,
+          threadId,
+          providerDriverKind: ProviderDriverKind.make("codex"),
+          continuationIdentitySha256: "a".repeat(64),
+          requestedTurnCount: 0,
+          preimageTurnCount: 0,
+          preimage: { count: 0, sha256: "b".repeat(64) },
+          target: { count: 0, sha256: "b".repeat(64) },
+          retainedLogicalCheckpointId: "00000000-0000-4000-8000-000000000001",
+          retainedExpectedCheckpointOid: "c".repeat(40),
+          repositoryFingerprint: "d".repeat(64),
+          repositoryObjectFormat: "sha1",
+          restoreOperationId: makeRestoreCheckpointOperationId({
+            revertEventId: intent.sourceEventId,
+          }),
+          staleTargets: [],
+          createdAt: intent.createdAt,
+        }),
+      )
+    ).saga;
+    await system.run(
+      revertIntents.linkSaga({ sourceEventId: intent.sourceEventId, sagaId: saga.sagaId }),
+    );
+    await system.run(
+      revertSagas.markRollbackInFlight({ sagaId: saga.sagaId, updatedAt: createdAt }),
+    );
+    await system.run(
+      revertSagas.markRollbackCompleted({ sagaId: saga.sagaId, updatedAt: createdAt }),
+    );
+    await system.run(revertSagas.markRestoring({ sagaId: saga.sagaId, updatedAt: createdAt }));
+    await system.run(revertSagas.markRestored({ sagaId: saga.sagaId, updatedAt: createdAt }));
+    const completionCommandId = CommandId.make(`server:checkpoint-revert:${saga.sagaId}`);
+    const completionCommand = {
+      type: "thread.revert.complete",
+      commandId: completionCommandId,
+      threadId,
+      turnCount: 0,
+      createdAt,
+    } as const satisfies OrchestrationCommand;
+    await expect(system.run(engine.dispatch(completionCommand))).rejects.toBeInstanceOf(
+      OrchestrationCommandBlockedByRevertError,
+    );
+    await system.run(
+      revertSagas.beginDomainFinalization({
+        sagaId: saga.sagaId,
+        finalizationStartedAt: createdAt,
+        updatedAt: createdAt,
+      }),
+    );
+
+    await expect(
+      system.run(
+        engine.dispatch({
+          type: "thread.revert.complete",
+          commandId: completionCommandId,
+          threadId,
+          turnCount: 1,
+          createdAt,
+        }),
+      ),
+    ).rejects.toBeInstanceOf(OrchestrationCommandBlockedByRevertError);
+
+    const completed = await system.run(engine.dispatch(completionCommand));
+    await system.run(
+      revertSagas.markDomainFinalized({
+        sagaId: saga.sagaId,
+        sequence: completed.sequence,
+        updatedAt: createdAt,
+      }),
+    );
+    await system.run(
+      revertSagas.complete({
+        sagaId: saga.sagaId,
+        completedAt: createdAt,
+        updatedAt: createdAt,
+      }),
+    );
+    await system.run(
+      revertIntents.markTerminal({
+        sourceEventId: intent.sourceEventId,
+        sagaId: saga.sagaId,
+        outcome: "completed",
+        terminalAt: createdAt,
+      }),
+    );
+
+    await expect(system.run(engine.dispatch(blockedMetaCommand))).resolves.toEqual({
+      sequence: completed.sequence + 1,
+    });
+    expect((await system.readModel()).threads.find((thread) => thread.id === threadId)?.title).toBe(
+      "blocked",
+    );
     await system.dispose();
   });
 

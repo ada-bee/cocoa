@@ -70,6 +70,23 @@ export class OrchestrationCommandBusyError extends Schema.TaggedErrorClass<Orche
   }
 }
 
+/**
+ * Retryable rejection from the serialized command worker while a durable
+ * checkpoint revert owns the thread. Deliberately excludes saga/provider data.
+ */
+export class OrchestrationCommandBlockedByRevertError extends Schema.TaggedErrorClass<OrchestrationCommandBlockedByRevertError>()(
+  "OrchestrationCommandBlockedByRevertError",
+  {
+    commandId: Schema.String,
+    threadId: Schema.String,
+    retryable: Schema.Literal(true),
+  },
+) {
+  override get message(): string {
+    return `Orchestration command is blocked by an active checkpoint revert (${this.commandId}).`;
+  }
+}
+
 export class OrchestrationProjectorDecodeError extends Schema.TaggedErrorClass<OrchestrationProjectorDecodeError>()(
   "OrchestrationProjectorDecodeError",
   {
@@ -99,6 +116,7 @@ export class OrchestrationListenerCallbackError extends Schema.TaggedErrorClass<
 export type OrchestrationDispatchError =
   | ProjectionRepositoryError
   | OrchestrationCommandBusyError
+  | OrchestrationCommandBlockedByRevertError
   | OrchestrationCommandInvariantError
   | OrchestrationCommandPreviouslyRejectedError
   | OrchestrationProjectorDecodeError

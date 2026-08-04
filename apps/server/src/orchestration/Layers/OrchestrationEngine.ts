@@ -28,11 +28,27 @@ import {
   orchestrationCommandsTotal,
   orchestrationCommandDuration,
 } from "../../observability/Metrics.ts";
-import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import {
+  PersistenceDecodeError,
+  PersistenceSqlError,
+  toPersistenceSqlError,
+  type ProjectionRepositoryError,
+} from "../../persistence/Errors.ts";
+import { CheckpointRevertIntentRepositoryLive } from "../../persistence/Layers/CheckpointRevertIntents.ts";
+import { CheckpointRevertSagaRepositoryLive } from "../../persistence/Layers/CheckpointRevertSagas.ts";
+import {
+  CheckpointRevertIntentRepository,
+  type CheckpointRevertIntent,
+} from "../../persistence/Services/CheckpointRevertIntents.ts";
+import {
+  CheckpointRevertSagaRepository,
+  type CheckpointRevertSaga,
+} from "../../persistence/Services/CheckpointRevertSagas.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
   OrchestrationCommandBusyError,
+  OrchestrationCommandBlockedByRevertError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
@@ -55,6 +71,8 @@ const isOrchestrationCommandPreviouslyRejectedError = Schema.is(
   OrchestrationCommandPreviouslyRejectedError,
 );
 const isOrchestrationCommandInvariantError = Schema.is(OrchestrationCommandInvariantError);
+const isPersistenceSqlError = Schema.is(PersistenceSqlError);
+const isPersistenceDecodeError = Schema.is(PersistenceDecodeError);
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
@@ -82,6 +100,68 @@ function commandToAggregateRef(command: OrchestrationCommand): {
   }
 }
 
+function isAllowedRevertSagaCommand(
+  command: OrchestrationCommand,
+  intent: CheckpointRevertIntent,
+  saga: CheckpointRevertSaga | undefined,
+): boolean {
+  if (
+    command.type === "thread.revert.complete" &&
+    intent.sagaId !== null &&
+    saga !== undefined &&
+    saga.sagaId === intent.sagaId &&
+    saga.threadId === intent.threadId &&
+    saga.sourceRevertEventId === intent.sourceEventId &&
+    saga.state === "restored" &&
+    saga.finalizationStartedAt !== null &&
+    command.commandId === `server:checkpoint-revert:${intent.sagaId}` &&
+    command.turnCount === intent.requestedTurnCount &&
+    command.createdAt === saga.finalizationStartedAt
+  ) {
+    return true;
+  }
+  if (
+    command.type !== "thread.activity.append" ||
+    command.activity.tone !== "error" ||
+    command.activity.turnId !== null ||
+    command.activity.createdAt !== intent.requestedAt ||
+    command.createdAt !== intent.requestedAt
+  ) {
+    return false;
+  }
+  const outcome =
+    command.activity.kind === "checkpoint.revert.failed"
+      ? "failed"
+      : command.activity.kind === "checkpoint.revert.indeterminate"
+        ? "indeterminate"
+        : null;
+  if (outcome === null) return false;
+  const deterministicId =
+    `server:checkpoint-revert-terminal:${intent.sourceEventId}:${outcome}` as const;
+  const expectedSummary =
+    outcome === "failed" ? "Checkpoint revert failed" : "Checkpoint revert needs attention";
+  const payload = command.activity.payload;
+  return (
+    command.commandId === deterministicId &&
+    command.activity.id === deterministicId &&
+    command.activity.summary === expectedSummary &&
+    typeof payload === "object" &&
+    payload !== null &&
+    !Array.isArray(payload) &&
+    Object.keys(payload).length === 2 &&
+    "turnCount" in payload &&
+    payload.turnCount === intent.requestedTurnCount &&
+    "outcome" in payload &&
+    payload.outcome === outcome
+  );
+}
+
+function toRevertIntentLookupError(error: unknown): ProjectionRepositoryError {
+  return isPersistenceSqlError(error) || isPersistenceDecodeError(error)
+    ? error
+    : toPersistenceSqlError("OrchestrationEngine.getActiveCheckpointRevertIntent")(error);
+}
+
 export interface OrchestrationEngineLiveOptions {
   readonly bufferLimits?: RuntimeBufferLimitOverrides;
 }
@@ -92,6 +172,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const checkpointRevertIntents = yield* CheckpointRevertIntentRepository;
+  const checkpointRevertSagas = yield* CheckpointRevertSagaRepository;
   const crypto = yield* Crypto.Crypto;
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -164,6 +246,42 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             commandId: envelope.command.commandId,
             detail: existingReceipt.value.error ?? "Previously rejected.",
           });
+        }
+
+        const assertThreadAvailable = Effect.fn("OrchestrationEngine.assertThreadAvailable")(
+          function* (threadId: ThreadId) {
+            const intent = yield* checkpointRevertIntents
+              .getActiveByThread({ threadId })
+              .pipe(Effect.mapError(toRevertIntentLookupError));
+            if (Option.isNone(intent)) return;
+            const saga =
+              intent.value.sagaId === null
+                ? undefined
+                : Option.getOrUndefined(
+                    yield* checkpointRevertSagas
+                      .getBySagaId({ sagaId: intent.value.sagaId })
+                      .pipe(Effect.mapError(toRevertIntentLookupError)),
+                  );
+            if (isAllowedRevertSagaCommand(envelope.command, intent.value, saga)) return;
+            return yield* new OrchestrationCommandBlockedByRevertError({
+              commandId: envelope.command.commandId,
+              threadId,
+              retryable: true,
+            });
+          },
+        );
+
+        if (
+          envelope.command.type === "project.meta.update" ||
+          envelope.command.type === "project.delete"
+        ) {
+          for (const thread of commandReadModel.threads) {
+            if (thread.projectId === envelope.command.projectId) {
+              yield* assertThreadAvailable(thread.id);
+            }
+          }
+        } else if (envelope.command.type !== "project.create") {
+          yield* assertThreadAvailable(envelope.command.threadId);
         }
 
         const eventBase = yield* decideOrchestrationCommand({
@@ -364,6 +482,10 @@ export const OrchestrationEngineLive = Layer.effect(
   makeOrchestrationEngine.pipe(
     Effect.provideService(RuntimeBufferLimitsService, resolveRuntimeBufferLimits(undefined)),
   ),
+).pipe(
+  Layer.provide(
+    Layer.mergeAll(CheckpointRevertIntentRepositoryLive, CheckpointRevertSagaRepositoryLive),
+  ),
 );
 
 export function makeOrchestrationEngineLive(options?: OrchestrationEngineLiveOptions) {
@@ -374,6 +496,10 @@ export function makeOrchestrationEngineLive(options?: OrchestrationEngineLiveOpt
         RuntimeBufferLimitsService,
         resolveRuntimeBufferLimits(options?.bufferLimits),
       ),
+    ),
+  ).pipe(
+    Layer.provide(
+      Layer.mergeAll(CheckpointRevertIntentRepositoryLive, CheckpointRevertSagaRepositoryLive),
     ),
   );
 }
