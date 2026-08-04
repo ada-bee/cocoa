@@ -5872,6 +5872,117 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("sanitizes legacy dispatch failures without leaking paths, URLs, or secrets", () =>
+    Effect.gen(function* () {
+      const sensitivePath = "/Users/private/workspace/.env";
+      const sensitiveUrl = "https://user:password@example.test/repo?token=secret-token";
+      const sensitiveSecret = "authorization: Bearer secret-token";
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () =>
+              Effect.fail(
+                new OrchestrationListenerCallbackError({
+                  listener: "domain-event",
+                  detail: `${sensitivePath} ${sensitiveUrl} ${sensitiveSecret}`,
+                  cause: new Error(`${sensitiveSecret} at ${sensitivePath}`),
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId: CommandId.make("cmd-sensitive-dispatch-failure"),
+            threadId: defaultThreadId,
+          }),
+        ).pipe(Effect.result),
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        const failure = result.failure as {
+          readonly _tag: string;
+          readonly code?: unknown;
+          readonly message: string;
+        };
+        assert.equal(failure._tag, "OrchestrationDispatchCommandError");
+        assert.equal(failure.code, "dispatch_failed");
+        assert.equal(failure.message, "Failed to dispatch orchestration command");
+        assert.notProperty(failure, "cause");
+        for (const sensitiveValue of [
+          sensitivePath,
+          sensitiveUrl,
+          sensitiveSecret,
+          "secret-token",
+        ]) {
+          assert.notInclude(failure.message, sensitiveValue);
+        }
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("sanitizes legacy normalization failures containing client-controlled names", () =>
+    Effect.gen(function* () {
+      const sensitiveName = "/private/path https://example.test/?token=secret-token.png";
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: () => Effect.die("normalization failure must not reach dispatch"),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.turn.start",
+            commandId: CommandId.make("cmd-sensitive-normalization-failure"),
+            threadId: defaultThreadId,
+            message: {
+              messageId: MessageId.make("message-sensitive-normalization-failure"),
+              role: "user",
+              text: "inspect",
+              attachments: [
+                {
+                  type: "image",
+                  name: sensitiveName,
+                  mimeType: "image/png",
+                  sizeBytes: 1,
+                  dataUrl: "not-a-data-url",
+                },
+              ],
+            },
+            modelSelection: defaultModelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ).pipe(Effect.result),
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        const failure = result.failure as {
+          readonly _tag: string;
+          readonly code?: unknown;
+          readonly message: string;
+        };
+        assert.equal(failure._tag, "OrchestrationDispatchCommandError");
+        assert.equal(failure.code, "dispatch_failed");
+        assert.equal(failure.message, "Failed to dispatch orchestration command");
+        assert.notProperty(failure, "cause");
+        assert.notInclude(failure.message, sensitiveName);
+        assert.notInclude(failure.message, "secret-token");
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("routes websocket rpc orchestration methods", () =>
     Effect.gen(function* () {
       const now = "2026-01-01T00:00:00.000Z";

@@ -1,7 +1,9 @@
 import { ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -160,6 +162,162 @@ it.effect("isolates notifications for two Cocoa sessions", () =>
     assert.equal(yield* Queue.take(secondNotifications), "native-thread-2");
     assert.equal(yield* Queue.size(firstNotifications), 0);
     assert.equal(yield* Queue.size(secondNotifications), 0);
+  }),
+);
+
+it.effect("applies lossless backpressure to a bound session notification burst", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client, {
+      sessionNotificationCapacity: 1,
+    });
+    const callbackStarted = yield* Deferred.make<void>();
+    const releaseCallback = yield* Deferred.make<void>();
+    const delivered = yield* Queue.unbounded<number>();
+    const registration = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-thread"),
+      callbacks: makeCallbacks({
+        onNotification: (_method, params) =>
+          Effect.gen(function* () {
+            const sequence = (params as { sequence: number }).sequence;
+            yield* Queue.offer(delivered, sequence);
+            if (sequence === 1) {
+              yield* Deferred.succeed(callbackStarted, undefined);
+              yield* Deferred.await(releaseCallback);
+            }
+          }),
+      }),
+    });
+    yield* registration.bindNativeThreadId("native-thread");
+
+    const first = yield* Effect.forkChild(
+      fake.emitNotification("thread/status/changed", {
+        threadId: "native-thread",
+        sequence: 1,
+      }),
+      { startImmediately: true },
+    );
+    yield* Deferred.await(callbackStarted);
+    const second = yield* Effect.forkChild(
+      fake.emitNotification("thread/status/changed", {
+        threadId: "native-thread",
+        sequence: 2,
+      }),
+      { startImmediately: true },
+    );
+    const third = yield* Effect.forkChild(
+      fake.emitNotification("thread/status/changed", {
+        threadId: "native-thread",
+        sequence: 3,
+      }),
+      { startImmediately: true },
+    );
+    yield* Effect.yieldNow;
+
+    yield* Deferred.succeed(releaseCallback, undefined);
+    yield* Fiber.join(first);
+    yield* Fiber.join(second);
+    yield* Fiber.join(third);
+    assert.deepEqual(
+      [yield* Queue.take(delivered), yield* Queue.take(delivered), yield* Queue.take(delivered)],
+      [1, 2, 3],
+    );
+  }),
+);
+
+it.effect("drains a pre-bind backlog through the bounded session mailbox without loss", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client, {
+      unboundNotificationBacklogCapacity: 4,
+      sessionNotificationCapacity: 1,
+    });
+    const callbackStarted = yield* Deferred.make<void>();
+    const releaseCallback = yield* Deferred.make<void>();
+    const delivered = yield* Queue.unbounded<number>();
+    const registration = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-thread"),
+      callbacks: makeCallbacks({
+        onNotification: (_method, params) =>
+          Effect.gen(function* () {
+            const sequence = (params as { sequence: number }).sequence;
+            yield* Queue.offer(delivered, sequence);
+            if (sequence === 1) {
+              yield* Deferred.succeed(callbackStarted, undefined);
+              yield* Deferred.await(releaseCallback);
+            }
+          }),
+      }),
+    });
+    for (const sequence of [1, 2, 3]) {
+      yield* fake.emitNotification("thread/status/changed", {
+        threadId: "native-thread",
+        sequence,
+      });
+    }
+
+    const binding = yield* Effect.forkChild(registration.bindNativeThreadId("native-thread"), {
+      startImmediately: true,
+    });
+    yield* Deferred.await(callbackStarted);
+    yield* Effect.yieldNow;
+
+    yield* Deferred.succeed(releaseCallback, undefined);
+    yield* Fiber.join(binding);
+    assert.deepEqual(
+      [yield* Queue.take(delivered), yield* Queue.take(delivered), yield* Queue.take(delivered)],
+      [1, 2, 3],
+    );
+  }),
+);
+
+it.effect("applies the same lossless backpressure to version-skewed notifications", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client, {
+      sessionNotificationCapacity: 1,
+    });
+    const callbackStarted = yield* Deferred.make<void>();
+    const releaseCallback = yield* Deferred.make<void>();
+    const delivered = yield* Queue.unbounded<string>();
+    const registration = yield* router.registerSession({
+      threadId: ThreadId.make("cocoa-thread"),
+      callbacks: makeCallbacks({
+        onNotification: (method) =>
+          Effect.gen(function* () {
+            yield* Queue.offer(delivered, method);
+            if (method === "future/event-1") {
+              yield* Deferred.succeed(callbackStarted, undefined);
+              yield* Deferred.await(releaseCallback);
+            }
+          }),
+      }),
+    });
+    yield* registration.bindNativeThreadId("native-thread");
+
+    const first = yield* Effect.forkChild(
+      fake.emitUnknownNotification("future/event-1", { threadId: "native-thread" }),
+      { startImmediately: true },
+    );
+    yield* Deferred.await(callbackStarted);
+    const second = yield* Effect.forkChild(
+      fake.emitUnknownNotification("future/event-2", { threadId: "native-thread" }),
+      { startImmediately: true },
+    );
+    const third = yield* Effect.forkChild(
+      fake.emitUnknownNotification("future/event-3", { threadId: "native-thread" }),
+      { startImmediately: true },
+    );
+    yield* Effect.yieldNow;
+
+    yield* Deferred.succeed(releaseCallback, undefined);
+    yield* Fiber.join(first);
+    yield* Fiber.join(second);
+    yield* Fiber.join(third);
+    assert.deepEqual(
+      [yield* Queue.take(delivered), yield* Queue.take(delivered), yield* Queue.take(delivered)],
+      ["future/event-1", "future/event-2", "future/event-3"],
+    );
   }),
 );
 

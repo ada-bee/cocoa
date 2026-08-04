@@ -4,6 +4,8 @@
  * Notifications which arrive before a native thread is bound retain the newest
  * `unboundNotificationBacklogCapacity` entries for that native thread. Older entries are dropped.
  * The number of native-thread backlog buckets is also bounded; the oldest bucket is evicted first.
+ * Once a route is bound, its finite mailbox applies lossless backpressure so a
+ * slow session can never make the router silently discard provider state.
  *
  * @module CodexEndpointRouter
  */
@@ -73,7 +75,7 @@ export interface CodexEndpointRouterOptions {
   readonly unboundNotificationBacklogCapacity?: number;
   /** Maximum number of unbound native-thread backlog buckets. The oldest bucket is evicted. */
   readonly unboundNativeThreadCapacity?: number;
-  /** Per-session delivery mailbox. New notifications are dropped when a slow callback fills it. */
+  /** Per-session delivery mailbox. A slow callback applies lossless backpressure when full. */
   readonly sessionNotificationCapacity?: number;
   /**
    * Maximum collaboration-child aliases retained per session. The oldest alias is evicted when
@@ -404,14 +406,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
           appendNotificationBacklog(nativeThreadId, notification);
           return;
         }
-        const accepted = yield* Queue.offer(route.notifications, notification);
-        if (!accepted) {
-          yield* Effect.logWarning("dropped Codex endpoint notification from a full mailbox", {
-            ...routeLogContext(route),
-            nativeThreadId,
-            method,
-          });
-        }
+        yield* Queue.offer(route.notifications, notification);
         if (method === "thread/closed" && route.childAliases.has(nativeThreadId)) {
           removeChildAlias(route, nativeThreadId);
         }
@@ -493,7 +488,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
     CodexEndpointRouterRegistrationError,
     Scope.Scope
   > {
-    const notifications = yield* Queue.dropping<RoutedNotification>(sessionNotificationCapacity);
+    const notifications = yield* Queue.bounded<RoutedNotification>(sessionNotificationCapacity);
     const session: SessionEntry = {
       _tag: "Session",
       threadId: input.threadId,
@@ -575,17 +570,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
           const backlog = state.notificationBacklogs.get(nativeThreadId) ?? [];
           state.notificationBacklogs.delete(nativeThreadId);
           for (const notification of backlog) {
-            const accepted = yield* Queue.offer(session.notifications, notification);
-            if (!accepted) {
-              yield* Effect.logWarning(
-                "dropped backlogged Codex notification from a full session mailbox",
-                {
-                  threadId: session.threadId,
-                  nativeThreadId,
-                  method: notification.method,
-                },
-              );
-            }
+            yield* Queue.offer(session.notifications, notification);
           }
         }),
       );
@@ -622,7 +607,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
     function* (input: {
       readonly callbacks: CodexEndpointRouteCallbacks;
     }): Effect.fn.Return<CodexEndpointInternalOperationRegistration, never, Scope.Scope> {
-      const notifications = yield* Queue.dropping<RoutedNotification>(sessionNotificationCapacity);
+      const notifications = yield* Queue.bounded<RoutedNotification>(sessionNotificationCapacity);
       const operation: InternalOperationEntry = {
         _tag: "InternalOperation",
         callbacks: input.callbacks,
@@ -685,13 +670,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
             const backlog = state.notificationBacklogs.get(nativeThreadId) ?? [];
             state.notificationBacklogs.delete(nativeThreadId);
             for (const notification of backlog) {
-              const accepted = yield* Queue.offer(operation.notifications, notification);
-              if (!accepted) {
-                yield* Effect.logWarning(
-                  "dropped backlogged Codex notification from a full internal-operation mailbox",
-                  { nativeThreadId, method: notification.method },
-                );
-              }
+              yield* Queue.offer(operation.notifications, notification);
             }
           }),
         );

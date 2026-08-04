@@ -420,21 +420,29 @@ const makeWsRpcLayer = (
           traceAttributes,
         );
       const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
-        isOrchestrationDispatchCommandError(cause)
-          ? cause
-          : isOrchestrationCommandBusyError(cause)
-            ? new OrchestrationDispatchCommandError({
-                message: "The Cocoa gateway is busy. Retry the same command shortly.",
-                code: "busy",
-                retryable: true,
-              })
-            : new OrchestrationDispatchCommandError({
-                message: cause instanceof Error ? cause.message : fallbackMessage,
-                cause,
-              });
+        isOrchestrationCommandBusyError(cause) ||
+        (isOrchestrationDispatchCommandError(cause) && cause.code === "busy")
+          ? new OrchestrationDispatchCommandError({
+              message: "The Cocoa gateway is busy. Retry the same command shortly.",
+              code: "busy",
+              retryable: true,
+            })
+          : new OrchestrationDispatchCommandError({
+              message: fallbackMessage,
+              code: "dispatch_failed",
+            });
+      const failDispatchCommand = (cause: unknown, fallbackMessage: string, operation: string) =>
+        Effect.logWarning("legacy orchestration dispatch failed", {
+          operation,
+          cause,
+        }).pipe(Effect.andThen(Effect.fail(toDispatchCommandError(cause, fallbackMessage))));
       const randomUUID = crypto.randomUUIDv4.pipe(
-        Effect.mapError((cause) =>
-          toDispatchCommandError(cause, "Failed to generate orchestration command identifier."),
+        Effect.catch((cause) =>
+          failDispatchCommand(
+            cause,
+            "Failed to generate orchestration command identifier.",
+            "generate-command-id",
+          ),
         ),
       );
       const serverEventId = randomUUID.pipe(Effect.map(EventId.make));
@@ -487,13 +495,7 @@ const makeWsRpcLayer = (
 
       const toBootstrapDispatchCommandCauseError = (cause: Cause.Cause<unknown>) => {
         const error = Cause.squash(cause);
-        return isOrchestrationDispatchCommandError(error)
-          ? error
-          : new OrchestrationDispatchCommandError({
-              message:
-                error instanceof Error ? error.message : "Failed to bootstrap thread turn start.",
-              cause,
-            });
+        return toDispatchCommandError(error, "Failed to bootstrap thread turn start.");
       };
 
       const toShellStreamEvent = (
@@ -876,10 +878,14 @@ const makeWsRpcLayer = (
           return yield* bootstrapProgram.pipe(
             Effect.catchCause((cause) => {
               const dispatchError = toBootstrapDispatchCommandCauseError(cause);
+              const logFailure = Effect.logWarning("legacy bootstrap dispatch failed", { cause });
               if (Cause.hasInterruptsOnly(cause)) {
-                return Effect.fail(dispatchError);
+                return logFailure.pipe(Effect.andThen(Effect.fail(dispatchError)));
               }
-              return cleanupCreatedThread().pipe(Effect.flatMap(() => Effect.fail(dispatchError)));
+              return logFailure.pipe(
+                Effect.andThen(cleanupCreatedThread()),
+                Effect.andThen(Effect.fail(dispatchError)),
+              );
             }),
           );
         });
@@ -907,18 +913,25 @@ const makeWsRpcLayer = (
             : orchestrationEngine
                 .dispatch(normalizedCommand)
                 .pipe(
-                  Effect.mapError((cause) =>
-                    toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+                  Effect.catch((cause) =>
+                    failDispatchCommand(
+                      cause,
+                      "Failed to dispatch orchestration command",
+                      "dispatch-normalized-command",
+                    ),
                   ),
                 );
 
-        return assertThreadAvailable
-          .pipe(Effect.andThen(startup.enqueueCommand(dispatchEffect)))
-          .pipe(
-            Effect.mapError((cause) =>
-              toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+        return assertThreadAvailable.pipe(
+          Effect.andThen(startup.enqueueCommand(dispatchEffect)),
+          Effect.catch((cause) =>
+            failDispatchCommand(
+              cause,
+              "Failed to dispatch orchestration command",
+              "enqueue-dispatch-command",
             ),
-          );
+          ),
+        );
       };
 
       const loadServerConfig = Effect.gen(function* () {
@@ -1016,13 +1029,12 @@ const makeWsRpcLayer = (
               }
               return result;
             }).pipe(
-              Effect.mapError((cause) =>
-                isOrchestrationDispatchCommandError(cause)
-                  ? cause
-                  : new OrchestrationDispatchCommandError({
-                      message: "Failed to dispatch orchestration command",
-                      cause,
-                    }),
+              Effect.catch((cause) =>
+                failDispatchCommand(
+                  cause,
+                  "Failed to dispatch orchestration command",
+                  "dispatch-command-rpc",
+                ),
               ),
             ),
             { "rpc.aggregate": "orchestration" },
