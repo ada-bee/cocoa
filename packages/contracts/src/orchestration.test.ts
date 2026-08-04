@@ -831,7 +831,7 @@ it.effect("decodes thread.turn-start-requested immutable routing and mode defaul
     assert.strictEqual(parsed.projectId, "project-1");
     assert.strictEqual(parsed.providerInstanceId, "codex");
     assert.deepStrictEqual(parsed.modelSelection, {
-      instanceId: "codex",
+      instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5-codex",
     });
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
