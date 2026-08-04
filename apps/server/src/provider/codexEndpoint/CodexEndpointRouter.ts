@@ -458,27 +458,30 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
   }
 
   const unregisterSession = (session: SessionEntry): Effect.Effect<void> =>
-    routingLock
-      .withPermits(1)(
-        Effect.sync(() => {
-          if (state.sessions.get(session.threadId) !== session) return;
-          state.sessions.delete(session.threadId);
-          const nativeThreadId = session.nativeThreadId;
-          if (
-            nativeThreadId !== undefined &&
-            state.routesByNativeThreadId.get(nativeThreadId) === session
-          ) {
-            state.routesByNativeThreadId.delete(nativeThreadId);
-          }
-          for (const childAlias of session.childAliases) {
-            if (state.routesByNativeThreadId.get(childAlias) === session) {
-              state.routesByNativeThreadId.delete(childAlias);
+    Queue.shutdown(session.notifications).pipe(
+      Effect.andThen(
+        routingLock.withPermits(1)(
+          Effect.sync(() => {
+            if (state.sessions.get(session.threadId) !== session) return;
+            state.sessions.delete(session.threadId);
+            const nativeThreadId = session.nativeThreadId;
+            if (
+              nativeThreadId !== undefined &&
+              state.routesByNativeThreadId.get(nativeThreadId) === session
+            ) {
+              state.routesByNativeThreadId.delete(nativeThreadId);
             }
-          }
-          session.childAliases.clear();
-        }),
-      )
-      .pipe(Effect.andThen(Queue.shutdown(session.notifications)), Effect.asVoid);
+            for (const childAlias of session.childAliases) {
+              if (state.routesByNativeThreadId.get(childAlias) === session) {
+                state.routesByNativeThreadId.delete(childAlias);
+              }
+            }
+            session.childAliases.clear();
+          }),
+        ),
+      ),
+      Effect.asVoid,
+    );
 
   const registerSession = Effect.fn("CodexEndpointRouter.registerSession")(function* (input: {
     readonly threadId: ThreadId;
@@ -582,26 +585,29 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
   });
 
   const unregisterInternalOperation = (operation: InternalOperationEntry): Effect.Effect<void> =>
-    routingLock
-      .withPermits(1)(
-        Effect.sync(() => {
-          if (!state.internalOperations.delete(operation)) return;
-          const nativeThreadId = operation.nativeThreadId;
-          if (
-            nativeThreadId !== undefined &&
-            state.routesByNativeThreadId.get(nativeThreadId) === operation
-          ) {
-            state.routesByNativeThreadId.delete(nativeThreadId);
-          }
-          for (const childAlias of operation.childAliases) {
-            if (state.routesByNativeThreadId.get(childAlias) === operation) {
-              state.routesByNativeThreadId.delete(childAlias);
+    Queue.shutdown(operation.notifications).pipe(
+      Effect.andThen(
+        routingLock.withPermits(1)(
+          Effect.sync(() => {
+            if (!state.internalOperations.delete(operation)) return;
+            const nativeThreadId = operation.nativeThreadId;
+            if (
+              nativeThreadId !== undefined &&
+              state.routesByNativeThreadId.get(nativeThreadId) === operation
+            ) {
+              state.routesByNativeThreadId.delete(nativeThreadId);
             }
-          }
-          operation.childAliases.clear();
-        }),
-      )
-      .pipe(Effect.andThen(Queue.shutdown(operation.notifications)), Effect.asVoid);
+            for (const childAlias of operation.childAliases) {
+              if (state.routesByNativeThreadId.get(childAlias) === operation) {
+                state.routesByNativeThreadId.delete(childAlias);
+              }
+            }
+            operation.childAliases.clear();
+          }),
+        ),
+      ),
+      Effect.asVoid,
+    );
 
   const registerInternalOperation = Effect.fn("CodexEndpointRouter.registerInternalOperation")(
     function* (input: {

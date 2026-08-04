@@ -225,6 +225,113 @@ it.effect("applies lossless backpressure to a bound session notification burst",
   }),
 );
 
+it.effect("closes a saturated session route without waiting for its blocked callback", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client, {
+      sessionNotificationCapacity: 1,
+    });
+    const callbackStarted = yield* Deferred.make<void>();
+    const releaseCallback = yield* Deferred.make<void>();
+    const sessionScope = yield* Scope.make();
+    const registration = yield* registerInScope(
+      router,
+      {
+        threadId: ThreadId.make("cocoa-saturated"),
+        callbacks: makeCallbacks({
+          onNotification: () =>
+            Deferred.succeed(callbackStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseCallback)),
+            ),
+        }),
+      },
+      sessionScope,
+    );
+    yield* registration.bindNativeThreadId("native-saturated");
+
+    const publish = (sequence: number) =>
+      Effect.forkChild(
+        fake.emitNotification("thread/status/changed", {
+          threadId: "native-saturated",
+          sequence,
+        }),
+        { startImmediately: true },
+      );
+    const first = yield* publish(1);
+    yield* Deferred.await(callbackStarted);
+    const second = yield* publish(2);
+    const third = yield* publish(3);
+
+    yield* Scope.close(sessionScope, Exit.void);
+    assert.isFalse(yield* Deferred.isDone(releaseCallback));
+    for (const publisher of [first, second, third]) {
+      yield* Fiber.join(publisher);
+    }
+    const request = yield* fake
+      .request("item/fileChange/requestApproval", {
+        itemId: "item-after-close",
+        startedAtMs: 1,
+        threadId: "native-saturated",
+        turnId: "turn-after-close",
+      })
+      .pipe(Effect.result);
+    assert.equal(request._tag, "Failure");
+  }),
+);
+
+it.effect("closes a saturated internal route without waiting for its blocked callback", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client, {
+      sessionNotificationCapacity: 1,
+    });
+    const callbackStarted = yield* Deferred.make<void>();
+    const releaseCallback = yield* Deferred.make<void>();
+    const operationScope = yield* Scope.make();
+    const registration = yield* registerInternalInScope(
+      router,
+      {
+        callbacks: makeCallbacks({
+          onNotification: () =>
+            Deferred.succeed(callbackStarted, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseCallback)),
+            ),
+        }),
+      },
+      operationScope,
+    );
+    yield* registration.bindNativeThreadId("native-internal-saturated");
+
+    const publish = (sequence: number) =>
+      Effect.forkChild(
+        fake.emitNotification("thread/status/changed", {
+          threadId: "native-internal-saturated",
+          sequence,
+        }),
+        { startImmediately: true },
+      );
+    const first = yield* publish(1);
+    yield* Deferred.await(callbackStarted);
+    const second = yield* publish(2);
+    const third = yield* publish(3);
+
+    yield* Scope.close(operationScope, Exit.void);
+    assert.isFalse(yield* Deferred.isDone(releaseCallback));
+    for (const publisher of [first, second, third]) {
+      yield* Fiber.join(publisher);
+    }
+    const request = yield* fake
+      .request("item/commandExecution/requestApproval", {
+        itemId: "item-after-close",
+        startedAtMs: 1,
+        threadId: "native-internal-saturated",
+        turnId: "turn-after-close",
+      })
+      .pipe(Effect.result);
+    assert.equal(request._tag, "Failure");
+  }),
+);
+
 it.effect("drains a pre-bind backlog through the bounded session mailbox without loss", () =>
   Effect.gen(function* () {
     const fake = makeFakeClient();
