@@ -322,6 +322,12 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           } as CodexEndpointRouter;
 
           const adapter = {
+            capabilities: {
+              sessionModelSwitch: "in-session",
+              conversationRead: "ordered-turn-ids-v1",
+              checkedConversationRollback: "ordered-turn-ids-v1",
+              conversationReconciliation: "ordered-turn-state-v1",
+            },
             stopAll: () =>
               Effect.sync(() => {
                 stopAllCalls += 1;
@@ -472,6 +478,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             instance.adapter.capabilities.checkedConversationRollback,
             "ordered-turn-ids-v1",
           );
+          assert.equal(
+            instance.adapter.capabilities.conversationReconciliation,
+            "ordered-turn-state-v1",
+          );
           assert.deepStrictEqual(workspaceGenerations, []);
           assert.deepStrictEqual(vcsGenerations, []);
           assert.deepStrictEqual(textGenerationGenerations, []);
@@ -569,6 +579,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           assert.isUndefined(instance.vcs);
           assert.equal(instance.adapter.capabilities.conversationRead, "unsupported");
           assert.equal(instance.adapter.capabilities.checkedConversationRollback, "unsupported");
+          assert.equal(instance.adapter.capabilities.conversationReconciliation, "unsupported");
           assert.deepStrictEqual(workspaceGenerations, [1]);
           assert.deepStrictEqual(vcsGenerations, [1]);
 

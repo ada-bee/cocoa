@@ -535,6 +535,12 @@ export const makeCodexDriver = (
                   ? ("ordered-turn-ids-v1" as const)
                   : ("unsupported" as const);
               },
+              get conversationReconciliation() {
+                return conversationCompatibility?.capabilities?.conversationRead === true
+                  ? (nativeAdapter.capabilities.conversationReconciliation ??
+                      ("unsupported" as const))
+                  : ("unsupported" as const);
+              },
             },
           } satisfies ProviderInstance["adapter"];
 
