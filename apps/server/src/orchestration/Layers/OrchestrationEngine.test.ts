@@ -10,7 +10,11 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
@@ -28,7 +32,11 @@ import {
   type OrchestrationEventStoreShape,
 } from "../../persistence/Services/OrchestrationEventStore.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
-import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
+import {
+  makeOrchestrationEngineLive,
+  OrchestrationEngineLive,
+  type OrchestrationEngineLiveOptions,
+} from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -44,12 +52,12 @@ const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const asCheckpointRef = (value: string): CheckpointRef => CheckpointRef.make(value);
 
-async function createOrchestrationSystem() {
+async function createOrchestrationSystem(options?: OrchestrationEngineLiveOptions) {
   const ServerConfigLayer = ServerConfig.layerTest(process.cwd(), {
     prefix: "t3-orchestration-engine-test-",
   });
   const orchestrationLayer = Layer.mergeAll(
-    OrchestrationEngineLive.pipe(
+    (options === undefined ? OrchestrationEngineLive : makeOrchestrationEngineLive(options)).pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
     ),
@@ -89,6 +97,92 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("bounds stalled event delivery and rejects excess commands before accepting them", async () => {
+    const system = await createOrchestrationSystem({
+      bufferLimits: {
+        orchestrationCommands: 1,
+        orchestrationEvents: 1,
+      },
+    });
+    const { engine } = system;
+
+    const makeProjectCommand = (index: number) => ({
+      type: "project.create" as const,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      commandId: CommandId.make(`cmd-overload-${index}`),
+      projectId: asProjectId(`project-overload-${index}`),
+      title: `Overload ${index}`,
+      workspaceRoot: `/tmp/project-overload-${index}`,
+      defaultModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      },
+      createdAt: now(),
+    });
+
+    await system.run(
+      Effect.gen(function* () {
+        const releaseConsumer = yield* Deferred.make<void>();
+        const receivedAll = yield* Deferred.make<void>();
+        const receivedCommandIds: string[] = [];
+
+        yield* Effect.forkScoped(
+          engine.streamDomainEvents.pipe(
+            Stream.runForEach((event) =>
+              Effect.gen(function* () {
+                if (event.commandId !== null) {
+                  receivedCommandIds.push(event.commandId);
+                }
+                if (receivedCommandIds.length === 4) {
+                  yield* Deferred.succeed(receivedAll, undefined);
+                }
+                yield* Deferred.await(releaseConsumer);
+              }),
+            ),
+          ),
+          { startImmediately: true },
+        );
+
+        // The first event is held by the subscriber, the second fills the
+        // bounded PubSub, and the third blocks the sole publisher worker.
+        yield* engine.dispatch(makeProjectCommand(1));
+        yield* engine.dispatch(makeProjectCommand(2));
+        const third = yield* Effect.forkScoped(engine.dispatch(makeProjectCommand(3)));
+        yield* Effect.yieldNow;
+
+        // One command fits in the ingress queue behind the blocked worker. The
+        // next is rejected synchronously and is safe to retry with the same id.
+        const fourth = yield* Effect.forkScoped(engine.dispatch(makeProjectCommand(4)));
+        yield* Effect.yieldNow;
+        const rejected = yield* Effect.exit(engine.dispatch(makeProjectCommand(5)));
+        expect(Exit.isFailure(rejected)).toBe(true);
+        if (Exit.isFailure(rejected)) {
+          const error = Cause.squash(rejected.cause) as Error & {
+            readonly _tag?: string;
+            readonly retryable?: boolean;
+          };
+          expect(error._tag).toBe("OrchestrationCommandBusyError");
+          expect(error.retryable).toBe(true);
+        }
+
+        yield* Deferred.succeed(releaseConsumer, undefined);
+        yield* Fiber.join(third);
+        yield* Fiber.join(fourth);
+        yield* Deferred.await(receivedAll);
+
+        expect(receivedCommandIds).toEqual([
+          "cmd-overload-1",
+          "cmd-overload-2",
+          "cmd-overload-3",
+          "cmd-overload-4",
+        ]);
+        expect(receivedCommandIds).not.toContain("cmd-overload-5");
+      }).pipe(Effect.scoped),
+    );
+
+    await system.dispose();
+  });
+
   it("bootstraps command handling from persisted projections without reading the full snapshot", async () => {
     let nextSequence = 8;
     const eventStore: OrchestrationEventStoreShape = {

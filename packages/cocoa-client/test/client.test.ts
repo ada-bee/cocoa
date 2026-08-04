@@ -55,6 +55,16 @@ describe("Cocoa client facade", () => {
     });
     expect(requestError).toBeInstanceOf(CocoaClientRequestError);
     expect((requestError as CocoaClientRequestError).requiredScope).toBe("orchestration:operate");
+    expect((requestError as CocoaClientRequestError).retryable).toBe(false);
+
+    const busyError = mapCocoaRpcError({
+      code: "busy",
+      message: "The Cocoa gateway is busy.",
+      retryable: true,
+    });
+    expect(busyError).toBeInstanceOf(CocoaClientRequestError);
+    expect((busyError as CocoaClientRequestError).remoteCode).toBe("busy");
+    expect((busyError as CocoaClientRequestError).retryable).toBe(true);
   });
 
   it("provides capability checks from negotiated info", async () => {

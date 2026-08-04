@@ -39,6 +39,10 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
+import {
+  resolveRuntimeBufferLimits,
+  type RuntimeBufferLimitOverrides,
+} from "../../RuntimeBufferLimits.ts";
 import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 import type { CodexEndpointConnection } from "../codexEndpoint/CodexEndpointConnection.ts";
 import {
@@ -114,6 +118,7 @@ export interface CodexSessionRuntimeOptions {
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
   readonly appServerArgs?: ReadonlyArray<string>;
+  readonly bufferLimits?: RuntimeBufferLimitOverrides;
 }
 
 export type CodexEndpointSessionRuntimeOptions = Omit<
@@ -322,6 +327,17 @@ type CodexServerNotification = {
     readonly params: CodexRpc.ServerNotificationParamsByMethod[M];
   };
 }[CodexRpc.ServerNotificationMethod];
+
+type QueuedCodexServerNotification =
+  | {
+      readonly kind: "known";
+      readonly notification: CodexServerNotification;
+    }
+  | {
+      readonly kind: "unknown";
+      readonly method: string;
+      readonly params: unknown;
+    };
 
 function makeCodexServerNotification<M extends CodexRpc.ServerNotificationMethod>(
   method: M,
@@ -864,7 +880,8 @@ const makeCodexSessionRuntimeCore = (
   Effect.gen(function* () {
     const runtimeScope = yield* Scope.Scope;
     const crypto = yield* Crypto.Crypto;
-    const events = yield* Queue.unbounded<ProviderEvent>();
+    const bufferLimits = resolveRuntimeBufferLimits(options.bufferLimits);
+    const events = yield* Queue.bounded<ProviderEvent>(bufferLimits.codexAdapterEvents);
     const pendingApprovalsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingApproval>());
     const approvalCorrelationsRef = yield* Ref.make(new Map<string, ApprovalCorrelation>());
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
@@ -872,7 +889,10 @@ const makeCodexSessionRuntimeCore = (
     const closedRef = yield* Ref.make(false);
 
     const client = transport.client;
-    const serverNotifications = yield* Queue.unbounded<CodexServerNotification>();
+    const serverNotifications = yield* Queue.dropping<QueuedCodexServerNotification>(
+      bufferLimits.codexSessionNotifications,
+    );
+    const eventStreamTermination = yield* Deferred.make<ProviderEvent | null>();
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = (purpose: CodexErrors.CodexAppServerIdentifierPurpose) =>
       crypto.randomUUIDv4.pipe(
@@ -899,19 +919,20 @@ const makeCodexSessionRuntimeCore = (
       updatedAt: sessionCreatedAt,
     } satisfies ProviderSession;
     const sessionRef = yield* Ref.make<ProviderSession>(initialSession);
-    const offerEvent = (event: ProviderEvent) => Queue.offer(events, event).pipe(Effect.asVoid);
-
-    const emitEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
+    const makeEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
       Effect.gen(function* () {
         const id = yield* randomUUIDv4("provider-event");
-        return yield* offerEvent({
+        return {
           id: EventId.make(id),
           provider: PROVIDER,
           ...(options.providerInstanceId ? { providerInstanceId: options.providerInstanceId } : {}),
           createdAt: yield* nowIso,
           ...event,
-        });
+        } satisfies ProviderEvent;
       });
+    const offerEvent = (event: ProviderEvent) => Queue.offer(events, event).pipe(Effect.asVoid);
+    const emitEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
+      makeEvent(event).pipe(Effect.flatMap(offerEvent));
     const emitSessionEvent = (method: string, message: string) =>
       emitEvent({
         kind: "session",
@@ -942,6 +963,48 @@ const makeCodexSessionRuntimeCore = (
             { discard: true },
           ),
         ),
+      );
+
+    const terminateForNotificationOverflow = Effect.gen(function* () {
+      const overflowEvent = yield* makeEvent({
+        kind: "error",
+        threadId: options.threadId,
+        method: "runtime/notification-buffer-overflow",
+        message:
+          "Provider notification delivery overloaded; authoritative thread reconciliation is required.",
+        payload: {
+          code: "notification_buffer_overflow",
+          recovery: "authoritative_thread_snapshot",
+        },
+      });
+      const firstOverflow = yield* Deferred.succeed(eventStreamTermination, overflowEvent);
+      if (!firstOverflow) {
+        return;
+      }
+      yield* Effect.logError("Codex session notification buffer overflowed", {
+        threadId: options.threadId,
+        capacity: bufferLimits.codexSessionNotifications,
+      });
+      yield* Effect.forkDetach(
+        settlePendingApprovals("cancel").pipe(
+          Effect.andThen(settlePendingUserInputs({})),
+          Effect.andThen(
+            updateSession(sessionRef, {
+              status: "error",
+              activeTurnId: undefined,
+              lastError: "Provider notification buffer overflowed.",
+            }),
+          ),
+          Effect.andThen(Scope.close(runtimeScope, Exit.void)),
+          Effect.andThen(Queue.shutdown(serverNotifications)),
+          Effect.ignore,
+        ),
+      );
+    });
+
+    const enqueueServerNotification = (notification: QueuedCodexServerNotification) =>
+      Queue.offer(serverNotifications, notification).pipe(
+        Effect.flatMap((accepted) => (accepted ? Effect.void : terminateForNotificationOverflow)),
       );
 
     const handleRawNotification = (notification: CodexServerNotification) =>
@@ -1263,16 +1326,14 @@ const makeCodexSessionRuntimeCore = (
             yield* handleError(params as CodexRpc.ServerNotificationParamsByMethod["error"]);
             break;
         }
-        yield* Queue.offer(serverNotifications, makeCodexServerNotification(method, params));
+        yield* enqueueServerNotification({
+          kind: "known",
+          notification: makeCodexServerNotification(method, params),
+        });
       }).pipe(Effect.asVoid);
 
     const handleUnknownNotification = (method: string, params: unknown) =>
-      emitEvent({
-        kind: "notification",
-        threadId: options.threadId,
-        method,
-        ...(params !== undefined ? { payload: params } : {}),
-      });
+      enqueueServerNotification({ kind: "unknown", method, params });
 
     const handleInteractiveRequest: CodexEndpointSessionCallbacks["onRequest"] = (
       method,
@@ -1332,7 +1393,16 @@ const makeCodexSessionRuntimeCore = (
     }
 
     yield* Stream.fromQueue(serverNotifications).pipe(
-      Stream.runForEach(handleRawNotification),
+      Stream.runForEach((queued) =>
+        queued.kind === "known"
+          ? handleRawNotification(queued.notification)
+          : emitEvent({
+              kind: "notification",
+              threadId: options.threadId,
+              method: queued.method,
+              ...(queued.params !== undefined ? { payload: queued.params } : {}),
+            }),
+      ),
       Effect.forkIn(runtimeScope),
     );
 
@@ -1473,6 +1543,7 @@ const makeCodexSessionRuntimeCore = (
           Effect.logError("Failed to emit Codex session closed event.", { cause }),
         ),
       );
+      yield* Deferred.succeed(eventStreamTermination, null);
       yield* Scope.close(runtimeScope, Exit.void);
       yield* Queue.shutdown(serverNotifications);
       yield* Queue.shutdown(events);
@@ -1634,7 +1705,13 @@ const makeCodexSessionRuntimeCore = (
             },
           });
         }),
-      events: Stream.fromQueue(events),
+      events: Stream.merge(
+        Stream.fromQueue(events),
+        Stream.fromEffect(Deferred.await(eventStreamTermination)).pipe(
+          Stream.flatMap((event) => (event === null ? Stream.empty : Stream.make(event))),
+        ),
+        { haltStrategy: "right" },
+      ),
       close,
     } satisfies CodexSessionRuntimeShape;
   });

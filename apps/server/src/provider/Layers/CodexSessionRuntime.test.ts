@@ -3,7 +3,10 @@ import * as NodeAssert from "node:assert/strict";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import { describe } from "vite-plus/test";
 import { DEFAULT_MODEL, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -381,6 +384,61 @@ describe("hasConfiguredMcpServer", () => {
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 });
+
+it.effect("terminates an overloaded notification mailbox with a reconciliation signal", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const providerInstanceId = ProviderInstanceId.make("codex_remote");
+      let callbacks: Parameters<CodexEndpointRouter["registerSession"]>[0]["callbacks"] | undefined;
+      const sessionScope = yield* Scope.make("sequential");
+      const runtime = yield* makeCodexEndpointSessionRuntime({
+        connection: {
+          identity: { providerInstanceId },
+          client: {},
+        } as CodexEndpointConnection["Service"],
+        router: {
+          registerSession: (input: Parameters<CodexEndpointRouter["registerSession"]>[0]) =>
+            Effect.sync(() => {
+              callbacks = input.callbacks;
+              return {
+                bindNativeThreadId: () => Effect.void,
+                rebindNativeThreadId: () => Effect.void,
+              };
+            }),
+        } as unknown as CodexEndpointRouter,
+        options: {
+          threadId: ThreadId.make("thread-notification-overflow"),
+          providerInstanceId,
+          cwd: "/remote/project",
+          runtimeMode: "full-access",
+          bufferLimits: {
+            codexSessionNotifications: 1,
+            codexAdapterEvents: 1,
+          },
+        },
+      }).pipe(Effect.provideService(Scope.Scope, sessionScope));
+
+      const notify = () => callbacks!.onNotification("model/rerouted" as never, {} as never);
+      yield* notify();
+      yield* Effect.yieldNow;
+      yield* notify();
+      yield* Effect.yieldNow;
+      yield* notify();
+      yield* notify();
+
+      const emitted = Array.from(yield* Stream.runCollect(runtime.events));
+      const overload = emitted.find(
+        (event) => event.method === "runtime/notification-buffer-overflow",
+      );
+      NodeAssert.equal(overload?.kind, "error");
+      NodeAssert.deepStrictEqual(overload?.payload, {
+        code: "notification_buffer_overflow",
+        recovery: "authoritative_thread_snapshot",
+      });
+      yield* Scope.close(sessionScope, Exit.void);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
 
 describe("codexSessionAppServerArgs", () => {
   it("keeps the app-server subcommand when explicit args are provided", () => {

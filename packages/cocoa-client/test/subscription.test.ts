@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { CocoaClientError } from "../src/errors.ts";
+import { CocoaClientError, CocoaClientRequestError } from "../src/errors.ts";
 import { subscribeToShell } from "../src/subscription.ts";
 import type { CocoaClientTransport } from "../src/transport.ts";
 import { items, shellItem } from "./fixtures.ts";
@@ -48,5 +48,38 @@ describe("Cocoa subscriptions", () => {
     expect(finalized).toBe(true);
     expect((await subscription.next()).done).toBe(true);
     await expect(subscription.reconnect()).rejects.toBeInstanceOf(CocoaClientError);
+  });
+
+  it("drops its cursor after a reset-required overflow before reconnecting", async () => {
+    const cursors: Array<number | undefined> = [];
+    let attempts = 0;
+    const transport = {
+      subscribeShell(input: { readonly afterSequence?: number }) {
+        cursors.push(input.afterSequence);
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            async *[Symbol.asyncIterator]() {
+              throw new CocoaClientRequestError({
+                code: "reset_required",
+                message: "Live tail overflowed.",
+                retryable: true,
+              });
+            },
+          };
+        }
+        return items([{ kind: "snapshot", snapshot: { snapshotSequence: 9 } } as never]);
+      },
+      reconnect: async () => {},
+    } as unknown as CocoaClientTransport;
+    const subscription = subscribeToShell(transport, { afterSequence: 7 });
+
+    await expect(subscription.next()).rejects.toMatchObject({
+      remoteCode: "reset_required",
+      retryable: true,
+    });
+    await subscription.reconnect();
+    expect((await subscription.next()).value).toMatchObject({ kind: "snapshot" });
+    expect(cursors).toEqual([7, undefined]);
   });
 });

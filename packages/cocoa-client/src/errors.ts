@@ -50,6 +50,7 @@ export class CocoaClientHttpError extends CocoaClientError {
 export class CocoaClientRequestError extends CocoaClientError {
   readonly remoteCode: CocoaClientV1RemoteRequestError["code"];
   readonly requiredScope?: CocoaClientV1RemoteRequestError["requiredScope"];
+  readonly retryable: boolean;
   readonly traceId: string | undefined;
 
   constructor(error: CocoaClientV1RemoteRequestError) {
@@ -57,6 +58,8 @@ export class CocoaClientRequestError extends CocoaClientError {
     this.name = "CocoaClientRequestError";
     this.remoteCode = error.code;
     this.requiredScope = error.requiredScope;
+    this.retryable =
+      (error.code === "busy" || error.code === "reset_required") && error.retryable === true;
     this.traceId = error.traceId;
   }
 }

@@ -65,8 +65,11 @@ export const CocoaClientV1RequestError = Schema.Struct({
     "insufficient_scope",
     "not_found",
     "internal_error",
+    "busy",
+    "reset_required",
   ]),
   message: TrimmedNonEmptyString,
+  retryable: Schema.optionalKey(Schema.Literal(true)),
   requiredScope: Schema.optionalKey(AuthEnvironmentScope),
   traceId: Schema.optionalKey(TrimmedNonEmptyString),
 });

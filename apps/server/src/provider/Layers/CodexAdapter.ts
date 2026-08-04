@@ -43,6 +43,10 @@ import {
   materializeGatewayManagedImageDataUrls,
 } from "../../gatewayManagedImageAttachments.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import {
+  resolveRuntimeBufferLimits,
+  type RuntimeBufferLimitOverrides,
+} from "../../RuntimeBufferLimits.ts";
 
 import {
   ProviderAdapterRequestError,
@@ -107,6 +111,7 @@ export interface CodexAdapterLiveOptions {
   >;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly bufferLimits?: RuntimeBufferLimitOverrides;
 }
 
 interface CodexAdapterSessionContext {
@@ -1395,7 +1400,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       : undefined);
   const managedNativeEventLogger =
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
-  const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
+  const bufferLimits = resolveRuntimeBufferLimits(options?.bufferLimits);
+  const runtimeEventQueue = yield* Queue.bounded<ProviderRuntimeEvent>(
+    bufferLimits.codexAdapterEvents,
+  );
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
 
   const startSession: CodexAdapterShape["startSession"] = (input) =>
@@ -1457,6 +1465,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
                 ],
               }
             : {}),
+          ...(options?.bufferLimits ? { bufferLimits: options.bufferLimits } : {}),
         };
         const sessionScope = yield* Scope.make("sequential");
         let sessionScopeTransferred = false;

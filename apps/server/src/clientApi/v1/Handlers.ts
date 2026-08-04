@@ -13,27 +13,32 @@ import {
   CocoaClientV1RpcGroup,
   selectCocoaClientProtocolVersion,
   type CocoaClientProtocolVersionMismatch,
-  type CocoaClientV1RequestError,
+  CocoaClientV1RequestError,
   type CocoaClientV1ShellStreamItem,
   type CocoaClientV1ThreadStreamItem,
 } from "@t3tools/contracts/client/v1";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as CheckpointDiffQuery from "../../checkpointing/CheckpointDiffQuery.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import { normalizeDispatchCommand } from "../../orchestration/Normalizer.ts";
+import { OrchestrationCommandBusyError } from "../../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { CheckpointRevertGate } from "../../orchestration/Services/CheckpointRevertGate.ts";
 import * as ProviderRegistry from "../../provider/Services/ProviderRegistry.ts";
 import * as ServerRuntimeStartup from "../../serverRuntimeStartup.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
+import { DEFAULT_RUNTIME_BUFFER_LIMITS } from "../../RuntimeBufferLimits.ts";
 import type * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { requiredScopeForCocoaClientV1Method } from "./Authorization.ts";
@@ -48,14 +53,11 @@ import {
 
 export const COCOA_CLIENT_V1_RESUME_MAX_GAP = 1_000;
 
-const CHECKPOINT_MUTATION_UNAVAILABLE =
-  "Checkpoint revert is unavailable until the bound provider supplies checkpoint operations.";
-
 type CocoaClientV1Method = keyof typeof COCOA_CLIENT_V1_METHODS;
 type CocoaClientV1MethodTag = (typeof COCOA_CLIENT_V1_METHODS)[CocoaClientV1Method];
 
 const requestError = (
-  code: CocoaClientV1RequestError["code"],
+  code: Exclude<CocoaClientV1RequestError["code"], "busy" | "reset_required">,
   message: string,
   requiredScope?: AuthEnvironmentScope,
 ): CocoaClientV1RequestError => ({
@@ -105,25 +107,58 @@ type BufferedEvent =
   | { readonly kind: "event"; readonly event: OrchestrationEvent }
   | { readonly kind: "synchronized" };
 
+interface LiveEventBuffer {
+  readonly queue: Queue.Queue<BufferedEvent>;
+  readonly overflow: Deferred.Deferred<CocoaClientV1RequestError>;
+}
+
+const liveBufferOverflowError = (): CocoaClientV1RequestError => ({
+  code: "reset_required",
+  message: "The live update buffer overflowed. Reconnect to load a fresh snapshot.",
+  retryable: true,
+});
+
+const offerLiveBuffer = (buffer: LiveEventBuffer, event: BufferedEvent): Effect.Effect<void> =>
+  Queue.offer(buffer.queue, event).pipe(
+    Effect.flatMap((accepted) =>
+      accepted
+        ? Effect.void
+        : Deferred.succeed(buffer.overflow, liveBufferOverflowError()).pipe(
+            Effect.andThen(Effect.interrupt),
+          ),
+    ),
+  );
+
+const streamLiveBuffer = (
+  buffer: LiveEventBuffer,
+): Stream.Stream<BufferedEvent, CocoaClientV1RequestError> =>
+  Stream.fromQueue(buffer.queue).pipe(
+    Stream.interruptWhen(
+      Deferred.await(buffer.overflow).pipe(Effect.flatMap((error) => Effect.fail(error))),
+    ),
+  );
+
 const attachLiveBuffer = (
   live: Stream.Stream<OrchestrationEvent>,
-): Effect.Effect<Queue.Queue<BufferedEvent>, never, Scope.Scope> =>
+): Effect.Effect<LiveEventBuffer, never, Scope.Scope> =>
   Effect.gen(function* () {
-    const buffer = yield* Queue.unbounded<BufferedEvent>();
+    const queue = yield* Queue.dropping<BufferedEvent>(
+      DEFAULT_RUNTIME_BUFFER_LIMITS.clientLiveEvents,
+    );
+    const overflow = yield* Deferred.make<CocoaClientV1RequestError>();
+    const buffer = { queue, overflow } satisfies LiveEventBuffer;
     yield* Effect.forkScoped(
-      live.pipe(Stream.runForEach((event) => Queue.offer(buffer, { kind: "event", event }))),
+      live.pipe(Stream.runForEach((event) => offerLiveBuffer(buffer, { kind: "event", event }))),
       { startImmediately: true },
     );
     return buffer;
   });
 
 const markSynchronized = (
-  buffer: Queue.Queue<BufferedEvent>,
+  buffer: LiveEventBuffer,
   requested: boolean | undefined,
 ): Effect.Effect<void> =>
-  requested === true
-    ? Queue.offer(buffer, { kind: "synchronized" }).pipe(Effect.asVoid)
-    : Effect.void;
+  requested === true ? offerLiveBuffer(buffer, { kind: "synchronized" }) : Effect.void;
 
 const shellItemFromEvent = (
   event: OrchestrationEvent,
@@ -230,14 +265,14 @@ const shellEvents = <E, R>(
   );
 
 const shellLiveTail = (
-  buffer: Queue.Queue<BufferedEvent>,
+  buffer: LiveEventBuffer,
   minimumSequence: number,
   projections: ProjectionSnapshotQuery.ProjectionSnapshotQueryShape,
 ): Stream.Stream<CocoaClientV1ShellStreamItem, CocoaClientV1RequestError> =>
   Stream.unwrap(
     Ref.make(minimumSequence).pipe(
       Effect.map((latestSequence) =>
-        Stream.fromQueue(buffer).pipe(
+        streamLiveBuffer(buffer).pipe(
           Stream.mapEffect((input) => {
             if (input.kind === "synchronized") {
               return Effect.succeed(
@@ -260,7 +295,11 @@ const shellLiveTail = (
           Stream.filterMap((item) =>
             Option.isSome(item) ? Result.succeed(item.value) : Result.failVoid,
           ),
-          Stream.mapError(() => internalError("Failed to synchronize the orchestration shell.")),
+          Stream.mapError((cause) =>
+            isCocoaClientV1RequestError(cause)
+              ? cause
+              : internalError("Failed to synchronize the orchestration shell."),
+          ),
         ),
       ),
     ),
@@ -284,14 +323,14 @@ const threadEvents = <E, R>(
   );
 
 const threadLiveTail = (
-  buffer: Queue.Queue<BufferedEvent>,
+  buffer: LiveEventBuffer,
   minimumSequence: number,
   threadId: ThreadId,
 ): Stream.Stream<CocoaClientV1ThreadStreamItem, CocoaClientV1RequestError> =>
   Stream.unwrap(
     Ref.make(minimumSequence).pipe(
       Effect.map((latestSequence) =>
-        Stream.fromQueue(buffer).pipe(
+        streamLiveBuffer(buffer).pipe(
           Stream.mapEffect((input) => {
             if (input.kind === "synchronized") {
               return Effect.succeed(
@@ -333,8 +372,20 @@ const protocolMismatch = (
   message: "The client and server do not support a common Cocoa protocol version.",
 });
 
-const sanitizeDispatchError = (): CocoaClientV1RequestError =>
-  requestError("invalid_request", "The orchestration command was rejected.");
+const isOrchestrationCommandBusyError = Schema.is(OrchestrationCommandBusyError);
+const isCocoaClientV1RequestError = Schema.is(CocoaClientV1RequestError);
+
+const sanitizeDispatchError = (cause: unknown): CocoaClientV1RequestError =>
+  isOrchestrationCommandBusyError(cause)
+    ? {
+        code: "busy",
+        message: "The Cocoa gateway is busy. Retry the same command shortly.",
+        retryable: true,
+      }
+    : requestError("invalid_request", "The orchestration command was rejected.");
+
+const preserveSanitizedDispatchError = (cause: unknown): CocoaClientV1RequestError =>
+  isCocoaClientV1RequestError(cause) ? cause : sanitizeDispatchError(cause);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -342,6 +393,7 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
   Effect.gen(function* () {
     const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
     const orchestration = yield* OrchestrationEngine.OrchestrationEngineService;
+    const checkpointRevertGate = yield* CheckpointRevertGate;
     const diffs = yield* CheckpointDiffQuery.CheckpointDiffQuery;
     const providers = yield* ProviderRegistry.ProviderRegistry;
     const environment = yield* ServerEnvironment.ServerEnvironment;
@@ -351,11 +403,24 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
     const dispatchNormalized = (
       command: OrchestrationCommand,
     ): Effect.Effect<{ readonly sequence: number }, CocoaClientV1RequestError> =>
-      command.type === "thread.checkpoint.revert"
-        ? Effect.fail(requestError("invalid_request", CHECKPOINT_MUTATION_UNAVAILABLE))
-        : startup
+      (command.type === "thread.checkpoint.revert" || command.type === "thread.turn.start"
+        ? checkpointRevertGate.assertThreadAvailable(command.threadId).pipe(
+            Effect.mapError(
+              (): CocoaClientV1RequestError => ({
+                code: "busy",
+                message: "A checkpoint revert is already in progress for this thread.",
+                retryable: true,
+              }),
+            ),
+          )
+        : Effect.void
+      ).pipe(
+        Effect.andThen(
+          startup
             .enqueueCommand(orchestration.dispatch(command))
-            .pipe(Effect.mapError(sanitizeDispatchError));
+            .pipe(Effect.mapError(sanitizeDispatchError)),
+        ),
+      );
 
     const dispatch = (command: Parameters<typeof normalizeDispatchCommand>[0]) =>
       Effect.gen(function* () {
@@ -513,7 +578,7 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
         authorizeEffect(
           session,
           COCOA_CLIENT_V1_METHODS.dispatchCommand,
-          dispatch(command).pipe(Effect.mapError(sanitizeDispatchError)),
+          dispatch(command).pipe(Effect.mapError(preserveSanitizedDispatchError)),
         ),
       [COCOA_CLIENT_V1_METHODS.getShellSnapshot]: (_input) =>
         authorizeEffect(

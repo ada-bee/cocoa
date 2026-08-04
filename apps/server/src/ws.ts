@@ -1,6 +1,7 @@
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -61,6 +62,7 @@ import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/uns
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import { CheckpointRevertGate } from "./orchestration/Services/CheckpointRevertGate.ts";
 import { CheckpointUnsupportedError } from "./checkpointing/Errors.ts";
 import * as ServerConfig from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -69,6 +71,7 @@ import {
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
+import { OrchestrationCommandBusyError } from "./orchestration/Errors.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
@@ -103,15 +106,45 @@ import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
+import { DEFAULT_RUNTIME_BUFFER_LIMITS } from "./RuntimeBufferLimits.ts";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+const isOrchestrationCommandBusyError = Schema.is(OrchestrationCommandBusyError);
 const isCheckpointUnsupportedError = Schema.is(CheckpointUnsupportedError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const EDITOR_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const REMOTE_WORKSPACE_MUTATION_UNAVAILABLE =
   "This operation is unavailable until it is routed through the project's provider instance.";
-const CHECKPOINT_MUTATION_UNAVAILABLE =
-  "Checkpoint revert is unavailable until the bound provider supplies checkpoint operations.";
+
+interface ClientLiveBuffer<A, E> {
+  readonly queue: Queue.Queue<A>;
+  readonly overflow: Deferred.Deferred<E>;
+  readonly overflowError: E;
+}
+
+const makeClientLiveBuffer = <A, E>(overflowError: E) =>
+  Effect.gen(function* () {
+    const queue = yield* Queue.dropping<A>(DEFAULT_RUNTIME_BUFFER_LIMITS.clientLiveEvents);
+    const overflow = yield* Deferred.make<E>();
+    return { queue, overflow, overflowError } as const;
+  });
+
+const offerClientLiveBuffer = <A, E>(
+  buffer: ClientLiveBuffer<A, E>,
+  item: A,
+): Effect.Effect<boolean> =>
+  Queue.offer(buffer.queue, item).pipe(
+    Effect.tap((accepted) =>
+      accepted ? Effect.void : Deferred.succeed(buffer.overflow, buffer.overflowError),
+    ),
+  );
+
+const streamClientLiveBuffer = <A, E>(buffer: ClientLiveBuffer<A, E>): Stream.Stream<A, E> =>
+  Stream.fromQueue(buffer.queue).pipe(
+    Stream.interruptWhen(
+      Deferred.await(buffer.overflow).pipe(Effect.flatMap((error) => Effect.fail(error))),
+    ),
+  );
 
 const unsupportedGitCommand = (operation: string, cwd: string) =>
   new GitCommandError({
@@ -264,6 +297,7 @@ const makeWsRpcLayer = (
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
+      const checkpointRevertGate = yield* CheckpointRevertGate;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
       const repositoryReads = yield* RepositoryReadService.RepositoryReadService;
@@ -388,10 +422,16 @@ const makeWsRpcLayer = (
       const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
         isOrchestrationDispatchCommandError(cause)
           ? cause
-          : new OrchestrationDispatchCommandError({
-              message: cause instanceof Error ? cause.message : fallbackMessage,
-              cause,
-            });
+          : isOrchestrationCommandBusyError(cause)
+            ? new OrchestrationDispatchCommandError({
+                message: "The Cocoa gateway is busy. Retry the same command shortly.",
+                code: "busy",
+                retryable: true,
+              })
+            : new OrchestrationDispatchCommandError({
+                message: cause instanceof Error ? cause.message : fallbackMessage,
+                cause,
+              });
       const randomUUID = crypto.randomUUIDv4.pipe(
         Effect.mapError((cause) =>
           toDispatchCommandError(cause, "Failed to generate orchestration command identifier."),
@@ -847,13 +887,20 @@ const makeWsRpcLayer = (
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
-        if (normalizedCommand.type === "thread.checkpoint.revert") {
-          return Effect.fail(
-            new OrchestrationDispatchCommandError({
-              message: CHECKPOINT_MUTATION_UNAVAILABLE,
-            }),
-          );
-        }
+        const assertThreadAvailable =
+          normalizedCommand.type === "thread.checkpoint.revert" ||
+          normalizedCommand.type === "thread.turn.start"
+            ? checkpointRevertGate.assertThreadAvailable(normalizedCommand.threadId).pipe(
+                Effect.mapError(
+                  () =>
+                    new OrchestrationDispatchCommandError({
+                      message: "A checkpoint revert is already in progress for this thread.",
+                      code: "busy",
+                      retryable: true,
+                    }),
+                ),
+              )
+            : Effect.void;
         const dispatchEffect =
           normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
             ? dispatchBootstrapTurnStart(normalizedCommand)
@@ -865,8 +912,8 @@ const makeWsRpcLayer = (
                   ),
                 );
 
-        return startup
-          .enqueueCommand(dispatchEffect)
+        return assertThreadAvailable
+          .pipe(Effect.andThen(startup.enqueueCommand(dispatchEffect)))
           .pipe(
             Effect.mapError((cause) =>
               toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
@@ -1041,16 +1088,29 @@ const makeWsRpcLayer = (
               // sequence but the live subscription is not attached yet). Every
               // path below emits from this same buffered live tail. Overlapping
               // events are deduped by sequence on the client.
-              const liveBuffer = yield* Queue.unbounded<ShellLiveInput>();
+              const liveBuffer = yield* makeClientLiveBuffer<
+                ShellLiveInput,
+                OrchestrationGetSnapshotError
+              >(
+                new OrchestrationGetSnapshotError({
+                  message: "The live shell buffer overflowed. Reconnect to load a fresh snapshot.",
+                  code: "reset_required",
+                  retryable: true,
+                }),
+              );
               yield* Effect.forkScoped(
                 orchestrationEngine.streamDomainEvents.pipe(
                   Stream.runForEach((event) =>
-                    Queue.offer(liveBuffer, { kind: "event" as const, event }),
+                    offerClientLiveBuffer(liveBuffer, { kind: "event" as const, event }).pipe(
+                      Effect.flatMap((accepted) => (accepted ? Effect.void : Effect.interrupt)),
+                    ),
                   ),
                 ),
                 { startImmediately: true },
               );
-              const bufferedLiveStream = coalesceShellLiveStream(Stream.fromQueue(liveBuffer));
+              const bufferedLiveStream = coalesceShellLiveStream(
+                streamClientLiveBuffer(liveBuffer),
+              );
 
               const loadSnapshot = projectionSnapshotQuery.getShellSnapshot().pipe(
                 Effect.tapError((cause) =>
@@ -1072,8 +1132,10 @@ const makeWsRpcLayer = (
                 input.requestCompletionMarker === true
                   ? Stream.concat(
                       Stream.fromEffect(
-                        Queue.offer(liveBuffer, { kind: "synchronized" as const }).pipe(
-                          Effect.andThen(Queue.takeAll(liveBuffer)),
+                        offerClientLiveBuffer(liveBuffer, {
+                          kind: "synchronized" as const,
+                        }).pipe(
+                          Effect.andThen(Queue.takeAll(liveBuffer.queue)),
                           Effect.flatMap(coalesceShellLiveInputs),
                         ),
                       ).pipe(Stream.flatMap((items) => Stream.fromIterable(items))),
@@ -1169,11 +1231,26 @@ const makeWsRpcLayer = (
 
               // Attach live delivery before reading either replay or snapshot state.
               // Otherwise an event published while the snapshot is loading is lost.
-              const liveBuffer = yield* Queue.unbounded<OrchestrationThreadStreamItem>();
-              yield* Effect.forkScoped(
-                liveStream.pipe(Stream.runForEach((item) => Queue.offer(liveBuffer, item))),
+              const liveBuffer = yield* makeClientLiveBuffer<
+                OrchestrationThreadStreamItem,
+                OrchestrationGetSnapshotError
+              >(
+                new OrchestrationGetSnapshotError({
+                  message: "The live thread buffer overflowed. Reconnect to load a fresh snapshot.",
+                  code: "reset_required",
+                  retryable: true,
+                }),
               );
-              const bufferedLiveStream = Stream.fromQueue(liveBuffer);
+              yield* Effect.forkScoped(
+                liveStream.pipe(
+                  Stream.runForEach((item) =>
+                    offerClientLiveBuffer(liveBuffer, item).pipe(
+                      Effect.flatMap((accepted) => (accepted ? Effect.void : Effect.interrupt)),
+                    ),
+                  ),
+                ),
+              );
+              const bufferedLiveStream = streamClientLiveBuffer(liveBuffer);
 
               // When the client already loaded the snapshot over HTTP it passes
               // that snapshot's sequence, and we resume the live subscription by
@@ -1222,7 +1299,9 @@ const makeWsRpcLayer = (
                     input.requestCompletionMarker === true
                       ? Stream.concat(
                           Stream.fromEffect(
-                            Queue.offer(liveBuffer, { kind: "synchronized" as const }),
+                            offerClientLiveBuffer(liveBuffer, {
+                              kind: "synchronized" as const,
+                            }),
                           ).pipe(Stream.drain),
                           bufferedLiveStream,
                         )
@@ -1257,7 +1336,7 @@ const makeWsRpcLayer = (
                 input.requestCompletionMarker === true
                   ? Stream.concat(
                       Stream.fromEffect(
-                        Queue.offer(liveBuffer, { kind: "synchronized" as const }),
+                        offerClientLiveBuffer(liveBuffer, { kind: "synchronized" as const }),
                       ).pipe(Stream.drain),
                       bufferedLiveStream,
                     )

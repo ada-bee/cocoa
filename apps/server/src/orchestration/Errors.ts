@@ -53,6 +53,23 @@ export class OrchestrationCommandPreviouslyRejectedError extends Schema.TaggedEr
   }
 }
 
+/**
+ * Admission-control rejection emitted before a command enters the serialized
+ * worker queue. Callers may retry the same command id without risking a
+ * duplicate commit because the command was not accepted.
+ */
+export class OrchestrationCommandBusyError extends Schema.TaggedErrorClass<OrchestrationCommandBusyError>()(
+  "OrchestrationCommandBusyError",
+  {
+    commandId: Schema.String,
+    retryable: Schema.Literal(true),
+  },
+) {
+  override get message(): string {
+    return `Orchestration command queue is busy (${this.commandId}).`;
+  }
+}
+
 export class OrchestrationProjectorDecodeError extends Schema.TaggedErrorClass<OrchestrationProjectorDecodeError>()(
   "OrchestrationProjectorDecodeError",
   {
@@ -81,6 +98,7 @@ export class OrchestrationListenerCallbackError extends Schema.TaggedErrorClass<
 
 export type OrchestrationDispatchError =
   | ProjectionRepositoryError
+  | OrchestrationCommandBusyError
   | OrchestrationCommandInvariantError
   | OrchestrationCommandPreviouslyRejectedError
   | OrchestrationProjectorDecodeError

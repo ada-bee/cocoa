@@ -5,7 +5,7 @@ import type {
   CocoaClientV1ThreadStreamItem,
 } from "@t3tools/contracts/client/v1";
 
-import { CocoaClientError } from "./errors.ts";
+import { CocoaClientError, CocoaClientRequestError } from "./errors.ts";
 import type { DisposableAsyncIterable } from "./public-types.ts";
 import type { CocoaClientTransport } from "./transport.ts";
 
@@ -52,7 +52,22 @@ export class CocoaSubscription<Item extends ResumableItem>
     if (this.#iterator === undefined) {
       this.#iterator = this.#open(this.#cursor)[Symbol.asyncIterator]();
     }
-    const result = await this.#iterator.next();
+    let result: IteratorResult<Item>;
+    try {
+      result = await this.#iterator.next();
+    } catch (error) {
+      if (
+        error instanceof CocoaClientRequestError &&
+        error.remoteCode === "reset_required" &&
+        error.retryable
+      ) {
+        // The server intentionally terminated a bounded live tail. Discard the
+        // cursor so reconnect requests a fresh authoritative snapshot instead
+        // of assuming the live gap can be resumed incrementally.
+        this.#cursor = undefined;
+      }
+      throw error;
+    }
     if (generation !== this.#generation) return this.next();
     if (!result.done) {
       const sequence = cocoaStreamItemSequence(result.value);
@@ -88,12 +103,13 @@ export function subscribeToShell(
   transport: CocoaClientTransport,
   input: CocoaClientV1SubscribeShellInput = {},
 ): CocoaSubscription<CocoaClientV1ShellStreamItem> {
+  const { afterSequence: _initialAfterSequence, ...baseInput } = input;
   return new CocoaSubscription({
     transport,
     ...(input.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
     open: (afterSequence) =>
       transport.subscribeShell({
-        ...input,
+        ...baseInput,
         ...(afterSequence === undefined ? {} : { afterSequence }),
       }),
   });
@@ -103,12 +119,13 @@ export function subscribeToThread(
   transport: CocoaClientTransport,
   input: CocoaClientV1SubscribeThreadInput,
 ): CocoaSubscription<CocoaClientV1ThreadStreamItem> {
+  const { afterSequence: _initialAfterSequence, ...baseInput } = input;
   return new CocoaSubscription({
     transport,
     ...(input.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
     open: (afterSequence) =>
       transport.subscribeThread({
-        ...input,
+        ...baseInput,
         ...(afterSequence === undefined ? {} : { afterSequence }),
       }),
   });

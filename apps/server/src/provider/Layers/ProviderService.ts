@@ -72,6 +72,10 @@ import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import {
+  resolveRuntimeBufferLimits,
+  type RuntimeBufferLimitOverrides,
+} from "../../RuntimeBufferLimits.ts";
+import {
   digestProviderTurnSequence,
   hashProviderContinuationIdentity,
   PROVIDER_TURN_SEQUENCE_DIGEST_VERSION,
@@ -89,6 +93,7 @@ export interface ProviderServiceLiveOptions {
   /** Internal test seams; production uses the active MCP registry functions. */
   readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
   readonly revokeMcpThread?: typeof McpSessionRegistry.revokeActiveMcpThread;
+  readonly bufferLimits?: RuntimeBufferLimitOverrides;
 }
 
 type ProviderServiceMethod<Name extends keyof ProviderService.ProviderService["Service"]> =
@@ -278,7 +283,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const registry = yield* ProviderAdapterRegistry.ProviderAdapterRegistry;
   const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
   const serviceScope = yield* Effect.scope;
-  const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+  const bufferLimits = resolveRuntimeBufferLimits(options?.bufferLimits);
+  const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(
+    bufferLimits.providerRuntimeEvents,
+  );
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   const issueMcpCredential =
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;

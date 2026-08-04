@@ -32,6 +32,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
+  OrchestrationCommandBusyError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
@@ -45,6 +46,11 @@ import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
+import {
+  resolveRuntimeBufferLimits,
+  RuntimeBufferLimitsService,
+  type RuntimeBufferLimitOverrides,
+} from "../../RuntimeBufferLimits.ts";
 const isOrchestrationCommandPreviouslyRejectedError = Schema.is(
   OrchestrationCommandPreviouslyRejectedError,
 );
@@ -76,6 +82,10 @@ function commandToAggregateRef(command: OrchestrationCommand): {
   }
 }
 
+export interface OrchestrationEngineLiveOptions {
+  readonly bufferLimits?: RuntimeBufferLimitOverrides;
+}
+
 const makeOrchestrationEngine = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const eventStore = yield* OrchestrationEventStore;
@@ -87,8 +97,14 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
   let commandReadModel = createEmptyReadModel(yield* nowIso);
 
-  const commandQueue = yield* Queue.unbounded<CommandEnvelope>();
-  const eventPubSub = yield* PubSub.unbounded<OrchestrationEvent>();
+  const bufferLimits = yield* RuntimeBufferLimitsService;
+  // This dropping queue is an admission gate, not a lossy work queue. A false
+  // offer is surfaced as OrchestrationCommandBusyError before acceptance.
+  const commandQueue = yield* Queue.dropping<CommandEnvelope>(bufferLimits.orchestrationCommands);
+  // Committed events are durable. Internal consumers receive every live event;
+  // a slow consumer applies bounded backpressure and replay-capable clients can
+  // reconnect from their last persisted sequence.
+  const eventPubSub = yield* PubSub.bounded<OrchestrationEvent>(bufferLimits.orchestrationEvents);
 
   const projectEventsOntoReadModel = (
     baseReadModel: OrchestrationReadModel,
@@ -312,11 +328,17 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {
       const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
-      yield* Queue.offer(commandQueue, {
+      const accepted = yield* Queue.offer(commandQueue, {
         command,
         result,
         startedAtMs: yield* Clock.currentTimeMillis,
       });
+      if (!accepted) {
+        return yield* new OrchestrationCommandBusyError({
+          commandId: command.commandId,
+          retryable: true,
+        });
+      }
       return yield* Deferred.await(result);
     });
 
@@ -339,5 +361,19 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
 export const OrchestrationEngineLive = Layer.effect(
   OrchestrationEngineService,
-  makeOrchestrationEngine,
+  makeOrchestrationEngine.pipe(
+    Effect.provideService(RuntimeBufferLimitsService, resolveRuntimeBufferLimits(undefined)),
+  ),
 );
+
+export function makeOrchestrationEngineLive(options?: OrchestrationEngineLiveOptions) {
+  return Layer.effect(
+    OrchestrationEngineService,
+    makeOrchestrationEngine.pipe(
+      Effect.provideService(
+        RuntimeBufferLimitsService,
+        resolveRuntimeBufferLimits(options?.bufferLimits),
+      ),
+    ),
+  );
+}

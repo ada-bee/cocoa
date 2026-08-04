@@ -1501,6 +1501,8 @@ export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<Orche
   "OrchestrationGetSnapshotError",
   {
     message: TrimmedNonEmptyString,
+    code: Schema.optionalKey(Schema.Literal("reset_required")),
+    retryable: Schema.optionalKey(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}
@@ -1509,6 +1511,8 @@ export class OrchestrationDispatchCommandError extends Schema.TaggedErrorClass<O
   "OrchestrationDispatchCommandError",
   {
     message: TrimmedNonEmptyString,
+    code: Schema.optionalKey(Schema.Literals(["dispatch_failed", "busy"])),
+    retryable: Schema.optionalKey(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {}

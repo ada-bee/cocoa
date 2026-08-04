@@ -84,6 +84,7 @@ import * as GitManager from "./git/GitManager.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
+import * as CheckpointRevertGate from "./orchestration/Services/CheckpointRevertGate.ts";
 import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
@@ -365,6 +366,7 @@ const buildAppUnderTest = (options?: {
     portDiscovery?: Partial<PortScanner.PortDiscovery["Service"]>;
     terminalManager?: Partial<TerminalManager.TerminalManager["Service"]>;
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
+    checkpointRevertGate?: Partial<CheckpointRevertGate.CheckpointRevertGate["Service"]>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
     projectWorkspace?: Partial<ProjectWorkspace.ProjectWorkspace["Service"]>;
     providerFilesystemBrowse?: Partial<
@@ -758,13 +760,20 @@ const buildAppUnderTest = (options?: {
         ),
       ),
       Layer.provide(
-        Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
-          readEvents: () => Stream.empty,
-          dispatch: () => Effect.succeed({ sequence: 0 }),
-          streamDomainEvents: Stream.empty,
-          latestSequence: Effect.succeed(0),
-          ...options?.layers?.orchestrationEngine,
-        }),
+        Layer.mergeAll(
+          Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
+            readEvents: () => Stream.empty,
+            dispatch: () => Effect.succeed({ sequence: 0 }),
+            streamDomainEvents: Stream.empty,
+            latestSequence: Effect.succeed(0),
+            ...options?.layers?.orchestrationEngine,
+          }),
+          Layer.mock(CheckpointRevertGate.CheckpointRevertGate)({
+            assertThreadAvailable: () => Effect.void,
+            isThreadBlocked: () => Effect.succeed(false),
+            ...options?.layers?.checkpointRevertGate,
+          }),
+        ),
       ),
       Layer.provide(
         Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
@@ -5719,7 +5728,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
-  it.effect("fails closed for unsupported provider checkpoint operations", () =>
+  it.effect("dispatches checkpoint reverts and fails closed for unsupported checkpoint diffs", () =>
     Effect.gen(function* () {
       const dispatchedCommands: Array<OrchestrationCommand> = [];
       yield* buildAppUnderTest({
@@ -5760,16 +5769,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           }),
         ).pipe(Effect.result),
       );
-      assert.equal(revertResult._tag, "Failure");
-      if (revertResult._tag === "Failure") {
-        assert.equal(revertResult.failure._tag, "OrchestrationDispatchCommandError");
-        assert.equal(
-          revertResult.failure.message,
-          "Checkpoint revert is unavailable until the bound provider supplies checkpoint operations.",
-        );
-        assert.notProperty(revertResult.failure, "cause");
-      }
-      assert.deepEqual(dispatchedCommands, []);
+      assert.equal(revertResult._tag, "Success");
+      if (revertResult._tag === "Success") assert.deepEqual(revertResult.success, { sequence: 1 });
+      assert.lengthOf(dispatchedCommands, 1);
+      assert.deepInclude(dispatchedCommands[0], {
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("cmd-checkpoint-revert-unsupported"),
+        threadId: defaultThreadId,
+        turnCount: 1,
+      });
 
       const turnDiffResult = yield* Effect.scoped(
         withWsRpcClient(wsUrl, (client) =>
@@ -5807,6 +5815,60 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         );
         assert.notProperty(fullDiffResult.failure, "cause");
       }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("returns a retryable busy error when a checkpoint revert gate blocks dispatch", () =>
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      yield* buildAppUnderTest({
+        layers: {
+          checkpointRevertGate: {
+            assertThreadAvailable: (threadId) =>
+              Effect.fail(
+                new CheckpointRevertGate.CheckpointRevertGateBlockedError({
+                  threadId,
+                  sourceEventId: EventId.make("active-revert-source"),
+                }),
+              ),
+          },
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.checkpoint.revert",
+            commandId: CommandId.make("cmd-checkpoint-revert-busy"),
+            threadId: defaultThreadId,
+            turnCount: 1,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ).pipe(Effect.result),
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        const failure = result.failure as {
+          readonly _tag: string;
+          readonly code?: unknown;
+          readonly retryable?: unknown;
+          readonly cause?: unknown;
+        };
+        assert.equal(failure._tag, "OrchestrationDispatchCommandError");
+        assert.equal(failure.code, "busy");
+        assert.equal(failure.retryable, true);
+        assert.notProperty(failure, "cause");
+      }
+      assert.deepEqual(dispatchedCommands, []);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

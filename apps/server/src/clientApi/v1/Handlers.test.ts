@@ -7,6 +7,7 @@ import {
   CommandId,
   EnvironmentId,
   EventId,
+  MessageId,
   OrchestrationEvent,
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
@@ -35,11 +36,17 @@ import * as CheckpointDiffQuery from "../../checkpointing/CheckpointDiffQuery.ts
 import { CheckpointProviderOperationError } from "../../checkpointing/Errors.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import { OrchestrationCommandBusyError } from "../../orchestration/Errors.ts";
+import {
+  CheckpointRevertGate,
+  CheckpointRevertGateBlockedError,
+} from "../../orchestration/Services/CheckpointRevertGate.ts";
 import * as OrchestrationEngine from "../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderRegistry from "../../provider/Services/ProviderRegistry.ts";
 import * as ServerRuntimeStartup from "../../serverRuntimeStartup.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
+import { DEFAULT_RUNTIME_BUFFER_LIMITS } from "../../RuntimeBufferLimits.ts";
 import { COCOA_CLIENT_V1_REQUIRED_SCOPES } from "./Authorization.ts";
 import { COCOA_CLIENT_V1_RESUME_MAX_GAP, makeCocoaClientV1Handlers } from "./Handlers.ts";
 
@@ -146,6 +153,8 @@ interface HarnessOptions {
   readonly latestSequence?: number;
   readonly loadShell?: Effect.Effect<typeof shellSnapshot>;
   readonly diffFailure?: boolean;
+  readonly dispatchBusy?: boolean;
+  readonly revertBlocked?: boolean;
 }
 
 const makeHarness = (options: HarnessOptions = {}) =>
@@ -198,9 +207,16 @@ const makeHarness = (options: HarnessOptions = {}) =>
       readEvents: (after, limit = 1_000) =>
         Stream.fromIterable(events.filter((event) => event.sequence > after).slice(0, limit)),
       dispatch: (command) =>
-        Ref.updateAndGet(dispatched, (commands) => [...commands, command]).pipe(
-          Effect.map((commands) => ({ sequence: commands.length })),
-        ),
+        options.dispatchBusy === true
+          ? Effect.fail(
+              new OrchestrationCommandBusyError({
+                commandId: command.commandId,
+                retryable: true,
+              }),
+            )
+          : Ref.updateAndGet(dispatched, (commands) => [...commands, command]).pipe(
+              Effect.map((commands) => ({ sequence: commands.length })),
+            ),
       streamDomainEvents: Stream.concat(
         Stream.fromIterable(options.livePrelude ?? []),
         Stream.fromPubSub(live),
@@ -271,6 +287,18 @@ const makeHarness = (options: HarnessOptions = {}) =>
       subscribe: () => Effect.succeed(() => undefined),
       subscribeMetadata: () => Effect.succeed(() => undefined),
     });
+    const checkpointRevertGate = CheckpointRevertGate.of({
+      assertThreadAvailable: (candidateThreadId) =>
+        options.revertBlocked === true
+          ? Effect.fail(
+              new CheckpointRevertGateBlockedError({
+                threadId: candidateThreadId,
+                sourceEventId: EventId.make("revert-gate-source"),
+              }),
+            )
+          : Effect.void,
+      isThreadBlocked: () => Effect.succeed(options.revertBlocked === true),
+    });
 
     const layer = Layer.mergeAll(
       Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, projections),
@@ -280,6 +308,7 @@ const makeHarness = (options: HarnessOptions = {}) =>
       Layer.succeed(ServerEnvironment.ServerEnvironment, serverEnvironment),
       Layer.succeed(ServerRuntimeStartup.ServerRuntimeStartup, startup),
       Layer.succeed(TerminalManager.TerminalManager, terminals),
+      Layer.succeed(CheckpointRevertGate, checkpointRevertGate),
       NodeServices.layer,
       ServerConfig.layerTest(process.cwd(), { prefix: "client-v1" }).pipe(
         Layer.provide(NodeServices.layer),
@@ -386,6 +415,92 @@ describe("Cocoa client v1 handlers", () => {
         workspaceRoot: "/remote/cocoa",
         createWorkspaceRootIfMissing: false,
       });
+
+      expect(
+        yield* handlers[COCOA_CLIENT_V1_METHODS.dispatchCommand]({
+          type: "thread.checkpoint.revert",
+          commandId: CommandId.make("checkpoint-revert"),
+          threadId,
+          turnCount: 1,
+          createdAt,
+        }).pipe(Effect.provide(harness.layer)),
+      ).toEqual({ sequence: 2 });
+      expect((yield* Ref.get(harness.dispatched))[1]).toMatchObject({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.make("checkpoint-revert"),
+        threadId,
+        turnCount: 1,
+      });
+    }),
+  );
+
+  it.effect("preserves a sanitized retryable busy dispatch rejection", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ dispatchBusy: true });
+      const handlers = yield* makeCocoaClientV1Handlers(operateSession).pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const error = yield* handlers[COCOA_CLIENT_V1_METHODS.dispatchCommand]({
+        type: "project.create",
+        commandId: CommandId.make("project-create-busy"),
+        projectId,
+        providerInstanceId: instanceId,
+        title: "Remote Cocoa",
+        workspaceRoot: "/remote/cocoa",
+        createdAt,
+      }).pipe(Effect.flip, Effect.provide(harness.layer));
+
+      expect(error).toEqual({
+        code: "busy",
+        message: "The Cocoa gateway is busy. Retry the same command shortly.",
+        retryable: true,
+      });
+      expect(yield* Ref.get(harness.dispatched)).toEqual([]);
+    }),
+  );
+
+  it.effect("rejects turn starts and checkpoint reverts while a revert saga is active", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ revertBlocked: true });
+      const handlers = yield* makeCocoaClientV1Handlers(operateSession).pipe(
+        Effect.provide(harness.layer),
+      );
+
+      for (const command of [
+        {
+          type: "thread.turn.start" as const,
+          commandId: CommandId.make("turn-start-during-revert"),
+          threadId,
+          message: {
+            messageId: MessageId.make("message-during-revert"),
+            role: "user" as const,
+            text: "do work",
+            attachments: [],
+          },
+          runtimeMode: "full-access" as const,
+          interactionMode: "default" as const,
+          createdAt,
+        },
+        {
+          type: "thread.checkpoint.revert" as const,
+          commandId: CommandId.make("revert-during-revert"),
+          threadId,
+          turnCount: 0,
+          createdAt,
+        },
+      ]) {
+        const error = yield* handlers[COCOA_CLIENT_V1_METHODS.dispatchCommand](command).pipe(
+          Effect.flip,
+          Effect.provide(harness.layer),
+        );
+        expect(error).toEqual({
+          code: "busy",
+          message: "A checkpoint revert is already in progress for this thread.",
+          retryable: true,
+        });
+      }
+      expect(yield* Ref.get(harness.dispatched)).toEqual([]);
     }),
   );
 
@@ -439,6 +554,55 @@ describe("Cocoa client v1 handlers", () => {
           "thread-upserted",
           "synchronized",
         ]);
+      }),
+    ),
+  );
+
+  it.effect("terminates an overflowing live tail and allows a fresh snapshot subscription", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const snapshotStarted = yield* Deferred.make<void>();
+        const finishSnapshot = yield* Deferred.make<void>();
+        const harness = yield* makeHarness({
+          loadShell: Deferred.succeed(snapshotStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(finishSnapshot)),
+            Effect.as(shellSnapshot),
+          ),
+        });
+        const handlers = yield* makeCocoaClientV1Handlers(readSession).pipe(
+          Effect.provide(harness.layer),
+        );
+        const failedTail = yield* handlers[COCOA_CLIENT_V1_METHODS.subscribeShell]({}).pipe(
+          Stream.runDrain,
+          Effect.flip,
+          Effect.forkChild,
+        );
+
+        yield* Deferred.await(snapshotStarted);
+        yield* Effect.forEach(
+          Array.from(
+            { length: DEFAULT_RUNTIME_BUFFER_LIMITS.clientLiveEvents + 1 },
+            (_, index) => index + 6,
+          ),
+          (sequence) => PubSub.publish(harness.live, messageEvent(sequence, `burst-${sequence}`)),
+          { discard: true },
+        );
+        yield* Deferred.succeed(finishSnapshot, undefined);
+
+        expect(yield* Fiber.join(failedTail)).toEqual({
+          code: "reset_required",
+          message: "The live update buffer overflowed. Reconnect to load a fresh snapshot.",
+          retryable: true,
+        });
+
+        const recovered = Array.from(
+          yield* handlers[COCOA_CLIENT_V1_METHODS.subscribeShell]({}).pipe(
+            Stream.take(1),
+            Stream.runCollect,
+          ),
+        );
+        expect(recovered).toHaveLength(1);
+        expect(recovered[0]?.kind).toBe("snapshot");
       }),
     ),
   );
