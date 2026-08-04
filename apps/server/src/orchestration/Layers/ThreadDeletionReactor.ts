@@ -16,6 +16,11 @@ import { forkParked } from "../../serverActivation.ts";
 
 type ThreadDeletedEvent = Extract<OrchestrationEvent, { type: "thread.deleted" }>;
 
+export interface ThreadDeletionReactorOptions {
+  /** Test seam for proving bounded worker backpressure under small bursts. */
+  readonly workerCapacity?: number;
+}
+
 export const logCleanupCauseUnlessInterrupted = <R, E>({
   effect,
   message,
@@ -37,7 +42,9 @@ export const logCleanupCauseUnlessInterrupted = <R, E>({
     }),
   );
 
-const make = Effect.gen(function* () {
+export const makeThreadDeletionReactor = Effect.fn("makeThreadDeletionReactor")(function* (
+  options: ThreadDeletionReactorOptions = {},
+) {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
   const terminalManager = yield* TerminalManager.TerminalManager;
@@ -78,7 +85,10 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const worker = yield* makeDrainableWorker(processThreadDeletedSafely);
+  const worker = yield* makeDrainableWorker(
+    processThreadDeletedSafely,
+    options.workerCapacity === undefined ? undefined : { capacity: options.workerCapacity },
+  );
 
   const start: ThreadDeletionReactorShape["start"] = Effect.fn("start")(function* () {
     yield* forkParked(
@@ -97,4 +107,7 @@ const make = Effect.gen(function* () {
   } satisfies ThreadDeletionReactorShape;
 });
 
-export const ThreadDeletionReactorLive = Layer.effect(ThreadDeletionReactor, make);
+export const makeThreadDeletionReactorLive = (options: ThreadDeletionReactorOptions = {}) =>
+  Layer.effect(ThreadDeletionReactor, makeThreadDeletionReactor(options));
+
+export const ThreadDeletionReactorLive = makeThreadDeletionReactorLive();

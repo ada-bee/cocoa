@@ -1,7 +1,7 @@
 /**
  * DrainableWorker - A queue-based worker that exposes a `drain()` effect.
  *
- * Wraps the common `Queue.unbounded` + `Effect.forever` pattern and adds
+ * Wraps the common `Queue.bounded` + `Effect.forever` pattern and adds
  * a signal that resolves when the queue is empty **and** the current item
  * has finished processing. This lets tests replace timing-sensitive
  * `Effect.sleep` calls with deterministic `drain()`.
@@ -29,7 +29,23 @@ export interface DrainableWorker<A> {
 }
 
 /**
- * Create a drainable worker that processes items from an unbounded queue.
+ * Maximum number of items retained by a worker before producers are
+ * backpressured. The active item is not counted against this capacity.
+ */
+export const DEFAULT_DRAINABLE_WORKER_CAPACITY = 256;
+
+export interface DrainableWorkerOptions {
+  /**
+   * Queue capacity. Tests may lower this to exercise overload behavior without
+   * changing the lossless, backpressured production strategy.
+   */
+  readonly capacity?: number;
+}
+
+/**
+ * Create a drainable worker that processes items from a bounded, lossless
+ * queue. Once the queue reaches capacity, `enqueue` waits for the consumer to
+ * make room instead of dropping an item or buffering without limit.
  *
  * The worker is forked into the current scope and will be interrupted when
  * the scope closes. A finalizer shuts down the queue.
@@ -39,9 +55,13 @@ export interface DrainableWorker<A> {
  */
 export const makeDrainableWorker = <A, E, R>(
   process: (item: A) => Effect.Effect<void, E, R>,
+  options?: DrainableWorkerOptions,
 ): Effect.Effect<DrainableWorker<A>, never, Scope.Scope | R> =>
   Effect.gen(function* () {
-    const queue = yield* Effect.acquireRelease(TxQueue.unbounded<A>(), TxQueue.shutdown);
+    const queue = yield* Effect.acquireRelease(
+      TxQueue.bounded<A>(options?.capacity ?? DEFAULT_DRAINABLE_WORKER_CAPACITY),
+      TxQueue.shutdown,
+    );
     const outstanding = yield* TxRef.make(0);
 
     yield* TxQueue.take(queue).pipe(
@@ -60,10 +80,13 @@ export const makeDrainableWorker = <A, E, R>(
       Effect.tx,
     );
 
-    const enqueue = (element: A): Effect.Effect<boolean, never, never> =>
+    const enqueue = (element: A): Effect.Effect<void> =>
       TxQueue.offer(queue, element).pipe(
-        Effect.tap(() => TxRef.update(outstanding, (n) => n + 1)),
+        Effect.tap((accepted) =>
+          accepted ? TxRef.update(outstanding, (n) => n + 1) : Effect.void,
+        ),
         Effect.tx,
+        Effect.asVoid,
       );
 
     return { enqueue, drain } satisfies DrainableWorker<A>;
