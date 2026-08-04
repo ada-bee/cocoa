@@ -7413,7 +7413,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assert.equal(result._tag, "Failure");
       if (result._tag === "Failure") {
         assert.equal(result.failure._tag, "OrchestrationDispatchCommandError");
-        assert.include(result.failure.message, "provider instance");
+        assert.equal(result.failure.message, "Failed to dispatch orchestration command");
+        assert.notInclude(result.failure.message, "/remote/project");
       }
       assert.deepEqual(dispatchedCommands, []);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
