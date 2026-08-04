@@ -31,7 +31,10 @@ import * as Stream from "effect/Stream";
 import * as CheckpointDiffQuery from "../../checkpointing/CheckpointDiffQuery.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import { normalizeDispatchCommand } from "../../orchestration/Normalizer.ts";
-import { OrchestrationCommandBusyError } from "../../orchestration/Errors.ts";
+import {
+  OrchestrationCommandBlockedByRevertError,
+  OrchestrationCommandBusyError,
+} from "../../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { CheckpointRevertGate } from "../../orchestration/Services/CheckpointRevertGate.ts";
@@ -373,10 +376,13 @@ const protocolMismatch = (
 });
 
 const isOrchestrationCommandBusyError = Schema.is(OrchestrationCommandBusyError);
+const isOrchestrationCommandBlockedByRevertError = Schema.is(
+  OrchestrationCommandBlockedByRevertError,
+);
 const isCocoaClientV1RequestError = Schema.is(CocoaClientV1RequestError);
 
 const sanitizeDispatchError = (cause: unknown): CocoaClientV1RequestError =>
-  isOrchestrationCommandBusyError(cause)
+  isOrchestrationCommandBusyError(cause) || isOrchestrationCommandBlockedByRevertError(cause)
     ? {
         code: "busy",
         message: "The Cocoa gateway is busy. Retry the same command shortly.",

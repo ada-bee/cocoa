@@ -85,7 +85,10 @@ import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as CheckpointRevertGate from "./orchestration/Services/CheckpointRevertGate.ts";
-import { OrchestrationListenerCallbackError } from "./orchestration/Errors.ts";
+import {
+  OrchestrationCommandBlockedByRevertError,
+  OrchestrationListenerCallbackError,
+} from "./orchestration/Errors.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
@@ -5869,6 +5872,46 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         assert.notProperty(failure, "cause");
       }
       assert.deepEqual(dispatchedCommands, []);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("returns retryable busy when engine-level revert isolation blocks a mutation", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.fail(
+                new OrchestrationCommandBlockedByRevertError({
+                  commandId: command.commandId,
+                  threadId: defaultThreadId,
+                  retryable: true,
+                }),
+              ),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const result = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+            type: "thread.archive",
+            commandId: CommandId.make("cmd-thread-archive-during-revert"),
+            threadId: defaultThreadId,
+          }),
+        ).pipe(Effect.result),
+      );
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "OrchestrationDispatchCommandError");
+        if (result.failure._tag === "OrchestrationDispatchCommandError") {
+          assert.equal(result.failure.code, "busy");
+          assert.equal(result.failure.retryable, true);
+        }
+        assert.notProperty(result.failure, "cause");
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

@@ -36,7 +36,10 @@ import * as CheckpointDiffQuery from "../../checkpointing/CheckpointDiffQuery.ts
 import { CheckpointProviderOperationError } from "../../checkpointing/Errors.ts";
 import * as ServerConfig from "../../config.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
-import { OrchestrationCommandBusyError } from "../../orchestration/Errors.ts";
+import {
+  OrchestrationCommandBlockedByRevertError,
+  OrchestrationCommandBusyError,
+} from "../../orchestration/Errors.ts";
 import {
   CheckpointRevertGate,
   CheckpointRevertGateBlockedError,
@@ -154,6 +157,7 @@ interface HarnessOptions {
   readonly loadShell?: Effect.Effect<typeof shellSnapshot>;
   readonly diffFailure?: boolean;
   readonly dispatchBusy?: boolean;
+  readonly dispatchBlockedByRevert?: boolean;
   readonly revertBlocked?: boolean;
 }
 
@@ -214,9 +218,17 @@ const makeHarness = (options: HarnessOptions = {}) =>
                 retryable: true,
               }),
             )
-          : Ref.updateAndGet(dispatched, (commands) => [...commands, command]).pipe(
-              Effect.map((commands) => ({ sequence: commands.length })),
-            ),
+          : options.dispatchBlockedByRevert === true
+            ? Effect.fail(
+                new OrchestrationCommandBlockedByRevertError({
+                  commandId: command.commandId,
+                  threadId: threadId,
+                  retryable: true,
+                }),
+              )
+            : Ref.updateAndGet(dispatched, (commands) => [...commands, command]).pipe(
+                Effect.map((commands) => ({ sequence: commands.length })),
+              ),
       streamDomainEvents: Stream.concat(
         Stream.fromIterable(options.livePrelude ?? []),
         Stream.fromPubSub(live),
@@ -449,6 +461,28 @@ describe("Cocoa client v1 handlers", () => {
         title: "Remote Cocoa",
         workspaceRoot: "/remote/cocoa",
         createdAt,
+      }).pipe(Effect.flip, Effect.provide(harness.layer));
+
+      expect(error).toEqual({
+        code: "busy",
+        message: "The Cocoa gateway is busy. Retry the same command shortly.",
+        retryable: true,
+      });
+      expect(yield* Ref.get(harness.dispatched)).toEqual([]);
+    }),
+  );
+
+  it.effect("maps engine-level revert isolation to a retryable busy rejection", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ dispatchBlockedByRevert: true });
+      const handlers = yield* makeCocoaClientV1Handlers(operateSession).pipe(
+        Effect.provide(harness.layer),
+      );
+
+      const error = yield* handlers[COCOA_CLIENT_V1_METHODS.dispatchCommand]({
+        type: "thread.archive",
+        commandId: CommandId.make("thread-archive-during-revert"),
+        threadId,
       }).pipe(Effect.flip, Effect.provide(harness.layer));
 
       expect(error).toEqual({

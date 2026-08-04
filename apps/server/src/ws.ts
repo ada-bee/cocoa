@@ -71,7 +71,10 @@ import {
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
-import { OrchestrationCommandBusyError } from "./orchestration/Errors.ts";
+import {
+  OrchestrationCommandBlockedByRevertError,
+  OrchestrationCommandBusyError,
+} from "./orchestration/Errors.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
@@ -109,6 +112,9 @@ import * as RelayClient from "@t3tools/shared/relayClient";
 import { DEFAULT_RUNTIME_BUFFER_LIMITS } from "./RuntimeBufferLimits.ts";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isOrchestrationCommandBusyError = Schema.is(OrchestrationCommandBusyError);
+const isOrchestrationCommandBlockedByRevertError = Schema.is(
+  OrchestrationCommandBlockedByRevertError,
+);
 const isCheckpointUnsupportedError = Schema.is(CheckpointUnsupportedError);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -421,6 +427,7 @@ const makeWsRpcLayer = (
         );
       const toDispatchCommandError = (cause: unknown, fallbackMessage: string) =>
         isOrchestrationCommandBusyError(cause) ||
+        isOrchestrationCommandBlockedByRevertError(cause) ||
         (isOrchestrationDispatchCommandError(cause) && cause.code === "busy")
           ? new OrchestrationDispatchCommandError({
               message: "The Cocoa gateway is busy. Retry the same command shortly.",
