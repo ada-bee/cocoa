@@ -46,18 +46,7 @@
           hostPkgs = import nixpkgs { system = hostSystem; };
         in
         {
-          cocoa-provider-host-helper = hostPkgs.rustPlatform.buildRustPackage {
-            pname = "cocoa-provider-host-helper";
-            version = "0.1.0";
-            src = hostPkgs.lib.cleanSource (self.outPath + "/native/cocoa-workspace-helper");
-            cargoLock.lockFile = self.outPath + "/native/cocoa-workspace-helper/Cargo.lock";
-            meta = {
-              description = "Administrator-installed Cocoa workspace helper for provider hosts";
-              license = hostPkgs.lib.licenses.mit;
-              platforms = hostPkgs.lib.platforms.linux ++ hostPkgs.lib.platforms.darwin;
-              mainProgram = "cocoa-workspace-helper";
-            };
-          };
+          cocoa-provider-host-helper = hostPkgs.callPackage ./native/cocoa-workspace-helper/package.nix { };
         }
       );
 
@@ -68,6 +57,10 @@
       runtimeNames = cocoaGatewayImage.passthru.runtimePackageNames;
       providerInstances = settings.providerInstances or { };
       selectedInstanceId = settings.textGenerationModelSelection.instanceId or null;
+      providerHostHelperMainPrograms = map (
+        hostSystem:
+        providerHostPackages.${hostSystem}."cocoa-provider-host-helper".meta.mainProgram
+      ) providerHostSystems;
       policyAssertions = [
         {
           assertion = system == "aarch64-linux";
@@ -117,6 +110,10 @@
           message = "provider-host helper must never be included in the gateway image";
         }
         {
+          assertion = builtins.all (mainProgram: mainProgram == "cocoa-workspace-helper") providerHostHelperMainPrograms;
+          message = "every provider-host helper package must expose cocoa-workspace-helper";
+        }
+        {
           assertion = builtins.all (needle: !(lib.hasInfix needle composeText)) [
             "/var/run/docker.sock"
             "workspace:"
@@ -157,6 +154,9 @@
             && provider.config.workspaceHelper.type == "inline-python3-v1"
             && lib.hasPrefix "/" provider.config.workspaceHelper.executablePath
             && lib.hasPrefix "/" provider.config.endpointGitExecutablePath
+            && provider.config.checkpointHelper.type == "cocoa-checkpoint-helper-v1"
+            && provider.config.checkpointHelper.expectedProtocol == 1
+            && lib.hasSuffix "/bin/cocoa-workspace-helper" provider.config.checkpointHelper.executablePath
             && provider.config.endpointTerminal == {
               enabled = true;
               sandboxMode = "workspaceWrite";

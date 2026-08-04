@@ -1,6 +1,7 @@
 {
   lib,
   rustPlatform,
+  git,
 }:
 
 rustPlatform.buildRustPackage {
@@ -18,6 +19,11 @@ rustPlatform.buildRustPackage {
   };
 
   cargoLock.lockFile = ./Cargo.lock;
+
+  # Integration tests construct disposable repositories. Git is supplied only
+  # while checking the package; production requests still use the explicit
+  # provider-host executable path carried by the CCH1 request.
+  nativeCheckInputs = [ git ];
 
   meta = {
     description = "Bounded workspace reads and transactional Git checkpoints for Cocoa provider hosts";

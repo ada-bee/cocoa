@@ -237,12 +237,16 @@ function isUnknownPendingUserInputRequestError(cause: Cause.Cause<ProviderServic
   );
 }
 
-function stalePendingRequestDetail(
-  requestKind: "approval" | "user-input",
-  requestId: string,
-): string {
-  return `Stale pending ${requestKind} request: ${requestId}. Provider callback state does not survive app restarts or recovered sessions. Restart the turn to continue.`;
+function stalePendingRequestDetail(requestKind: "approval" | "user-input"): string {
+  return `The pending provider ${requestKind} request is no longer active. Restart the turn to continue.`;
 }
+
+const PROVIDER_APPROVAL_FAILURE_DETAIL =
+  "The provider approval response could not be delivered. Restart the turn and try again.";
+const PROVIDER_USER_INPUT_FAILURE_DETAIL =
+  "The provider user-input response could not be delivered. Restart the turn and try again.";
+const PROVIDER_TURN_PREPARATION_FAILURE_DETAIL =
+  "The provider turn could not be prepared. Review the thread configuration and try again.";
 
 function sanitizedWorkspaceValidationDetail(error: ProjectWorkspaceError): string {
   switch (error._tag) {
@@ -1063,6 +1067,29 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const preserveIndeterminateTurnDispatch = Effect.fn("preserveIndeterminateTurnDispatch")(
+    function* (input: {
+      readonly entry: TurnDispatchJournalEntry;
+      readonly error: TurnDispatchError;
+      readonly updatedAt: string;
+    }) {
+      const current = Option.getOrUndefined(
+        yield* turnDispatchJournal.getByDispatchId({ dispatchId: input.entry.dispatchId }),
+      );
+      if (
+        current !== undefined &&
+        current.finalizedSequence === null &&
+        (current.state === "provider_in_flight" || current.state === "started")
+      ) {
+        yield* turnDispatchJournal.markIndeterminate({
+          dispatchId: current.dispatchId,
+          error: input.error,
+          updatedAt: input.updatedAt,
+        });
+      }
+    },
+  );
+
   const appendReconciliationGap = Effect.fn("appendReconciliationGap")(function* (input: {
     readonly entry: TurnDispatchJournalEntry;
     readonly turnId: TurnId;
@@ -1107,11 +1134,9 @@ const make = Effect.gen(function* () {
     const { entry, candidate } = input;
     let thread = yield* resolveThread(entry.threadId);
     if (thread === undefined) {
-      return yield* recordDurableTurnDispatchFailure({
+      return yield* preserveIndeterminateTurnDispatch({
         entry,
-        state: "indeterminate",
         error: { code: "provider_recovery_thread_missing", summary: "Recovery thread missing" },
-        detail: "The provider turn could not be reconciled with its durable thread.",
         updatedAt: candidate.completedAt,
       });
     }
@@ -1142,11 +1167,9 @@ const make = Effect.gen(function* () {
         existing !== undefined &&
         (existing.role !== "assistant" || !assistantMessage.text.startsWith(existing.text))
       ) {
-        return yield* recordDurableTurnDispatchFailure({
+        return yield* preserveIndeterminateTurnDispatch({
           entry,
-          state: "indeterminate",
           error: { code: "provider_recovery_message_mismatch", summary: "Message mismatch" },
-          detail: "The authoritative provider response conflicted with durable message state.",
           updatedAt: candidate.completedAt,
         });
       }
@@ -1233,18 +1256,16 @@ const make = Effect.gen(function* () {
       inspected.success.threadId === entry.threadId &&
       inspected.success.turns.length === entry.checkpointTurnCount + 1 &&
       candidate !== undefined &&
-      (entry.state !== "started" || candidate.id === entry.providerTurnId);
+      (entry.providerTurnId === null || candidate.id === entry.providerTurnId);
     if (!exactCandidate || candidate === undefined) {
-      yield* recordDurableTurnDispatchFailure({
+      yield* preserveIndeterminateTurnDispatch({
         entry,
-        state: "indeterminate",
         error: { code: "provider_recovery_unproven", summary: "Provider turn identity unproven" },
-        detail: "The provider turn outcome could not be proven from the authoritative snapshot.",
         updatedAt: entry.updatedAt,
       });
       return;
     }
-    if (entry.state === "provider_in_flight") {
+    if (entry.state === "provider_in_flight" || entry.state === "indeterminate") {
       yield* turnDispatchJournal.markStarted({
         dispatchId: entry.dispatchId,
         providerTurnId: candidate.id,
@@ -1286,7 +1307,7 @@ const make = Effect.gen(function* () {
     let entry = work.entry;
 
     if (work.event === undefined && work.providerReady !== true) {
-      if (entry.state === "failed" || entry.state === "indeterminate") {
+      if (entry.state === "failed") {
         yield* finalizeDurableTurnDispatchFailure(
           entry,
           entry.error?.summary ?? "The provider turn did not start.",
@@ -1299,11 +1320,15 @@ const make = Effect.gen(function* () {
       if (work.event === undefined) yield* reconcileAuthoritativeTurn(entry);
       return;
     }
-    if (entry.state === "failed" || entry.state === "indeterminate") {
+    if (entry.state === "failed") {
       yield* finalizeDurableTurnDispatchFailure(
         entry,
         entry.error?.summary ?? "The provider turn did not start.",
       );
+      return;
+    }
+    if (entry.state === "indeterminate") {
+      if (work.event === undefined) yield* reconcileAuthoritativeTurn(entry);
       return;
     }
     if (entry.state === "provider_in_flight") {
@@ -1462,14 +1487,16 @@ const make = Effect.gen(function* () {
       }),
     );
     if (Result.isFailure(preparedTurn)) {
-      const detail = isProviderAdapterRequestError(preparedTurn.failure)
-        ? preparedTurn.failure.detail
-        : "The provider turn could not be prepared.";
+      yield* Effect.logWarning("provider turn preparation failed", {
+        dispatchId: entry.dispatchId,
+        providerInstanceId: entry.providerInstanceId,
+        error: preparedTurn.failure,
+      });
       yield* recordDurableTurnDispatchFailure({
         entry,
         state: "failed",
         error: { code: "turn_prepare_failed", summary: "Provider turn preparation failed" },
-        detail,
+        detail: PROVIDER_TURN_PREPARATION_FAILURE_DETAIL,
         updatedAt: entry.createdAt,
       });
       return;
@@ -1484,11 +1511,16 @@ const make = Effect.gen(function* () {
     );
     const sent = yield* Effect.result(providerService.sendTurn(preparedTurn.success));
     if (Result.isFailure(sent) || sent.success.threadId !== entry.threadId) {
-      yield* recordDurableTurnDispatchFailure({
+      yield* Effect.logWarning("provider turn reply was ambiguous", {
+        dispatchId: entry.dispatchId,
+        providerInstanceId: entry.providerInstanceId,
+        ...(Result.isFailure(sent)
+          ? { error: sent.failure }
+          : { returnedThreadId: sent.success.threadId }),
+      });
+      yield* preserveIndeterminateTurnDispatch({
         entry,
-        state: "indeterminate",
         error: { code: "provider_turn_outcome_unknown", summary: "Provider turn outcome unknown" },
-        detail: "The provider turn outcome could not be determined.",
         updatedAt: entry.createdAt,
       });
       return;
@@ -1577,19 +1609,28 @@ const make = Effect.gen(function* () {
         decision: event.payload.decision,
       })
       .pipe(
-        Effect.catchCause((cause) =>
-          appendProviderFailureActivity({
+        Effect.catchCause((cause) => {
+          const stale = isUnknownPendingApprovalRequestError(cause);
+          return Effect.logWarning("provider approval response failed", {
             threadId: event.payload.threadId,
-            kind: "provider.approval.respond.failed",
-            summary: "Provider approval response failed",
-            detail: isUnknownPendingApprovalRequestError(cause)
-              ? stalePendingRequestDetail("approval", event.payload.requestId)
-              : Cause.pretty(cause),
-            turnId: null,
-            createdAt: event.payload.createdAt,
             requestId: event.payload.requestId,
-          }),
-        ),
+            cause: Cause.pretty(cause),
+          }).pipe(
+            Effect.andThen(
+              appendProviderFailureActivity({
+                threadId: event.payload.threadId,
+                kind: "provider.approval.respond.failed",
+                summary: "Provider approval response failed",
+                detail: stale
+                  ? stalePendingRequestDetail("approval")
+                  : PROVIDER_APPROVAL_FAILURE_DETAIL,
+                turnId: null,
+                createdAt: event.payload.createdAt,
+                requestId: event.payload.requestId,
+              }),
+            ),
+          );
+        }),
       );
   });
 
@@ -1621,19 +1662,28 @@ const make = Effect.gen(function* () {
           answers: event.payload.answers,
         })
         .pipe(
-          Effect.catchCause((cause) =>
-            appendProviderFailureActivity({
+          Effect.catchCause((cause) => {
+            const stale = isUnknownPendingUserInputRequestError(cause);
+            return Effect.logWarning("provider user-input response failed", {
               threadId: event.payload.threadId,
-              kind: "provider.user-input.respond.failed",
-              summary: "Provider user input response failed",
-              detail: isUnknownPendingUserInputRequestError(cause)
-                ? stalePendingRequestDetail("user-input", event.payload.requestId)
-                : Cause.pretty(cause),
-              turnId: null,
-              createdAt: event.payload.createdAt,
               requestId: event.payload.requestId,
-            }),
-          ),
+              cause: Cause.pretty(cause),
+            }).pipe(
+              Effect.andThen(
+                appendProviderFailureActivity({
+                  threadId: event.payload.threadId,
+                  kind: "provider.user-input.respond.failed",
+                  summary: "Provider user input response failed",
+                  detail: stale
+                    ? stalePendingRequestDetail("user-input")
+                    : PROVIDER_USER_INPUT_FAILURE_DETAIL,
+                  turnId: null,
+                  createdAt: event.payload.createdAt,
+                  requestId: event.payload.requestId,
+                }),
+              ),
+            );
+          }),
         );
     },
   );

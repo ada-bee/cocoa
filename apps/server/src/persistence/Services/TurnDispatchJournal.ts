@@ -412,6 +412,7 @@ export interface TurnDispatchJournalRepositoryShape {
   readonly markFailed: (
     input: MarkTurnDispatchFailedInput,
   ) => Effect.Effect<void, TurnDispatchJournalRepositoryError>;
+  /** Outcome-unknown remains unfinalized and recoverable; it never authorizes mutation replay. */
   readonly markIndeterminate: (
     input: MarkTurnDispatchIndeterminateInput,
   ) => Effect.Effect<void, TurnDispatchJournalRepositoryError>;

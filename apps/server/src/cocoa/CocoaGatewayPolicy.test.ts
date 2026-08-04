@@ -3,6 +3,8 @@ import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import raspberryPiSettings from "../../../../deploy/raspberry-pi/settings.example.json" with { type: "json" };
+
 import {
   CocoaGatewayPolicyError,
   resolveCocoaGatewayProviderInstanceConfigMap,
@@ -47,6 +49,34 @@ const expectReason = (settings: ServerSettings, reason: CocoaGatewayPolicyError[
   });
 
 describe("Cocoa gateway provider policy", () => {
+  it.effect(
+    "decodes the Pi deployment endpoints with administrator-installed checkpoint helpers",
+    () =>
+      Effect.gen(function* () {
+        const settings = decodeSettings(raspberryPiSettings);
+        const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(settings);
+
+        expect(resolved[ProviderInstanceId.make("codex_macbook_air")]?.config).toMatchObject({
+          endpointGitExecutablePath: "/usr/bin/git",
+          checkpointHelper: {
+            type: "cocoa-checkpoint-helper-v1",
+            executablePath: "/Users/ada-bee/.nix-profile/bin/cocoa-workspace-helper",
+            expectedProtocol: 1,
+          },
+        });
+        expect(
+          resolved[ProviderInstanceId.make("codex_linux_rigatoni_alfredo")]?.config,
+        ).toMatchObject({
+          endpointGitExecutablePath: "/usr/bin/git",
+          checkpointHelper: {
+            type: "cocoa-checkpoint-helper-v1",
+            executablePath: "/home/ada-bee/.nix-profile/bin/cocoa-workspace-helper",
+            expectedProtocol: 1,
+          },
+        });
+      }),
+  );
+
   it.effect("returns only explicitly configured endpoint-backed Codex instances", () =>
     Effect.gen(function* () {
       const settings = validSettings();

@@ -251,6 +251,10 @@ repositoryLayer("TurnDispatchJournalRepository", (it) => {
       assert.equal(entry.baselineNotApplicableReason, "not_repository");
       assert.isNull(entry.baselineLogicalCheckpointId);
       assert.equal(entry.state, "indeterminate");
+      assert.include(
+        (yield* repository.listRecovery({ limit: 100 })).map((candidate) => candidate.dispatchId),
+        input.dispatchId,
+      );
     }),
   );
 

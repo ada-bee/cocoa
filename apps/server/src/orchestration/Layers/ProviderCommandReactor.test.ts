@@ -827,7 +827,7 @@ describe("ProviderCommandReactor", () => {
     if (dispatch._tag === "Some") {
       expect(dispatch.value.state).toBe("indeterminate");
       expect(dispatch.value.error?.code).toBe("provider_recovery_unproven");
-      expect(dispatch.value.finalizedSequence).not.toBeNull();
+      expect(dispatch.value.finalizedSequence).toBeNull();
     }
   });
 
@@ -1011,6 +1011,146 @@ describe("ProviderCommandReactor", () => {
     expect(events.filter((event) => event.type === "thread.turn-completed")).toHaveLength(1);
   });
 
+  it("adopts an exact running turn after the provider accepted it but the reply was lost", async () => {
+    const providerTurnId = asTurnId("turn-lost-reply-running");
+    const harness = await createHarness({
+      sendTurn: () =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "codex",
+            method: "turn/start",
+            detail: "reply lost after accept at ws://192.168.20.61/private?token=secret",
+          }),
+        ),
+      readAuthoritativeConversation: (request) =>
+        Effect.succeed({
+          ...request,
+          turns: [
+            {
+              id: providerTurnId,
+              status: "running",
+              completedAt: null,
+              assistantMessages: [],
+              finalAssistantItemId: null,
+              finalAssistantText: null,
+              hasNonrecoverableActivityGap: false,
+            },
+          ],
+        }),
+    });
+    const dispatched = await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-lost-reply-running"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("message-turn-lost-reply-running"),
+          role: "user",
+          text: "accept before losing the reply",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await harness.drain();
+    const events = Array.from(
+      await Effect.runPromise(
+        Stream.runCollect(harness.engine.readEvents(dispatched.sequence - 2, 2)),
+      ),
+    );
+    const requested = events.find((event) => event.type === "thread.turn-start-requested");
+    if (requested?.type !== "thread.turn-start-requested") throw new Error("missing turn intent");
+    let journal = await harness.getTurnDispatch(requested.eventId);
+    expect(journal._tag).toBe("Some");
+    if (journal._tag === "Some") {
+      expect(journal.value.state).toBe("indeterminate");
+      expect(journal.value.finalizedSequence).toBeNull();
+    }
+
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
+    await harness.drain();
+    journal = await harness.getTurnDispatch(requested.eventId);
+    expect(journal._tag).toBe("Some");
+    if (journal._tag === "Some") {
+      expect(journal.value.state).toBe("started");
+      expect(journal.value.providerTurnId).toBe(providerTurnId);
+      expect(journal.value.finalizedSequence).toBeNull();
+    }
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconstructs an exact terminal turn after a lost provider reply without resending", async () => {
+    const providerTurnId = asTurnId("turn-lost-reply-terminal");
+    const harness = await createHarness({
+      sendTurn: () =>
+        Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "codex",
+            method: "turn/start",
+            detail: "socket closed after accept; stderr=/private/tmp/token-secret",
+          }),
+        ),
+      readAuthoritativeConversation: (request) =>
+        Effect.succeed({
+          ...request,
+          turns: [
+            {
+              id: providerTurnId,
+              status: "completed",
+              completedAt: "2026-01-01T00:01:00.000Z",
+              assistantMessages: [
+                {
+                  itemId: "assistant-lost-reply-terminal",
+                  text: "Recovered after the lost reply",
+                  phase: "final_answer",
+                },
+              ],
+              finalAssistantItemId: "assistant-lost-reply-terminal",
+              finalAssistantText: "Recovered after the lost reply",
+              hasNonrecoverableActivityGap: false,
+            },
+          ],
+        }),
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-lost-reply-terminal"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("message-turn-lost-reply-terminal"),
+          role: "user",
+          text: "finish before losing the reply",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    await harness.drain();
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
+    await harness.drain();
+    await Effect.runPromise(harness.recover(ProviderInstanceId.make("codex")));
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(thread?.latestTurn).toMatchObject({
+      turnId: providerTurnId,
+      state: "completed",
+    });
+    expect(
+      thread?.messages.find(
+        (message) => message.id === asMessageId("assistant:assistant-lost-reply-terminal"),
+      ),
+    ).toMatchObject({ text: "Recovered after the lost reply", streaming: false });
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+  });
+
   it("fails an accepted turn before baseline/provider work when a revert race is active", async () => {
     const harness = await createHarness({ revertBlocked: true });
     await Effect.runPromise(
@@ -1089,7 +1229,7 @@ describe("ProviderCommandReactor", () => {
     },
   ])(
     "records a sanitized durable failure when workspace validation is $category",
-    async ({ category, validation, detail }) => {
+    async ({ category, validation }) => {
       const harness = await createHarness({
         validateWorkspaceRoot: () => validation,
       });
@@ -1133,8 +1273,13 @@ describe("ProviderCommandReactor", () => {
         (entry) => entry.kind === "provider.turn.start.failed",
       );
       expect(thread?.session?.status).toBe("error");
-      expect(thread?.session?.lastError).toBe(detail);
-      expect(activity?.payload).toEqual({ detail });
+      expect(thread?.session?.lastError).toBe(
+        "The provider turn could not be prepared. Review the thread configuration and try again.",
+      );
+      expect(activity?.payload).toEqual({
+        detail:
+          "The provider turn could not be prepared. Review the thread configuration and try again.",
+      });
       const clientVisibleFailure = JSON.stringify({
         sessionError: thread?.session?.lastError,
         activity: activity?.payload,
@@ -1193,7 +1338,8 @@ describe("ProviderCommandReactor", () => {
                   new ProviderAdapterRequestError({
                     provider: "codex",
                     method: "thread.start",
-                    detail: "deterministic startup failure",
+                    detail:
+                      "deterministic startup failure at https://internal.invalid/private stderr=token-secret",
                   }),
                 )
               : Effect.succeed(session),
@@ -1227,7 +1373,10 @@ describe("ProviderCommandReactor", () => {
       );
       let readModel = yield* Effect.promise(() => harness.readModel());
       let thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      expect(thread?.session?.lastError).toContain("deterministic startup failure");
+      expect(thread?.session?.lastError).toBe(
+        "The provider turn could not be prepared. Review the thread configuration and try again.",
+      );
+      expect(JSON.stringify(thread)).not.toContain("token-secret");
       expect(harness.sendTurn).not.toHaveBeenCalled();
 
       failStartup = false;
@@ -2267,9 +2416,8 @@ describe("ProviderCommandReactor", () => {
           thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
         ).toMatchObject({
           payload: {
-            detail: expect.stringContaining(
-              "cannot switch models after the conversation has started",
-            ),
+            detail:
+              "The provider turn could not be prepared. Review the thread configuration and try again.",
           },
         });
       }),
@@ -3045,7 +3193,8 @@ describe("ProviderCommandReactor", () => {
       thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
     ).toMatchObject({
       payload: {
-        detail: expect.stringContaining("without a provider instance id"),
+        detail:
+          "The provider turn could not be prepared. Review the thread configuration and try again.",
       },
     });
   });
@@ -3144,7 +3293,8 @@ describe("ProviderCommandReactor", () => {
         new ProviderAdapterRequestError({
           provider: ProviderDriverKind.make("codex"),
           method: "session/request_permission",
-          detail: "Unknown pending permission request: approval-request-1",
+          detail:
+            "Unknown pending permission request: approval-request-1; ws://192.168.20.61/private?token=secret",
         }),
       ),
     );
@@ -3218,8 +3368,11 @@ describe("ProviderCommandReactor", () => {
     expect(failureActivity).toBeDefined();
     expect(failureActivity?.payload).toMatchObject({
       requestId: "approval-request-1",
-      detail: expect.stringContaining("Stale pending approval request: approval-request-1"),
+      detail:
+        "The pending provider approval request is no longer active. Restart the turn to continue.",
     });
+    expect(JSON.stringify(failureActivity)).not.toContain("192.168.20.61");
+    expect(JSON.stringify(failureActivity)).not.toContain("token=secret");
 
     const resolvedActivity = thread?.activities.find(
       (activity) =>
@@ -3239,7 +3392,8 @@ describe("ProviderCommandReactor", () => {
         new ProviderAdapterRequestError({
           provider: ProviderDriverKind.make("claudeAgent"),
           method: "item/tool/respondToUserInput",
-          detail: "Unknown pending Codex user input request: user-input-request-1",
+          detail:
+            "Unknown pending Codex user input request: user-input-request-1; stderr=/private/tmp/token-secret",
         }),
       ),
     );
@@ -3327,8 +3481,11 @@ describe("ProviderCommandReactor", () => {
     expect(failureActivity).toBeDefined();
     expect(failureActivity?.payload).toMatchObject({
       requestId: "user-input-request-1",
-      detail: expect.stringContaining("Stale pending user-input request: user-input-request-1"),
+      detail:
+        "The pending provider user-input request is no longer active. Restart the turn to continue.",
     });
+    expect(JSON.stringify(failureActivity)).not.toContain("/private/tmp");
+    expect(JSON.stringify(failureActivity)).not.toContain("token-secret");
 
     const resolvedActivity = thread?.activities.find(
       (activity) =>

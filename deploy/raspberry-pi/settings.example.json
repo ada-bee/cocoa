@@ -22,6 +22,11 @@
           "executablePath": "/usr/bin/python3"
         },
         "endpointGitExecutablePath": "/usr/bin/git",
+        "checkpointHelper": {
+          "type": "cocoa-checkpoint-helper-v1",
+          "executablePath": "/Users/ada-bee/.nix-profile/bin/cocoa-workspace-helper",
+          "expectedProtocol": 1
+        },
         "endpointTerminal": {
           "enabled": true,
           "sandboxMode": "workspaceWrite"
@@ -50,6 +55,11 @@
           "executablePath": "/usr/bin/python3"
         },
         "endpointGitExecutablePath": "/usr/bin/git",
+        "checkpointHelper": {
+          "type": "cocoa-checkpoint-helper-v1",
+          "executablePath": "/home/ada-bee/.nix-profile/bin/cocoa-workspace-helper",
+          "expectedProtocol": 1
+        },
         "endpointTerminal": {
           "enabled": true,
           "sandboxMode": "workspaceWrite"
