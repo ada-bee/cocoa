@@ -7,6 +7,8 @@ import platformSource from "./connection/platform.ts?raw";
 import sidebarSource from "./components/Sidebar.tsx?raw";
 import commandPaletteSource from "./components/CommandPalette.tsx?raw";
 import directConnectionsSettingsSource from "./components/settings/DirectConnectionsSettings.tsx?raw";
+import addProviderInstanceDialogSource from "./components/settings/AddProviderInstanceDialog.tsx?raw";
+import settingsPanelsSource from "./components/settings/SettingsPanels.tsx?raw";
 import providerStatusSource from "./components/settings/providerStatus.ts?raw";
 import settingsSearchSource from "./components/settings/settingsSearch.ts?raw";
 import primaryHttpLayerSource from "./environments/primary/httpLayer.ts?raw";
@@ -54,5 +56,13 @@ describe("Cocoa web client boundary", () => {
       expect(cocoaClientRoots).not.toContain(forbidden);
     }
     expect(connectionsRouteSource).toContain("DirectConnectionsSettings");
+  });
+
+  it("wires provider settings and creation through the Cocoa Codex-only definition", () => {
+    expect(settingsPanelsSource).toContain("COCOA_PROVIDER_CLIENT_DEFINITIONS");
+    expect(addProviderInstanceDialogSource).toContain("COCOA_PROVIDER_CLIENT_DEFINITIONS");
+    expect(addProviderInstanceDialogSource).toContain("COCOA_PROVIDER_CLIENT_DEFINITION_BY_VALUE");
+    expect(addProviderInstanceDialogSource).not.toContain("DRIVER_OPTIONS.map");
+    expect(addProviderInstanceDialogSource).not.toContain("COMING_SOON_DRIVER_OPTIONS");
   });
 });

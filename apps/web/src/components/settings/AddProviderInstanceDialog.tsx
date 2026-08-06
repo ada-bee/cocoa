@@ -13,7 +13,6 @@ import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSet
 import { cn } from "../../lib/utils";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Button } from "../ui/button";
-import { ACPRegistryIcon, Gemini, GithubCopilotIcon, PiAgentIcon, type Icon } from "../Icons";
 import {
   Dialog,
   DialogDescription,
@@ -26,7 +25,10 @@ import { Badge } from "../ui/badge";
 import { Input } from "../ui/input";
 import { RadioGroup } from "../ui/radio-group";
 import { toastManager } from "../ui/toast";
-import { DRIVER_OPTION_BY_VALUE, DRIVER_OPTIONS } from "./providerDriverMeta";
+import {
+  COCOA_PROVIDER_CLIENT_DEFINITION_BY_VALUE,
+  COCOA_PROVIDER_CLIENT_DEFINITIONS,
+} from "./providerDriverMeta";
 import { ProviderSettingsForm, deriveProviderSettingsFields } from "./ProviderSettingsForm";
 import { AnimatedHeight } from "../AnimatedHeight";
 import {
@@ -68,36 +70,8 @@ function deriveInstanceId(driver: ProviderDriverKind, label: string): string {
 
 const INSTANCE_ID_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
-const DEFAULT_DRIVER_OPTION = DRIVER_OPTIONS[0]!;
+const DEFAULT_DRIVER_OPTION = COCOA_PROVIDER_CLIENT_DEFINITIONS[0]!;
 const EMPTY_CONFIG_DRAFT: Record<string, unknown> = {};
-interface ComingSoonDriverOption {
-  readonly value: ProviderDriverKind;
-  readonly label: string;
-  readonly icon: Icon;
-}
-
-const COMING_SOON_DRIVER_OPTIONS: readonly ComingSoonDriverOption[] = [
-  {
-    value: ProviderDriverKind.make("githubCopilot"),
-    label: "Github Copilot",
-    icon: GithubCopilotIcon,
-  },
-  {
-    value: ProviderDriverKind.make("gemini"),
-    label: "Gemini",
-    icon: Gemini,
-  },
-  {
-    value: ProviderDriverKind.make("acpRegistry"),
-    label: "ACP Registry",
-    icon: ACPRegistryIcon,
-  },
-  {
-    value: ProviderDriverKind.make("piAgent"),
-    label: "Pi Agent",
-    icon: PiAgentIcon,
-  },
-];
 
 /**
  * Validate an instance id against the same slug rules the server applies in
@@ -140,7 +114,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
     [settings.providerInstances],
   );
 
-  const driverOption = DRIVER_OPTION_BY_VALUE[driver] ?? DEFAULT_DRIVER_OPTION;
+  const driverOption = COCOA_PROVIDER_CLIENT_DEFINITION_BY_VALUE[driver] ?? DEFAULT_DRIVER_OPTION;
   const instanceId = instanceIdOverride ?? deriveInstanceId(driver, label);
   const driverSettingsFields = useMemo(
     () => deriveProviderSettingsFields(driverOption),
@@ -253,7 +227,7 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                   aria-labelledby="add-instance-driver-label"
                   className="grid grid-cols-1 gap-2 sm:grid-cols-2"
                 >
-                  {DRIVER_OPTIONS.map((option) => {
+                  {COCOA_PROVIDER_CLIENT_DEFINITIONS.map((option) => {
                     const IconComponent = option.icon;
                     return (
                       <RadioPrimitive.Root
@@ -276,30 +250,6 @@ export function AddProviderInstanceDialog({ open, onOpenChange }: AddProviderIns
                             {option.badgeLabel}
                           </Badge>
                         ) : null}
-                      </RadioPrimitive.Root>
-                    );
-                  })}
-                  {COMING_SOON_DRIVER_OPTIONS.map((option) => {
-                    const IconComponent = option.icon;
-                    return (
-                      <RadioPrimitive.Root
-                        key={option.value}
-                        value={option.value}
-                        disabled
-                        className={cn(
-                          "relative flex cursor-not-allowed items-center gap-3 rounded-lg bg-card/60 px-3 py-3 text-left opacity-55 outline-none ring-1 ring-black/5 dark:bg-white/2 dark:ring-white/5",
-                        )}
-                      >
-                        <IconComponent
-                          className="size-4 shrink-0 text-muted-foreground"
-                          aria-hidden
-                        />
-                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
-                          {option.label}
-                        </span>
-                        <Badge variant="warning" size="sm">
-                          Coming Soon
-                        </Badge>
                       </RadioPrimitive.Root>
                     );
                   })}

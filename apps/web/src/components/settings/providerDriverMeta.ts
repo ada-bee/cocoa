@@ -75,6 +75,21 @@ export const PROVIDER_CLIENT_DEFINITION_BY_VALUE: Partial<
   PROVIDER_CLIENT_DEFINITIONS.map((definition) => [definition.value, definition]),
 );
 
+/**
+ * Cocoa registers Codex as its only first-class provider. Keep the broader
+ * metadata above available for upstream-compatible rendering, but constrain
+ * every provider-creation surface to the runtime Cocoa actually composes.
+ */
+export const COCOA_PROVIDER_CLIENT_DEFINITIONS = PROVIDER_CLIENT_DEFINITIONS.filter(
+  (definition) => definition.value === "codex",
+);
+
+export const COCOA_PROVIDER_CLIENT_DEFINITION_BY_VALUE: Partial<
+  Record<ProviderDriverKind, ProviderClientDefinition>
+> = Object.fromEntries(
+  COCOA_PROVIDER_CLIENT_DEFINITIONS.map((definition) => [definition.value, definition]),
+);
+
 export const DRIVER_OPTIONS = PROVIDER_CLIENT_DEFINITIONS;
 export const DRIVER_OPTION_BY_VALUE = PROVIDER_CLIENT_DEFINITION_BY_VALUE;
 export type DriverOption = ProviderClientDefinition;
