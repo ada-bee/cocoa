@@ -79,7 +79,7 @@ export function ConnectionsNewRouteScreen({
 
     Alert.alert(
       "Camera access needed",
-      "Allow camera access to scan an environment pairing QR code.",
+      "Allow camera access to scan a Cocoa gateway pairing QR code.",
     );
   }, [cameraPermission?.granted, requestCameraPermission]);
 
@@ -150,12 +150,12 @@ export function ConnectionsNewRouteScreen({
         options={{
           // Android renders its own in-screen header below instead of the native bar.
           ...(Platform.OS === "android" ? { headerShown: false } : null),
-          title: showScanner ? "Scan QR Code" : "Add Environment",
+          title: showScanner ? "Scan QR Code" : "Add Cocoa Gateway",
         }}
       />
       {Platform.OS === "android" ? (
         <AndroidScreenHeader
-          title={showScanner ? "Scan QR Code" : "Add Environment"}
+          title={showScanner ? "Scan QR Code" : "Add Cocoa Gateway"}
           onBack={() => navigation.goBack()}
           actions={[
             {
@@ -228,7 +228,7 @@ export function ConnectionsNewRouteScreen({
             <View collapsable={false} className="gap-4 rounded-[24px] bg-card p-4">
               <View collapsable={false} className="gap-1.5">
                 <Text className="text-2xs font-t3-bold tracking-[0.8px] uppercase text-foreground-muted">
-                  Host
+                  Cocoa gateway
                 </Text>
                 <TextInput
                   autoCapitalize="none"
@@ -259,7 +259,7 @@ export function ConnectionsNewRouteScreen({
 
               <ConnectionSheetButton
                 icon="plus"
-                label={isSubmitting ? "Pairing..." : "Add environment"}
+                label={isSubmitting ? "Pairing..." : "Pair gateway"}
                 disabled={connectDisabled}
                 tone="primary"
                 onPress={() => {

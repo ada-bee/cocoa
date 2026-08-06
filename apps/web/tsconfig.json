@@ -26,34 +26,5 @@
     ]
   },
   "include": ["src", "vite.config.ts", "vercel.ts", "test", "../../scripts/lib/public-config.ts"],
-  "exclude": [
-    "src/cloud",
-    "src/components/cloud",
-    "src/components/clerk",
-    "src/components/desktop/SshPasswordPromptDialog.tsx",
-    "src/components/ProviderUpdate*",
-    "src/components/sidebar/SidebarProviderUpdatePill*",
-    "src/components/settings/ConnectionsSettings.tsx",
-    "src/components/settings/ConnectionsSettings.logic.ts",
-    "src/components/settings/ConnectionsSettings.logic.test.ts",
-    "src/components/settings/pairingUrls.ts",
-    "src/components/settings/pairingUrls.test.ts",
-    "src/hostedPairing.ts",
-    "src/hostedPairing.test.ts",
-    "src/connection/desktopLocal.ts",
-    "src/connection/desktopLocal.test.ts",
-    "src/connection/useDesktopLocalBootstraps.ts",
-    "src/environments/primary/bootstrap.test.ts",
-    "src/environments/primary/desktopAuth.ts",
-    "src/environments/primary/desktopAuth.test.ts",
-    "src/state/desktopNetworkAccess.ts",
-    "src/state/desktopNetworkAccess.test.ts",
-    "src/state/desktopSshHosts.ts",
-    "src/state/desktopSshHosts.test.ts",
-    "src/state/desktopWslState.ts",
-    "src/state/desktopWslState.test.ts",
-    "src/providerUpdateDismissal.ts",
-    "src/providerUpdateDismissal.test.ts",
-    "src/state/relay.ts"
-  ]
+  "exclude": ["src/environments/primary/bootstrap.test.ts"]
 }

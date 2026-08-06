@@ -523,8 +523,8 @@ export function AddProjectSourceScreen() {
           {selectedProviderInstanceId ? (
             <ListSection>
               <ListRow
-                title="Local folder"
-                subtitle="Browse a folder on disk"
+                title="Provider workspace"
+                subtitle="Browse a folder on the selected Codex host"
                 icon={
                   <SymbolView
                     name="folder.badge.plus"

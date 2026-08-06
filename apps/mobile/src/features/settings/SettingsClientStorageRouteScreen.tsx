@@ -41,7 +41,7 @@ export function SettingsClientStorageRouteScreen() {
       environment.environmentId;
     Alert.alert(
       `Clear cache for ${label}?`,
-      "This removes offline threads, server metadata, and cached branches for this environment. The saved connection and credentials stay intact.",
+      "This removes offline threads, gateway metadata, and cached branches for this Cocoa gateway. The saved connection and credentials stay intact.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -57,7 +57,7 @@ export function SettingsClientStorageRouteScreen() {
   const confirmClearAll = () => {
     Alert.alert(
       "Clear all client caches?",
-      "This removes offline data for every environment. Connections, credentials, account data, and app preferences stay intact.",
+      "This removes offline data for every Cocoa gateway. Saved connections, credentials, and app preferences stay intact.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -78,7 +78,7 @@ export function SettingsClientStorageRouteScreen() {
         className="flex-1"
         contentContainerClassName="gap-6 px-5 pt-4 pb-[18px]"
       >
-        <SettingsSection title="Environment caches">
+        <SettingsSection title="Cocoa gateway caches">
           {AsyncResult.isFailure(summaryResult) ? (
             <View className="items-center gap-2 px-6 py-8">
               <SymbolView
@@ -125,7 +125,7 @@ export function SettingsClientStorageRouteScreen() {
               />
               <Text className="text-center text-base text-foreground">No cached data</Text>
               <Text className="text-center text-sm text-foreground-muted">
-                Offline cache records will appear here after environments are used.
+                Offline cache records will appear here after Cocoa gateways are used.
               </Text>
             </View>
           )}
@@ -153,8 +153,8 @@ export function SettingsClientStorageRouteScreen() {
             </Pressable>
           </SettingsSection>
           <Text className="px-2 text-sm leading-normal text-foreground-muted">
-            Clearing caches never removes environment connections, credentials, account data, or
-            appearance preferences.
+            Clearing caches never removes Cocoa gateway connections, credentials, or appearance
+            preferences.
           </Text>
           {AsyncResult.isFailure(summaryResult) || AsyncResult.isFailure(clearResult) ? (
             <Text selectable className="px-2 text-sm text-danger-foreground">

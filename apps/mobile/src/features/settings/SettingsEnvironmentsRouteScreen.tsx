@@ -80,11 +80,11 @@ export function SettingsEnvironmentsRouteScreen() {
           {/* Android renders its own in-screen header instead of the native bar. */}
           <NativeStackScreenOptions options={{ headerShown: false }} />
           <AndroidScreenHeader
-            title="Environments"
+            title="Cocoa gateways"
             onBack={() => navigation.goBack()}
             actions={[
               {
-                accessibilityLabel: "Add environment",
+                accessibilityLabel: "Add Cocoa gateway",
                 icon: "plus",
                 onPress: () =>
                   navigation.navigate("SettingsSheet", { screen: "SettingsEnvironmentNew" }),
@@ -143,7 +143,7 @@ export function SettingsEnvironmentsRouteScreen() {
               />
             </View>
             <Text className="text-center text-sm leading-normal text-foreground-muted">
-              No environments connected yet.{"\n"}Tap{" "}
+              No Cocoa gateways connected yet.{"\n"}Tap{" "}
               <Text className="font-t3-bold text-foreground">+</Text> to add one.
             </Text>
           </View>

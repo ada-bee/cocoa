@@ -29,6 +29,8 @@ describe("Cocoa mobile client boundary", () => {
     expect(packageJson.dependencies).not.toHaveProperty("@noble/curves");
     expect(packageJson.dependencies).not.toHaveProperty("@noble/hashes");
     expect(packageJson.dependencies).not.toHaveProperty("expo-auth-session");
+    expect(packageJson.dependencies).not.toHaveProperty("expo-notifications");
+    expect(packageJson.dependencies).not.toHaveProperty("expo-widgets");
     expect(packageJson.dependencies).not.toHaveProperty("expo-web-browser");
   });
 
@@ -48,6 +50,12 @@ describe("Cocoa mobile client boundary", () => {
     ]) {
       expect(productionRoots).not.toContain(forbidden);
     }
+  });
+
+  it("uses direct Cocoa gateway language for connection onboarding", () => {
+    expect(productionRoots).toContain("Cocoa gateways");
+    expect(productionRoots).not.toContain('title="Environments"');
+    expect(productionRoots).not.toContain('label="Environments"');
   });
 
   it("persists the direct catalog, including bearer credentials, through SecureStore", () => {

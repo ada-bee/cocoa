@@ -40,10 +40,10 @@ function noticeDetail(
       return `Cached data remains available. The ${resourceName} will load when your connection returns.`;
     case "connecting":
     case "reconnecting":
-      return `The ${resourceName} will load as soon as the environment is ready.`;
+      return `The ${resourceName} will load as soon as the Cocoa gateway is ready.`;
     case "available":
     case "error":
-      return `Reconnect the environment to load the ${resourceName}.`;
+      return `Reconnect the Cocoa gateway to load the ${resourceName}.`;
     case "connected":
       return "";
   }

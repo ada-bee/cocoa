@@ -49,25 +49,7 @@ const unitTestProject = {
   test: {
     name: "unit",
     include: ["src/**/*.test.{ts,tsx}"],
-    exclude: [
-      "src/cloud/**",
-      "src/components/cloud/**",
-      "src/components/clerk/**",
-      "src/components/desktop/SshPasswordPromptDialog.test.tsx",
-      "src/components/ProviderUpdate*.test.{ts,tsx}",
-      "src/components/sidebar/SidebarProviderUpdatePill.test.tsx",
-      "src/components/settings/ConnectionsSettings.logic.test.ts",
-      "src/components/settings/cloudEnvironmentConnectionPresentation.test.ts",
-      "src/components/settings/pairingUrls.test.ts",
-      "src/hostedPairing.test.ts",
-      "src/connection/desktopLocal.test.ts",
-      "src/environments/primary/bootstrap.test.ts",
-      "src/environments/primary/desktopAuth.test.ts",
-      "src/providerUpdateDismissal.test.ts",
-      "src/state/desktopNetworkAccess.test.ts",
-      "src/state/desktopSshHosts.test.ts",
-      "src/state/desktopWslState.test.ts",
-    ],
+    exclude: ["src/environments/primary/bootstrap.test.ts"],
     // The web runtime suite exercises auth bootstrap, saved environments,
     // and websocket subscription lifecycles. Under the full monorepo test
     // run, those async tests can exceed Vitest's default 5s budget.

@@ -57,8 +57,8 @@ export function ConnectionEnvironmentRow(props: {
     }
     const error = Cause.squash(result.cause);
     Alert.alert(
-      "Could not update environment",
-      error instanceof Error ? error.message : "The environment could not be updated.",
+      "Could not update Cocoa gateway",
+      error instanceof Error ? error.message : "The Cocoa gateway could not be updated.",
     );
   }, [label, url, props]);
 

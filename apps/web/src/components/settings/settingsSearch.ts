@@ -25,7 +25,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/keybindings": "Keybindings",
   "/settings/providers": "Providers",
   "/settings/source-control": "Source Control",
-  "/settings/connections": "Connections",
+  "/settings/connections": "Cocoa gateways",
   "/settings/beta": "Beta",
   "/settings/archived": "Archive",
 };
@@ -138,7 +138,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "remote-environments",
-    title: "Remote environments",
+    title: "Cocoa gateways",
     to: "/settings/connections",
   },
   {

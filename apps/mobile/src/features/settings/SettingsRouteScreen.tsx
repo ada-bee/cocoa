@@ -70,7 +70,7 @@ export function SettingsRouteScreen() {
           <SettingsSection title="Configuration">
             <SettingsRow
               icon="desktopcomputer"
-              label="Environments"
+              label="Cocoa gateways"
               value={`${environmentCount}`}
               target="SettingsEnvironments"
             />
