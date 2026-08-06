@@ -27,7 +27,23 @@ function makeReadModel(
 ): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
-    projects: [],
+    projects: [
+      {
+        id: ProjectId.make("project-1"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        title: "Project",
+        workspaceRoot: "/provider/project-1",
+        repositoryIdentity: null,
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.4",
+        },
+        scripts: [],
+        createdAt: NOW,
+        updatedAt: NOW,
+        deletedAt: null,
+      },
+    ],
     threads: [
       {
         id: ThreadId.make("thread-1"),
