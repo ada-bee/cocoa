@@ -28,6 +28,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   model: string;
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey?: string | null;
+  projectProviderInstanceId?: ProviderInstanceId | null;
   /** Instance entries rendered in the sidebar + used to resolve display name. */
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   keybindings?: ResolvedKeybindingsConfig;
@@ -129,6 +130,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
 
   const handleInstanceModelChange = (instanceId: ProviderInstanceId, model: string) => {
     if (props.disabled) return;
+    if (props.projectProviderInstanceId != null && instanceId !== props.projectProviderInstanceId) {
+      return;
+    }
     props.onInstanceModelChange(instanceId, model);
     setIsMenuOpen(false);
   };
@@ -196,6 +200,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           model={props.model}
           lockedProvider={props.lockedProvider}
           lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
+          projectProviderInstanceId={props.projectProviderInstanceId ?? null}
           instanceEntries={props.instanceEntries}
           {...(props.keybindings ? { keybindings: props.keybindings } : {})}
           modelOptionsByInstance={props.modelOptionsByInstance}

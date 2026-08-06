@@ -96,4 +96,17 @@ describe("resolveNewThreadModelSelection", () => {
       }),
     ).toBe(carriedSelection);
   });
+
+  it("returns null instead of carrying another instance when the target has no config or default", () => {
+    expect(
+      resolveNewThreadModelSelection({
+        carriedSelection: { instanceId: macbookId, model: "gpt-macbook" },
+        targetProject: {
+          providerInstanceId: rigatoniId,
+          defaultModelSelection: null,
+        },
+        targetEnvironmentProviders: [macbook],
+      }),
+    ).toBeNull();
+  });
 });

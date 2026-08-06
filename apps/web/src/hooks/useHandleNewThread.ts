@@ -181,12 +181,14 @@ export function useNewThreadHandler() {
               ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
             });
           }
-          if (targetModelSelection) {
+          if (project) {
             // The target selection is a complete snapshot. It may be the
             // carried selection only when the provider instance matches;
             // otherwise it is the target project's/endpoint's own default.
+            // A null selection still clears model state from another endpoint.
             setModelSelection(reusableStoredDraftThread.draftId, targetModelSelection, {
               replaceOptions: true,
+              providerInstanceBoundary: project.providerInstanceId,
             });
           }
           // The workspace context must also ride along here: when projectRef
@@ -237,9 +239,10 @@ export function useNewThreadHandler() {
             ...(hasStartFromOriginOption ? { startFromOrigin: options?.startFromOrigin } : {}),
           });
         }
-        if (targetModelSelection) {
+        if (project) {
           setModelSelection(currentRouteTarget.draftId, targetModelSelection, {
             replaceOptions: true,
+            providerInstanceBoundary: project.providerInstanceId,
           });
         }
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, currentRouteTarget.draftId, {
@@ -276,12 +279,16 @@ export function useNewThreadHandler() {
           ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
         });
         applyStickyState(draftId);
-        if (targetModelSelection) {
+        if (project) {
           // After sticky state so the viewed thread's exact selection
           // or target endpoint default wins over any globally sticky model.
           // Absent options mean "no options", not "keep whatever sticky
-          // state just wrote".
-          setModelSelection(draftId, targetModelSelection, { replaceOptions: true });
+          // state just wrote". A null target also clears a sticky selection
+          // from another provider instance.
+          setModelSelection(draftId, targetModelSelection, {
+            replaceOptions: true,
+            providerInstanceBoundary: project.providerInstanceId,
+          });
         }
 
         await router.navigate({

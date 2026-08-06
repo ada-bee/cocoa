@@ -414,6 +414,13 @@ interface ComposerDraftStoreState {
        * thread) rather than a model-only change.
        */
       replaceOptions?: boolean;
+      /**
+       * Constrain the draft to one provider instance. When present, model
+       * memory for every other instance is removed and a null or mismatched
+       * selection clears the active provider. Used when a draft is assigned
+       * to a provider-bound project.
+       */
+      providerInstanceBoundary?: ProviderInstanceId;
     },
   ) => void;
   /** Replace the model options for one or more providers in the draft. */
@@ -2608,14 +2615,21 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           if (threadKey.length === 0) {
             return;
           }
-          const normalized = normalizeModelSelection(modelSelection);
+          const normalizedSelection = normalizeModelSelection(modelSelection);
+          const providerInstanceBoundary = opts?.providerInstanceBoundary;
+          const normalized =
+            providerInstanceBoundary === undefined ||
+            normalizedSelection?.instanceId === providerInstanceBoundary
+              ? normalizedSelection
+              : null;
           set((state) => {
             const existing = state.draftsByThreadKey[threadKey];
-            if (!existing && normalized === null) {
+            if (!existing && normalized === null && providerInstanceBoundary === undefined) {
               return state;
             }
             const base = existing ?? createEmptyThreadDraft();
-            const nextMap = { ...base.modelSelectionByProvider };
+            const nextMap =
+              providerInstanceBoundary === undefined ? { ...base.modelSelectionByProvider } : {};
             if (normalized) {
               const current = nextMap[normalized.instanceId];
               if (normalized.options !== undefined || opts?.replaceOptions) {
@@ -2632,7 +2646,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 );
               }
             }
-            const nextActiveProvider = normalized?.instanceId ?? base.activeProvider;
+            const nextActiveProvider =
+              providerInstanceBoundary === undefined
+                ? (normalized?.instanceId ?? base.activeProvider)
+                : (normalized?.instanceId ?? null);
             if (
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
               base.activeProvider === nextActiveProvider

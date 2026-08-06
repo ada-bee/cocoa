@@ -1511,6 +1511,41 @@ describe("composerDraftStore setModelSelection", () => {
       draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
     ).toEqual(modelSelection(CODEX_DRIVER, "gpt-5.3-codex"));
   });
+
+  it("clears sticky model state when a new draft is bound to an unconfigured provider", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setPrompt(threadRef, "keep this draft");
+    store.setStickyModelSelection(modelSelection(CODEX_DRIVER, "gpt-5.4"));
+    store.applyStickyState(threadRef);
+    store.setModelSelection(threadRef, null, {
+      replaceOptions: true,
+      providerInstanceBoundary: CODEX_SECONDARY_INSTANCE,
+    });
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toMatchObject({
+      prompt: "keep this draft",
+      modelSelectionByProvider: {},
+      activeProvider: null,
+    });
+  });
+
+  it("replaces stale model state when an existing draft is retargeted", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setPrompt(threadRef, "reuse this draft");
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "gpt-5.4"));
+    store.setModelSelection(threadRef, null, {
+      replaceOptions: true,
+      providerInstanceBoundary: CODEX_SECONDARY_INSTANCE,
+    });
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toMatchObject({
+      prompt: "reuse this draft",
+      modelSelectionByProvider: {},
+      activeProvider: null,
+    });
+  });
 });
 
 describe("composerDraftStore sticky composer settings", () => {

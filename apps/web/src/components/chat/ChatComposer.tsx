@@ -188,6 +188,7 @@ import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
   NO_PROVIDER_MODEL_SELECTION,
+  isProviderInstanceAllowedForProject,
   resolveProviderDriverKindForInstanceSelection,
   resolveSelectableProviderInstanceEntry,
   sortProviderInstanceEntries,
@@ -566,6 +567,7 @@ export interface ChatComposerProps {
 
   // Provider / model
   lockedProvider: ProviderDriverKind | null;
+  projectProviderInstanceId: ProviderInstanceId | null;
   providerStatuses: ServerProvider[];
   activeProjectDefaultModelSelection: ModelSelection | null | undefined;
   activeThreadModelSelection: ModelSelection | null | undefined;
@@ -661,6 +663,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     runtimeMode,
     interactionMode,
     lockedProvider,
+    projectProviderInstanceId,
     providerStatuses,
     activeProjectDefaultModelSelection,
     activeThreadModelSelection,
@@ -772,7 +775,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ProviderDriverKind.make("unconfigured");
   const requestedDriverKind: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const lockedContinuationGroupKey = useMemo((): string | null => {
-    if (!lockedProvider || !activeThread) return null;
+    if (projectProviderInstanceId || !lockedProvider || !activeThread) return null;
     const lockedInstanceId =
       activeThread.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId;
     if (!lockedInstanceId) return null;
@@ -784,6 +787,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThread,
     activeThreadModelSelection?.instanceId,
     lockedProvider,
+    projectProviderInstanceId,
     providerInstanceEntries,
   ]);
 
@@ -810,9 +814,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
       );
       if (match) {
+        if (!isProviderInstanceAllowedForProject(projectProviderInstanceId, match.instanceId)) {
+          continue;
+        }
         // When locked to a specific driver kind, ignore persisted instance
         // ids from a different kind or continuation group.
-        if (lockedProvider && match.driverKind !== lockedProvider) continue;
+        if (!projectProviderInstanceId && lockedProvider && match.driverKind !== lockedProvider) {
+          continue;
+        }
         if (
           lockedContinuationGroupKey &&
           match.continuationGroupKey !== lockedContinuationGroupKey
@@ -824,8 +833,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }
     const compatibleEntries = providerInstanceEntries.filter(
       (entry) =>
-        (!lockedProvider || entry.driverKind === lockedProvider) &&
-        (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey),
+        isProviderInstanceAllowedForProject(projectProviderInstanceId, entry.instanceId) &&
+        (projectProviderInstanceId !== null ||
+          ((!lockedProvider || entry.driverKind === lockedProvider) &&
+            (!lockedContinuationGroupKey ||
+              entry.continuationGroupKey === lockedContinuationGroupKey))),
     );
     const requestedDriverEntries = compatibleEntries.filter(
       (entry) => entry.driverKind === requestedDriverKind,
@@ -843,6 +855,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     lockedContinuationGroupKey,
     lockedProvider,
     providerInstanceEntries,
+    projectProviderInstanceId,
     requestedDriverKind,
   ]);
 
@@ -3147,6 +3160,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     model={selectedModelForPickerWithCustomFallback}
                     lockedProvider={lockedProvider}
                     lockedContinuationGroupKey={lockedContinuationGroupKey}
+                    projectProviderInstanceId={projectProviderInstanceId}
                     instanceEntries={providerInstanceEntries}
                     keybindings={keybindings}
                     modelOptionsByInstance={modelOptionsByInstance}

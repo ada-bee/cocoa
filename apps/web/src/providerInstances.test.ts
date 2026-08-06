@@ -4,6 +4,7 @@ import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
   getDefaultProviderInstanceModel,
+  isProviderInstanceAllowedForProject,
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
   resolveDefaultProviderModelSelection,
@@ -81,6 +82,28 @@ describe("isProviderInstancePickerVisible", () => {
 
     expect(enabledEntry && isProviderInstancePickerVisible(enabledEntry)).toBe(true);
     expect(disabledEntry && isProviderInstancePickerVisible(disabledEntry)).toBe(false);
+  });
+});
+
+describe("isProviderInstanceAllowedForProject", () => {
+  it("allows only the project's exact instance when two instances share a driver", () => {
+    const projectInstanceId = ProviderInstanceId.make("codex-project-b");
+    const entries = deriveProviderInstanceEntries([
+      provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex-project-a" }),
+      provider({ provider: ProviderDriverKind.make("codex"), instanceId: "codex-project-b" }),
+    ]);
+
+    expect(
+      entries
+        .filter((entry) => isProviderInstanceAllowedForProject(projectInstanceId, entry.instanceId))
+        .map((entry) => entry.instanceId),
+    ).toEqual([projectInstanceId]);
+  });
+
+  it("leaves non-project provider choices unchanged", () => {
+    expect(
+      isProviderInstanceAllowedForProject(null, ProviderInstanceId.make("codex-project-a")),
+    ).toBe(true);
   });
 });
 

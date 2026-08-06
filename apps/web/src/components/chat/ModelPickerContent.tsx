@@ -37,6 +37,7 @@ import { TooltipProvider } from "../ui/tooltip";
 import {
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
+  isProviderInstanceAllowedForProject,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
@@ -73,6 +74,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
    */
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey?: string | null;
+  projectProviderInstanceId: ProviderInstanceId | null;
   /**
    * All configured provider instances in display order. Used to render
    * the sidebar (one button per instance) and to resolve display names
@@ -108,7 +110,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const favorites = useClientSettings((s) => s.favorites ?? []);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
     () => {
-      if (props.lockedProvider !== null) {
+      if (props.projectProviderInstanceId !== null || props.lockedProvider !== null) {
         // When locked, prime the sidebar to the currently-active instance
         // so jumping into the picker keeps the focused instance visible.
         return props.activeInstanceId;
@@ -178,14 +180,20 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     () => new Map(instanceEntries.map((entry) => [entry.instanceId, entry])),
     [instanceEntries],
   );
-  const matchesLockedProvider = useCallback(
-    (entry: Pick<ProviderInstanceEntry, "driverKind" | "continuationGroupKey">): boolean => {
+  const matchesProviderBoundary = useCallback(
+    (
+      entry: Pick<ProviderInstanceEntry, "instanceId" | "driverKind" | "continuationGroupKey">,
+    ): boolean => {
+      if (!isProviderInstanceAllowedForProject(props.projectProviderInstanceId, entry.instanceId)) {
+        return false;
+      }
+      if (props.projectProviderInstanceId !== null) return true;
       if (props.lockedProvider === null) return true;
       if (entry.driverKind !== props.lockedProvider) return false;
       if (!props.lockedContinuationGroupKey) return true;
       return entry.continuationGroupKey === props.lockedContinuationGroupKey;
     },
-    [props.lockedContinuationGroupKey, props.lockedProvider],
+    [props.lockedContinuationGroupKey, props.lockedProvider, props.projectProviderInstanceId],
   );
 
   const readyInstanceSet = useMemo(() => {
@@ -214,6 +222,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       if (!readyInstanceSet.has(instanceId)) {
         continue;
       }
+      if (!isProviderInstanceAllowedForProject(props.projectProviderInstanceId, entry.instanceId)) {
+        continue;
+      }
       for (const model of models) {
         out.push({
           slug: model.slug,
@@ -232,9 +243,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       }
     }
     return out;
-  }, [modelOptionsByInstance, entryByInstanceId, readyInstanceSet]);
+  }, [
+    modelOptionsByInstance,
+    entryByInstanceId,
+    props.projectProviderInstanceId,
+    readyInstanceSet,
+  ]);
 
-  const isLocked = props.lockedProvider !== null;
+  const isLocked = props.projectProviderInstanceId !== null || props.lockedProvider !== null;
   const isSearching = searchQuery.trim().length > 0;
   const lockedDisabledInstanceIds = useMemo(() => {
     if (!isLocked) {
@@ -242,28 +258,31 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     }
     const disabled = new Set<ProviderInstanceId>();
     for (const entry of instanceEntries) {
-      if (!matchesLockedProvider(entry)) {
+      if (!matchesProviderBoundary(entry)) {
         disabled.add(entry.instanceId);
       }
     }
     return disabled;
-  }, [instanceEntries, isLocked, matchesLockedProvider]);
+  }, [instanceEntries, isLocked, matchesProviderBoundary]);
   const sidebarInstanceEntries = useMemo(() => {
     const enabledEntries = instanceEntries.filter(isProviderInstancePickerVisible);
+    if (props.projectProviderInstanceId !== null) {
+      return enabledEntries.filter((entry) => matchesProviderBoundary(entry));
+    }
     if (!isLocked) {
       return enabledEntries;
     }
     const available: ProviderInstanceEntry[] = [];
     const disabled: ProviderInstanceEntry[] = [];
     for (const entry of enabledEntries) {
-      if (matchesLockedProvider(entry)) {
+      if (matchesProviderBoundary(entry)) {
         available.push(entry);
       } else {
         disabled.push(entry);
       }
     }
     return [...available, ...disabled];
-  }, [instanceEntries, isLocked, matchesLockedProvider]);
+  }, [instanceEntries, isLocked, matchesProviderBoundary, props.projectProviderInstanceId]);
   const showSidebar = !isSearching && sidebarInstanceEntries.length > 0;
   const instanceOrder = useMemo(
     () => instanceEntries.map((entry) => entry.instanceId),
@@ -313,10 +332,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       // When searching, we only respect locked provider (by driver kind),
       // ignoring sidebar selection so account-scoped searches can find a
       // model before the user chooses a specific instance rail item.
-      if (props.lockedProvider !== null) {
+      if (isLocked) {
         const lockedProviderMatches: Array<(typeof rankedMatches)[number]> = [];
         for (const rankedModel of rankedMatches) {
-          if (matchesLockedProvider(rankedModel.model)) {
+          if (matchesProviderBoundary(rankedModel.model)) {
             lockedProviderMatches.push(rankedModel);
           }
         }
@@ -348,8 +367,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         .map((rankedModel) => rankedModel.model);
     }
 
-    if (props.lockedProvider !== null) {
-      result = result.filter((m) => matchesLockedProvider(m));
+    if (isLocked) {
+      result = result.filter((m) => matchesProviderBoundary(m));
       if (selectedInstanceId === "favorites") {
         result = result.filter((m) => favoritesSet.has(providerModelKey(m.instanceId, m.slug)));
       } else {
@@ -370,8 +389,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     favoritesSet,
     flatModels,
     instanceOrder,
-    matchesLockedProvider,
-    props.lockedProvider,
+    isLocked,
+    matchesProviderBoundary,
     searchQuery,
     selectedInstanceId,
   ]);
@@ -417,6 +436,9 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const handleModelSelect = useCallback(
     (modelSlug: string, instanceId: ProviderInstanceId) => {
+      if (!isProviderInstanceAllowedForProject(props.projectProviderInstanceId, instanceId)) {
+        return;
+      }
       if (getModelDisabledReason?.(instanceId, modelSlug)) {
         return;
       }
@@ -436,7 +458,13 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         onInstanceModelChange(instanceId, resolvedModel);
       }
     },
-    [entryByInstanceId, getModelDisabledReason, modelOptionsByInstance, onInstanceModelChange],
+    [
+      entryByInstanceId,
+      getModelDisabledReason,
+      modelOptionsByInstance,
+      onInstanceModelChange,
+      props.projectProviderInstanceId,
+    ],
   );
 
   const toggleFavorite = useCallback(

@@ -79,6 +79,16 @@ export function isProviderInstancePickerVisible(entry: ProviderInstanceEntry): b
   return entry.enabled;
 }
 
+/** A project-bound surface may target only the project's exact endpoint. */
+export function isProviderInstanceAllowedForProject(
+  projectProviderInstanceId: ProviderInstanceId | null,
+  candidateProviderInstanceId: ProviderInstanceId,
+): boolean {
+  return (
+    projectProviderInstanceId === null || projectProviderInstanceId === candidateProviderInstanceId
+  );
+}
+
 /**
  * Turn an instance id slug into a human-readable label. Splits on `_` / `-`
  * and camelCase boundaries and title-cases each token, so `codex_personal`

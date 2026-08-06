@@ -165,7 +165,10 @@ import {
 } from "~/projectScripts";
 import { newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
-import { NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
+import {
+  isProviderInstanceAllowedForProject,
+  NO_PROVIDER_MODEL_SELECTION,
+} from "../providerInstances";
 import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
@@ -5492,6 +5495,12 @@ function ChatViewContent(props: ChatViewProps) {
   const onProviderModelSelect = useCallback(
     (instanceId: ProviderInstanceId, model: string) => {
       if (!activeThread) return;
+      if (
+        !isProviderInstanceAllowedForProject(activeProject?.providerInstanceId ?? null, instanceId)
+      ) {
+        scheduleComposerFocus();
+        return;
+      }
       // Look up the configured instance so model normalization and custom
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
@@ -5557,6 +5566,7 @@ function ChatViewContent(props: ChatViewProps) {
     },
     [
       activeThread,
+      activeProject?.providerInstanceId,
       lockedProvider,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
@@ -5975,6 +5985,7 @@ function ChatViewContent(props: ChatViewProps) {
                             runtimeMode={runtimeMode}
                             interactionMode={interactionMode}
                             lockedProvider={lockedProvider}
+                            projectProviderInstanceId={activeProject?.providerInstanceId ?? null}
                             providerStatuses={providerStatuses as ServerProvider[]}
                             activeProjectDefaultModelSelection={
                               activeProject?.defaultModelSelection
