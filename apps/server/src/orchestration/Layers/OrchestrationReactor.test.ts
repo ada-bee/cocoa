@@ -65,6 +65,7 @@ describe("OrchestrationReactor", () => {
               return Effect.void;
             },
             recover: () => Effect.void,
+            abandonPendingInteractions: () => Effect.void,
             drain: Effect.void,
           }),
         ),

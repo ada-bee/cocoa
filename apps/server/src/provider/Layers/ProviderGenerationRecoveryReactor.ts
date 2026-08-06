@@ -165,6 +165,10 @@ export const makeProviderGenerationRecoveryReactor = Effect.gen(function* () {
     const handleState = Effect.fn("ProviderGenerationRecoveryReactor.handleState")(function* (
       state: ProviderInstanceGenerationState,
     ) {
+      if (state._tag === "Unavailable" && state.providerInstanceId === instance.instanceId) {
+        yield* providerCommandReactor.abandonPendingInteractions(instance.instanceId);
+        return;
+      }
       if (
         state._tag !== "Ready" ||
         state.providerInstanceId !== instance.instanceId ||

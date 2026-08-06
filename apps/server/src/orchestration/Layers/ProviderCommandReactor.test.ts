@@ -597,6 +597,7 @@ describe("ProviderCommandReactor", () => {
     return {
       engine,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
+      shellSnapshot: () => Effect.runPromise(snapshotQuery.getShellSnapshot()),
       startSession,
       validateWorkspaceRoot,
       sendTurn,
@@ -613,6 +614,7 @@ describe("ProviderCommandReactor", () => {
       stateDir,
       drain,
       recover: reactor.recover,
+      abandonPendingInteractions: reactor.abandonPendingInteractions,
       runEffect,
       getTurnDispatch: (sourceEventId: EventId) =>
         runEffect(turnDispatchJournal.getByIntent({ sourceEventId })),
@@ -3284,37 +3286,9 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("surfaces stale provider approval request failures without faking approval resolution", async () => {
+  it("abandons an approval once on endpoint interruption and rejects a late response", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
-    harness.respondToRequest.mockImplementation(() =>
-      Effect.fail(
-        new ProviderAdapterRequestError({
-          provider: ProviderDriverKind.make("codex"),
-          method: "session/request_permission",
-          detail:
-            "Unknown pending permission request: approval-request-1; ws://192.168.20.61/private?token=secret",
-        }),
-      ),
-    );
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.make("cmd-session-set-for-approval-error"),
-        threadId: ThreadId.make("thread-1"),
-        session: {
-          threadId: ThreadId.make("thread-1"),
-          status: "running",
-          providerName: "codex",
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: now,
-        },
-        createdAt: now,
-      }),
-    );
 
     await harness.runEffect(
       harness.engine.dispatch({
@@ -3337,41 +3311,43 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.approval.respond",
-        commandId: CommandId.make("cmd-approval-respond-stale"),
-        threadId: ThreadId.make("thread-1"),
-        requestId: asApprovalRequestId("approval-request-1"),
-        decision: "acceptForSession",
-        createdAt: now,
-      }),
-    );
+    expect((await harness.shellSnapshot()).threads[0]?.hasPendingApprovals).toBe(true);
+    await harness.runEffect(harness.abandonPendingInteractions(ProviderInstanceId.make("codex")));
+    await harness.runEffect(harness.abandonPendingInteractions(ProviderInstanceId.make("codex")));
+    expect((await harness.shellSnapshot()).threads[0]?.hasPendingApprovals).toBe(false);
 
-    await waitFor(async () => {
-      const readModel = await harness.readModel();
-      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      if (!thread) return false;
-      return thread.activities.some(
-        (activity) => activity.kind === "provider.approval.respond.failed",
-      );
-    });
+    const late = await harness.runEffect(
+      Effect.result(
+        harness.engine.dispatch({
+          type: "thread.approval.respond",
+          commandId: CommandId.make("cmd-approval-respond-stale"),
+          threadId: ThreadId.make("thread-1"),
+          requestId: asApprovalRequestId("approval-request-1"),
+          decision: "acceptForSession",
+          createdAt: now,
+        }),
+      ),
+    );
+    expect(late._tag).toBe("Failure");
+    if (late._tag === "Failure") expect(String(late.failure)).toContain("abandoned");
+    await harness.drain();
+    expect(harness.respondToRequest).not.toHaveBeenCalled();
 
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread).toBeDefined();
 
-    const failureActivity = thread?.activities.find(
+    const failureActivities = thread?.activities.filter(
       (activity) => activity.kind === "provider.approval.respond.failed",
     );
-    expect(failureActivity).toBeDefined();
-    expect(failureActivity?.payload).toMatchObject({
+    expect(failureActivities).toHaveLength(1);
+    expect(failureActivities?.[0]?.payload).toMatchObject({
       requestId: "approval-request-1",
       detail:
-        "The pending provider approval request is no longer active. Restart the turn to continue.",
+        "The stale pending approval request is no longer active at the provider. Restart the turn to continue.",
     });
-    expect(JSON.stringify(failureActivity)).not.toContain("192.168.20.61");
-    expect(JSON.stringify(failureActivity)).not.toContain("token=secret");
+    expect(JSON.stringify(failureActivities)).not.toContain("192.168.20.61");
+    expect(JSON.stringify(failureActivities)).not.toContain("token=secret");
 
     const resolvedActivity = thread?.activities.find(
       (activity) =>
@@ -3383,39 +3359,11 @@ describe("ProviderCommandReactor", () => {
     expect(resolvedActivity).toBeUndefined();
   });
 
-  it("surfaces non-resumable provider user-input callbacks as stale failures", async () => {
+  it("abandons user input once during restart recovery and never replays its callback", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
-    harness.respondToUserInput.mockImplementation(() =>
-      Effect.fail(
-        new ProviderAdapterRequestError({
-          provider: ProviderDriverKind.make("claudeAgent"),
-          method: "item/tool/respondToUserInput",
-          detail:
-            "Unknown pending Codex user input request: user-input-request-1; stderr=/private/tmp/token-secret",
-        }),
-      ),
-    );
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.make("cmd-session-set-for-user-input-error"),
-        threadId: ThreadId.make("thread-1"),
-        session: {
-          threadId: ThreadId.make("thread-1"),
-          status: "running",
-          providerName: "claudeAgent",
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: now,
-        },
-        createdAt: now,
-      }),
-    );
-
-    await Effect.runPromise(
+    await harness.runEffect(
       harness.engine.dispatch({
         type: "thread.activity.append",
         commandId: CommandId.make("cmd-user-input-requested"),
@@ -3448,43 +3396,45 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await harness.runEffect(
-      harness.engine.dispatch({
-        type: "thread.user-input.respond",
-        commandId: CommandId.make("cmd-user-input-respond-stale"),
-        threadId: ThreadId.make("thread-1"),
-        requestId: asApprovalRequestId("user-input-request-1"),
-        answers: {
-          sandbox_mode: "workspace-write",
-        },
-        createdAt: now,
-      }),
-    );
+    expect((await harness.shellSnapshot()).threads[0]?.hasPendingUserInput).toBe(true);
+    await harness.runEffect(harness.recover());
+    await harness.runEffect(harness.recover());
+    expect((await harness.shellSnapshot()).threads[0]?.hasPendingUserInput).toBe(false);
 
-    await waitFor(async () => {
-      const readModel = await harness.readModel();
-      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-      if (!thread) return false;
-      return thread.activities.some(
-        (activity) => activity.kind === "provider.user-input.respond.failed",
-      );
-    });
+    const late = await harness.runEffect(
+      Effect.result(
+        harness.engine.dispatch({
+          type: "thread.user-input.respond",
+          commandId: CommandId.make("cmd-user-input-respond-stale"),
+          threadId: ThreadId.make("thread-1"),
+          requestId: asApprovalRequestId("user-input-request-1"),
+          answers: {
+            sandbox_mode: "workspace-write",
+          },
+          createdAt: now,
+        }),
+      ),
+    );
+    expect(late._tag).toBe("Failure");
+    if (late._tag === "Failure") expect(String(late.failure)).toContain("abandoned");
+    await harness.drain();
+    expect(harness.respondToUserInput).not.toHaveBeenCalled();
 
     const readModel = await harness.readModel();
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
     expect(thread).toBeDefined();
 
-    const failureActivity = thread?.activities.find(
+    const failureActivities = thread?.activities.filter(
       (activity) => activity.kind === "provider.user-input.respond.failed",
     );
-    expect(failureActivity).toBeDefined();
-    expect(failureActivity?.payload).toMatchObject({
+    expect(failureActivities).toHaveLength(1);
+    expect(failureActivities?.[0]?.payload).toMatchObject({
       requestId: "user-input-request-1",
       detail:
-        "The pending provider user-input request is no longer active. Restart the turn to continue.",
+        "The stale pending user-input request is no longer active at the provider. Restart the turn to continue.",
     });
-    expect(JSON.stringify(failureActivity)).not.toContain("/private/tmp");
-    expect(JSON.stringify(failureActivity)).not.toContain("token-secret");
+    expect(JSON.stringify(failureActivities)).not.toContain("/private/tmp");
+    expect(JSON.stringify(failureActivities)).not.toContain("token-secret");
 
     const resolvedActivity = thread?.activities.find(
       (activity) =>

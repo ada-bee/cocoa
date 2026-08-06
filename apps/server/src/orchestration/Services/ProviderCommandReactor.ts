@@ -30,6 +30,15 @@ export interface ProviderCommandReactorShape {
   readonly recover: (providerInstanceId?: ProviderInstanceId) => Effect.Effect<void>;
 
   /**
+   * Terminalizes projected callbacks whose provider-side continuation was
+   * lost with a gateway or provider generation. This never answers or
+   * recreates the callback.
+   */
+  readonly abandonPendingInteractions: (
+    providerInstanceId?: ProviderInstanceId,
+  ) => Effect.Effect<void>;
+
+  /**
    * Resolves when the internal processing queue is empty and idle.
    * Intended for test use to replace timing-sensitive sleeps.
    */

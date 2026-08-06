@@ -87,6 +87,32 @@ function hasOpenBlockingRequest(thread: {
   return openRequestIds.size > 0;
 }
 
+function isBlockingRequestMarkedStale(
+  thread: {
+    readonly activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>;
+  },
+  kind: "approval" | "user-input",
+  requestId: string,
+): boolean {
+  let stale = false;
+  for (const activity of thread.activities) {
+    const payload =
+      typeof activity.payload === "object" && activity.payload !== null
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    if (payload?.requestId !== requestId) continue;
+    if (activity.kind === `${kind}.requested` || activity.kind === `${kind}.resolved`) {
+      stale = false;
+    } else if (
+      activity.kind === `provider.${kind}.respond.failed` &&
+      isStaleRequestFailureDetail(payload)
+    ) {
+      stale = true;
+    }
+  }
+  return stale;
+}
+
 /**
  * A queued turn start — a user message no turn has picked up yet — is work
  * in flight even though session is still null (turn.start emits
@@ -937,11 +963,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.approval.respond": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (isBlockingRequestMarkedStale(thread, "approval", command.requestId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The pending provider approval request was abandoned and cannot be answered.",
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -963,11 +995,17 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.user-input.respond": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (isBlockingRequestMarkedStale(thread, "user-input", command.requestId)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "The pending provider user-input request was abandoned and cannot be answered.",
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",

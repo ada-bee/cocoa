@@ -16,7 +16,9 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Encoding from "effect/Encoding";
 import * as Equal from "effect/Equal";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -203,42 +205,100 @@ function findProviderAdapterRequestError(
   return isProviderAdapterRequestError(failReason?.error) ? failReason.error : undefined;
 }
 
+function isUnknownPendingApprovalDetail(detail: string): boolean {
+  const normalized = detail.toLowerCase();
+  return (
+    normalized.includes("stale pending approval request") ||
+    normalized.includes("unknown pending approval request") ||
+    normalized.includes("unknown pending permission request")
+  );
+}
+
 function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
   const error = findProviderAdapterRequestError(cause);
-  if (error) {
-    const detail = error.detail.toLowerCase();
-    return (
-      detail.includes("unknown pending approval request") ||
-      detail.includes("unknown pending permission request")
-    );
-  }
-  const message = Cause.pretty(cause);
+  return isUnknownPendingApprovalDetail(error?.detail ?? Cause.pretty(cause));
+}
+
+function isUnknownPendingUserInputDetail(detail: string): boolean {
+  const normalized = detail.toLowerCase();
   return (
-    message.includes("unknown pending approval request") ||
-    message.includes("unknown pending permission request")
+    normalized.includes("stale pending user-input request") ||
+    normalized.includes("unknown pending user-input request") ||
+    normalized.includes("unknown pending user input request") ||
+    normalized.includes("unknown pending codex user input request")
   );
 }
 
 function isUnknownPendingUserInputRequestError(cause: Cause.Cause<ProviderServiceError>): boolean {
   const error = findProviderAdapterRequestError(cause);
-  if (error) {
-    const detail = error.detail.toLowerCase();
-    return (
-      detail.includes("unknown pending user-input request") ||
-      detail.includes("unknown pending user input request") ||
-      detail.includes("unknown pending codex user input request")
-    );
-  }
-  const message = Cause.pretty(cause).toLowerCase();
-  return (
-    message.includes("unknown pending user-input request") ||
-    message.includes("unknown pending user input request") ||
-    message.includes("unknown pending codex user input request")
-  );
+  return isUnknownPendingUserInputDetail(error?.detail ?? Cause.pretty(cause));
 }
 
 function stalePendingRequestDetail(requestKind: "approval" | "user-input"): string {
-  return `The pending provider ${requestKind} request is no longer active. Restart the turn to continue.`;
+  return `The stale pending ${requestKind} request is no longer active at the provider. Restart the turn to continue.`;
+}
+
+interface OpenPendingInteraction {
+  readonly kind: "approval" | "user-input";
+  readonly requestId: string;
+  readonly turnId: TurnId | null;
+  readonly createdAt: string;
+}
+
+function findOpenPendingInteractions(
+  activities: ReadonlyArray<{
+    readonly id: EventId;
+    readonly kind: string;
+    readonly payload: unknown;
+    readonly turnId: TurnId | null;
+    readonly createdAt: string;
+  }>,
+): ReadonlyArray<OpenPendingInteraction> {
+  const open = new Map<string, OpenPendingInteraction>();
+  const ordered = [...activities].toSorted(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+  );
+  for (const activity of ordered) {
+    const payload =
+      typeof activity.payload === "object" && activity.payload !== null
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const requestId = typeof payload?.requestId === "string" ? payload.requestId : null;
+    if (requestId === null) continue;
+    const approvalKey = `approval\0${requestId}`;
+    const userInputKey = `user-input\0${requestId}`;
+    if (activity.kind === "approval.requested") {
+      open.set(approvalKey, {
+        kind: "approval",
+        requestId,
+        turnId: activity.turnId,
+        createdAt: activity.createdAt,
+      });
+    } else if (activity.kind === "user-input.requested") {
+      open.set(userInputKey, {
+        kind: "user-input",
+        requestId,
+        turnId: activity.turnId,
+        createdAt: activity.createdAt,
+      });
+    } else if (
+      activity.kind === "approval.resolved" ||
+      (activity.kind === "provider.approval.respond.failed" &&
+        typeof payload?.detail === "string" &&
+        isUnknownPendingApprovalDetail(payload.detail))
+    ) {
+      open.delete(approvalKey);
+    } else if (
+      activity.kind === "user-input.resolved" ||
+      (activity.kind === "provider.user-input.respond.failed" &&
+        typeof payload?.detail === "string" &&
+        isUnknownPendingUserInputDetail(payload.detail))
+    ) {
+      open.delete(userInputKey);
+    }
+  }
+  return [...open.values()];
 }
 
 const PROVIDER_APPROVAL_FAILURE_DETAIL =
@@ -396,6 +456,84 @@ const make = Effect.gen(function* () {
       .getThreadDetailById(threadId)
       .pipe(Effect.map(Option.getOrUndefined));
   });
+
+  const abandonPendingInteractions: ProviderCommandReactorShape["abandonPendingInteractions"] =
+    Effect.fn("ProviderCommandReactor.abandonPendingInteractions")(
+      function* (providerInstanceId) {
+        const shell = yield* projectionSnapshotQuery.getShellSnapshot();
+        const projectProviders = new Map(
+          shell.projects.map((project) => [project.id, project.providerInstanceId]),
+        );
+        const candidates = shell.threads.filter((thread) => {
+          if (!thread.hasPendingApprovals && !thread.hasPendingUserInput) return false;
+          if (providerInstanceId === undefined) return true;
+          const owner =
+            thread.session?.providerInstanceId ?? projectProviders.get(thread.projectId) ?? null;
+          return owner === providerInstanceId;
+        });
+        yield* Effect.forEach(
+          candidates,
+          (threadShell) =>
+            Effect.gen(function* () {
+              const thread = yield* resolveThread(threadShell.id);
+              if (thread === undefined) return;
+              const open = findOpenPendingInteractions(thread.activities).filter((interaction) =>
+                interaction.kind === "approval"
+                  ? threadShell.hasPendingApprovals
+                  : threadShell.hasPendingUserInput,
+              );
+              yield* Effect.forEach(
+                open,
+                (interaction) =>
+                  Effect.gen(function* () {
+                    const digest = yield* crypto
+                      .digest(
+                        "SHA-256",
+                        new TextEncoder().encode(
+                          [thread.id, interaction.kind, interaction.requestId]
+                            .map(
+                              (value) => `${new TextEncoder().encode(value).byteLength}:${value}`,
+                            )
+                            .join(""),
+                        ),
+                      )
+                      .pipe(Effect.map(Encoding.encodeHex));
+                    const identity = `pending-interaction-abandoned:${digest}`;
+                    const abandonedAt = DateTime.formatIso(
+                      DateTime.add(DateTime.makeUnsafe(interaction.createdAt), { milliseconds: 1 }),
+                    );
+                    yield* appendProviderFailureActivity({
+                      threadId: thread.id,
+                      kind:
+                        interaction.kind === "approval"
+                          ? "provider.approval.respond.failed"
+                          : "provider.user-input.respond.failed",
+                      summary:
+                        interaction.kind === "approval"
+                          ? "Pending provider approval abandoned"
+                          : "Pending provider user input abandoned",
+                      detail: stalePendingRequestDetail(interaction.kind),
+                      turnId: interaction.turnId,
+                      createdAt: abandonedAt,
+                      requestId: interaction.requestId,
+                      commandId: CommandId.make(`server:${identity}`),
+                      activityId: EventId.make(identity),
+                    });
+                  }),
+                { discard: true },
+              );
+            }),
+          { concurrency: 4, discard: true },
+        );
+      },
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logWarning("pending provider interaction abandonment remains incomplete", {
+              cause: Cause.pretty(cause),
+            }),
+      ),
+    );
 
   const rejectStartedThreadModelChangeIfRequired = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
@@ -1783,6 +1921,7 @@ const make = Effect.gen(function* () {
   const recover: ProviderCommandReactorShape["recover"] = Effect.fn(
     "ProviderCommandReactor.recover",
   )(function* (providerInstanceId) {
+    yield* abandonPendingInteractions(providerInstanceId);
     yield* checkpointCoordinator.recover(providerInstanceId).pipe(
       Effect.catch((error) =>
         Effect.logWarning("baseline checkpoint recovery remains blocked", {
@@ -1882,6 +2021,7 @@ const make = Effect.gen(function* () {
   return {
     start,
     recover,
+    abandonPendingInteractions,
     drain: Effect.gen(function* () {
       yield* worker.drain;
       yield* turnDispatchWorker.drain;

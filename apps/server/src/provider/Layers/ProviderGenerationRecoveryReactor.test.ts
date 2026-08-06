@@ -149,6 +149,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
   const registryChanges = yield* PubSub.unbounded<void>();
   const recoveries = yield* Queue.unbounded<RecoveryInput>();
   const dispatchRecoveries = yield* Queue.unbounded<ProviderInstanceId | undefined>();
+  const abandonedInteractions = yield* Queue.unbounded<ProviderInstanceId | undefined>();
   const checkpointRecoveries = yield* Queue.unbounded<ProviderInstanceId | undefined>();
   const revertRecoveries = yield* Queue.unbounded<void>();
   const registryReleased = yield* Deferred.make<void>();
@@ -189,6 +190,8 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
             : input.recoverCommands(providerInstanceId),
         ),
       ),
+    abandonPendingInteractions: (providerInstanceId) =>
+      Queue.offer(abandonedInteractions, providerInstanceId).pipe(Effect.asVoid),
     drain: Effect.void,
   };
   const postTurnCheckpointReactor: PostTurnCheckpointReactorShape = {
@@ -219,6 +222,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
     ownerScope,
     recoveries,
     dispatchRecoveries,
+    abandonedInteractions,
     checkpointRecoveries,
     revertRecoveries,
     registryReleased,
@@ -250,6 +254,23 @@ it("recovers an initially ready generation", () =>
       assert.equal(yield* Queue.take(harness.dispatchRecoveries), INSTANCE_ID);
       assert.equal(yield* Queue.take(harness.checkpointRecoveries), INSTANCE_ID);
       yield* Queue.take(harness.revertRecoveries);
+      yield* Scope.close(harness.ownerScope, Exit.void);
+    }),
+  ));
+
+it("abandons non-resumable pending interactions when a generation becomes unavailable", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const lifecycle = yield* makeLifecycle(ready(1));
+      const harness = yield* makeHarness({
+        instances: [makeInstance(lifecycle.lifecycle, "pending-interactions")],
+        bindings: [],
+      });
+      yield* harness.reactor.start().pipe(Effect.provideService(Scope.Scope, harness.ownerScope));
+      yield* Queue.take(harness.dispatchRecoveries);
+
+      yield* lifecycle.publish(unavailable());
+      assert.equal(yield* Queue.take(harness.abandonedInteractions), INSTANCE_ID);
       yield* Scope.close(harness.ownerScope, Exit.void);
     }),
   ));

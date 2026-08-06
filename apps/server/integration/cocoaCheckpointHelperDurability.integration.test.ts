@@ -349,6 +349,7 @@ const makeRecoveryRuntime = (
   const providerCommands = {
     start: () => Effect.die("unused"),
     recover: () => Effect.void,
+    abandonPendingInteractions: () => Effect.void,
     drain: Effect.void,
   } satisfies ProviderCommandReactorShape;
   const postTurnCheckpoints = {
