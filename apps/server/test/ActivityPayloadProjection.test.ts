@@ -201,6 +201,64 @@ describe("projectActivityPayload", () => {
     });
   });
 
+  it("bounds Codex MCP results while retaining rendered identity and summary fields", () => {
+    const projected = projectActivityPayload(
+      makeActivity("codex-mcp", "mcp_tool_call", {
+        item: {
+          type: "mcpToolCall",
+          id: "item-1",
+          tool: "fetch_pr",
+          server: "github",
+          status: "completed",
+          arguments: { pr: 42 },
+          durationMs: 1_200,
+          result: {
+            content: [{ type: "text", text: `PR body line one\n${"x".repeat(5_000)}` }],
+            structuredContent: { huge: "y".repeat(5_000) },
+          },
+          _meta: { internal: true },
+        },
+      }),
+    );
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+    const item = data.item as Record<string, unknown>;
+
+    expect(item).toMatchObject({
+      type: "mcpToolCall",
+      id: "item-1",
+      tool: "fetch_pr",
+      server: "github",
+      status: "completed",
+      arguments: { pr: 42 },
+      durationMs: 1_200,
+      result: { content: "PR body line one" },
+    });
+    expect(item._meta).toBeUndefined();
+    expect(JSON.stringify(projected.payload).length).toBeLessThan(500);
+  });
+
+  it("bounds top-level MCP results used by provider-normal adapters", () => {
+    const projected = projectActivityPayload(
+      makeActivity("normalized-mcp", "mcp_tool_call", {
+        toolName: "mcp__github__fetch_pr",
+        input: { pr: 42 },
+        result: {
+          type: "tool_result",
+          tool_use_id: "toolu_1",
+          content: [{ type: "text", text: `first line of output\n${"z".repeat(5_000)}` }],
+        },
+      }),
+    );
+    const data = (projected.payload as Record<string, unknown>).data as Record<string, unknown>;
+
+    expect(data).toEqual({
+      toolName: "mcp__github__fetch_pr",
+      input: { pr: 42 },
+      result: { content: "first line of output" },
+    });
+    expect(JSON.stringify(projected.payload).length).toBeLessThan(500);
+  });
+
   it("keeps current web and mobile derived output identical for every tool item type", () => {
     for (const activity of fixtures) {
       const projected = projectActivityPayload(activity);
