@@ -34,6 +34,7 @@ import type {
 import {
   COCOA_CLIENT_PROTOCOL_VERSION,
   COCOA_CLIENT_V1_CORE_CAPABILITIES,
+  COCOA_CLIENT_V1_PROVIDER_MESSAGE_MAX_LENGTH,
   COCOA_CLIENT_V1_PROTOCOL_RANGE,
 } from "@t3tools/contracts/client/v1";
 import * as Option from "effect/Option";
@@ -382,6 +383,14 @@ export const projectInfo = (input: {
     available: provider.availability !== "unavailable" && provider.installed,
     status: provider.status,
     authStatus: provider.auth.status,
+    ...(provider.connectionState === undefined
+      ? {}
+      : { connectionState: provider.connectionState }),
+    ...(provider.message === undefined
+      ? {}
+      : {
+          message: provider.message.slice(0, COCOA_CLIENT_V1_PROVIDER_MESSAGE_MAX_LENGTH).trimEnd(),
+        }),
     models: provider.models.map((model) => ({
       slug: model.slug,
       name: model.name,

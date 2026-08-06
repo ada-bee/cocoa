@@ -1,14 +1,52 @@
 import { describe, expect, it } from "vite-plus/test";
-import { OrchestrationEvent, OrchestrationThreadDetailSnapshot } from "@t3tools/contracts";
-import { CocoaClientV1ThreadEvent } from "@t3tools/contracts/client/v1";
+import {
+  EnvironmentId,
+  OrchestrationEvent,
+  OrchestrationThreadDetailSnapshot,
+  ServerProvider,
+} from "@t3tools/contracts";
+import { CocoaClientV1InfoResponse, CocoaClientV1ThreadEvent } from "@t3tools/contracts/client/v1";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { projectThreadEvent, projectThreadSnapshot } from "./Projection.ts";
+import { projectInfo, projectThreadEvent, projectThreadSnapshot } from "./Projection.ts";
 
 const createdAt = "2026-08-04T00:00:00.000Z";
 
 describe("Cocoa client v1 projections", () => {
+  it("projects normalized endpoint health and sanitized mismatch detail", () => {
+    const provider = Schema.decodeUnknownSync(ServerProvider)({
+      instanceId: "codex-main",
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      version: "0.146.0",
+      status: "error",
+      auth: { status: "authenticated" },
+      connectionState: "blocked",
+      message:
+        "The Codex endpoint protocol is incompatible: required method 'thread/resume' is missing.",
+      checkedAt: createdAt,
+      models: [],
+    });
+    const projected = projectInfo({
+      environment: {
+        environmentId: EnvironmentId.make("gateway-1"),
+        label: "Cocoa Gateway",
+        serverVersion: "0.0.31",
+      },
+      providers: [provider],
+    });
+
+    expect(Schema.decodeUnknownSync(CocoaClientV1InfoResponse)(projected)).toEqual(projected);
+    expect(projected.providers[0]).toMatchObject({
+      instanceId: "codex-main",
+      connectionState: "blocked",
+      message:
+        "The Codex endpoint protocol is incompatible: required method 'thread/resume' is missing.",
+    });
+  });
+
   it("rebuilds thread events without provider-native metadata or activity payloads", () => {
     const event = Schema.decodeUnknownSync(OrchestrationEvent)({
       sequence: 9,

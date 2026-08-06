@@ -61,12 +61,23 @@ function normalizeSelectionOptions(
       };
 }
 
+function isProviderSelectable(provider: T3ServerConfig["providers"][number]): boolean {
+  return (
+    provider.enabled &&
+    provider.installed &&
+    provider.auth.status !== "unauthenticated" &&
+    provider.connectionState !== "blocked" &&
+    provider.connectionState !== "disconnected"
+  );
+}
+
 /**
  * A stored model selection is only usable when its provider instance is
- * currently enabled, installed, and authenticated on the server. Returns the
- * selection unchanged when usable, otherwise `null` so callers fall through to
- * the server's default model. A missing config (environment offline) cannot be
- * validated, so stored selections pass through untouched.
+ * currently enabled, installed, authenticated, and not explicitly blocked or
+ * disconnected on the server. Returns the selection unchanged when usable,
+ * otherwise `null` so callers fall through to the server's default model. A
+ * missing config (environment offline) cannot be validated, so stored
+ * selections pass through untouched.
  */
 export function resolveSelectableModelSelection(
   config: T3ServerConfig | null | undefined,
@@ -85,12 +96,7 @@ export function resolveSelectableModelSelection(
   const provider = config.providers.find(
     (candidate) => candidate.instanceId === selection.instanceId,
   );
-  return provider &&
-    provider.enabled &&
-    provider.installed &&
-    provider.auth.status !== "unauthenticated"
-    ? selection
-    : null;
+  return provider && isProviderSelectable(provider) ? selection : null;
 }
 
 export function resolveProjectModelSelection(
@@ -116,7 +122,7 @@ export function buildModelOptions(
     if (requiredProviderInstanceId && provider.instanceId !== requiredProviderInstanceId) {
       continue;
     }
-    if (!provider.enabled || !provider.installed || provider.auth.status === "unauthenticated") {
+    if (!isProviderSelectable(provider)) {
       continue;
     }
 
@@ -144,31 +150,32 @@ export function buildModelOptions(
     }
   }
 
-  if (
-    fallbackModelSelection &&
-    (!requiredProviderInstanceId ||
-      fallbackModelSelection.instanceId === requiredProviderInstanceId)
-  ) {
-    const key = `${fallbackModelSelection.instanceId}:${fallbackModelSelection.model}`;
+  const selectableFallback = resolveSelectableModelSelection(
+    config,
+    fallbackModelSelection,
+    requiredProviderInstanceId,
+  );
+  if (selectableFallback) {
+    const key = `${selectableFallback.instanceId}:${selectableFallback.model}`;
     const existing = options.get(key);
     if (existing) {
       options.set(key, {
         ...existing,
-        selection: normalizeSelectionOptions(fallbackModelSelection, existing.capabilities),
+        selection: normalizeSelectionOptions(selectableFallback, existing.capabilities),
       });
     } else {
-      const providerLabel = fallbackModelSelection.instanceId;
+      const providerLabel = selectableFallback.instanceId;
       options.set(key, {
         key,
-        label: fallbackModelSelection.model,
+        label: selectableFallback.model,
         subtitle: providerLabel,
-        providerKey: fallbackModelSelection.instanceId,
+        providerKey: selectableFallback.instanceId,
         providerLabel,
-        providerDriver: fallbackModelSelection.instanceId,
+        providerDriver: selectableFallback.instanceId,
         isDefault: false,
         isLegacy: false,
         capabilities: null,
-        selection: fallbackModelSelection,
+        selection: selectableFallback,
       });
     }
   }

@@ -13,6 +13,8 @@ export type {
   CocoaClientV1GetTurnDiffInput,
   CocoaClientV1GetTurnDiffResult,
   CocoaClientV1InfoResponse,
+  CocoaClientV1ProviderConnectionState,
+  CocoaClientV1ProviderInfo,
   CocoaClientV1ProbeResult,
   CocoaClientV1SearchThreadsInput,
   CocoaClientV1SearchThreadsResult,

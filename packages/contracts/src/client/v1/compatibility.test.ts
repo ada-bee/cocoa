@@ -302,12 +302,38 @@ describe("Cocoa client protocol v1 compatibility", () => {
             displayName: "Main Codex",
             enabled: true,
             available: true,
-            status: "ready",
+            status: "error",
             authStatus: "authenticated",
+            connectionState: "blocked",
+            message:
+              "The Codex endpoint protocol is incompatible: required method 'thread/resume' is missing.",
             models: [],
           },
         ],
       });
+    }),
+  );
+
+  it.effect("keeps endpoint health fields optional for older v1 gateways", () =>
+    Effect.gen(function* () {
+      const provider = infoResponseFixture.providers[0]!;
+      const decoded = yield* decodeInfo({
+        ...infoResponseFixture,
+        providers: [
+          {
+            instanceId: provider.instanceId,
+            displayName: provider.displayName,
+            enabled: provider.enabled,
+            available: provider.available,
+            status: provider.status,
+            authStatus: provider.authStatus,
+            models: provider.models,
+          },
+        ],
+      });
+
+      expect(decoded.providers[0]).not.toHaveProperty("connectionState");
+      expect(decoded.providers[0]).not.toHaveProperty("message");
     }),
   );
 

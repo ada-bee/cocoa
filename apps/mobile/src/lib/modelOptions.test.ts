@@ -176,6 +176,47 @@ describe("mobile model options", () => {
     expect(resolveSelectableModelSelection(null, disabled)).toBe(disabled);
   });
 
+  it("rejects explicitly blocked and disconnected endpoints while preserving legacy snapshots", () => {
+    const provider = (instanceId: string, connectionState?: string) => ({
+      instanceId,
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      auth: { status: "authenticated" },
+      ...(connectionState === undefined ? {} : { connectionState }),
+      models: [
+        {
+          slug: "gpt-test",
+          name: "GPT Test",
+          isCustom: false,
+          capabilities: null,
+        },
+      ],
+    });
+    const config = {
+      providers: [
+        provider("legacy"),
+        provider("ready", "ready"),
+        provider("connecting", "connecting"),
+        provider("blocked", "blocked"),
+        provider("disconnected", "disconnected"),
+      ],
+    } as unknown as ServerConfig;
+    const selection = (instanceId: string) => ({
+      instanceId: ProviderInstanceId.make(instanceId),
+      model: "gpt-test",
+    });
+
+    expect(resolveSelectableModelSelection(config, selection("legacy"))).not.toBeNull();
+    expect(resolveSelectableModelSelection(config, selection("ready"))).not.toBeNull();
+    expect(resolveSelectableModelSelection(config, selection("connecting"))).not.toBeNull();
+    expect(resolveSelectableModelSelection(config, selection("blocked"))).toBeNull();
+    expect(resolveSelectableModelSelection(config, selection("disconnected"))).toBeNull();
+    expect(
+      buildModelOptions(config, selection("blocked")).map((option) => option.providerKey),
+    ).toEqual(["legacy", "ready", "connecting"]);
+  });
+
   it("restricts choices and stored fallbacks to the selected project's provider endpoint", () => {
     const macbookProvider = ProviderInstanceId.make("codex-macbook");
     const linuxProvider = ProviderInstanceId.make("codex-linux");

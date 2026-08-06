@@ -93,6 +93,20 @@ export const CocoaClientV1ProviderAuthStatus = Schema.Literals([
 ]);
 export type CocoaClientV1ProviderAuthStatus = typeof CocoaClientV1ProviderAuthStatus.Type;
 
+/**
+ * Normalized lifecycle for long-lived provider endpoints. Optional on provider
+ * info so v1 clients continue to accept gateways that predate endpoint health.
+ */
+export const CocoaClientV1ProviderConnectionState = Schema.Literals([
+  "ready",
+  "connecting",
+  "disconnected",
+  "blocked",
+]);
+export type CocoaClientV1ProviderConnectionState = typeof CocoaClientV1ProviderConnectionState.Type;
+
+export const COCOA_CLIENT_V1_PROVIDER_MESSAGE_MAX_LENGTH = 2_048;
+
 export const CocoaClientV1ProviderInfo = Schema.Struct({
   instanceId: ProviderInstanceId,
   displayName: Schema.optionalKey(TrimmedNonEmptyString),
@@ -100,6 +114,10 @@ export const CocoaClientV1ProviderInfo = Schema.Struct({
   available: Schema.Boolean,
   status: CocoaClientV1ProviderState,
   authStatus: CocoaClientV1ProviderAuthStatus,
+  connectionState: Schema.optionalKey(CocoaClientV1ProviderConnectionState),
+  message: Schema.optionalKey(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(COCOA_CLIENT_V1_PROVIDER_MESSAGE_MAX_LENGTH)),
+  ),
   models: Schema.Array(CocoaClientV1ProviderModel),
 });
 export type CocoaClientV1ProviderInfo = typeof CocoaClientV1ProviderInfo.Type;
