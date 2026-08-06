@@ -141,6 +141,53 @@ const MCP_ITEM_KEPT_FIELDS = [
   "durationMs",
 ] as const;
 
+const MCP_PROJECTED_DATA_MAX_BYTES = 16 * 1_024;
+const MCP_PROJECTED_FIELD_MAX_BYTES = 4 * 1_024;
+
+const jsonByteLength = (value: unknown): number | null => {
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded === undefined ? null : new TextEncoder().encode(encoded).byteLength;
+  } catch {
+    return null;
+  }
+};
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (new TextEncoder().encode(value).byteLength <= maxBytes) return value;
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = `${value.slice(0, middle)}…`;
+    if (new TextEncoder().encode(candidate).byteLength <= maxBytes) low = middle;
+    else high = middle - 1;
+  }
+  return `${value.slice(0, low)}…`;
+}
+
+function boundMcpClientValue(value: unknown): unknown {
+  const originalBytes = jsonByteLength(value);
+  if (originalBytes !== null && originalBytes <= MCP_PROJECTED_FIELD_MAX_BYTES) return value;
+  if (typeof value === "string") {
+    return truncateUtf8(value, MCP_PROJECTED_FIELD_MAX_BYTES);
+  }
+  return {
+    truncated: true,
+    ...(originalBytes === null ? {} : { originalBytes }),
+  };
+}
+
+function assignBoundedMcpField(target: Record<string, unknown>, key: string, value: unknown): void {
+  const bounded = boundMcpClientValue(value);
+  const candidate = { ...target, [key]: bounded };
+  const candidateBytes = jsonByteLength(candidate);
+  target[key] =
+    candidateBytes !== null && candidateBytes <= MCP_PROJECTED_DATA_MAX_BYTES
+      ? bounded
+      : { truncated: true };
+}
+
 /**
  * Pulls renderable text out of an MCP tool result: either a Codex-style
  * `{content: [{type: "text", text}, ...]}` record or a raw Claude
@@ -192,7 +239,7 @@ function projectMcpToolCallData(data: Record<string, unknown>): Record<string, u
     const projectedItem: Record<string, unknown> = {};
     for (const key of MCP_ITEM_KEPT_FIELDS) {
       if (key in item) {
-        projectedItem[key] = item[key];
+        assignBoundedMcpField(projectedItem, key, item[key]);
       }
     }
     const result = summarizeMcpResult(item.result);
@@ -203,10 +250,10 @@ function projectMcpToolCallData(data: Record<string, unknown>): Record<string, u
   }
 
   if ("toolName" in data) {
-    projectedData.toolName = data.toolName;
+    assignBoundedMcpField(projectedData, "toolName", data.toolName);
   }
   if ("input" in data) {
-    projectedData.input = data.input;
+    assignBoundedMcpField(projectedData, "input", data.input);
   }
   if (!item) {
     const result = summarizeMcpResult(data.result);
@@ -216,16 +263,20 @@ function projectMcpToolCallData(data: Record<string, unknown>): Record<string, u
   }
 
   if ("toolCallId" in data) {
-    projectedData.toolCallId = data.toolCallId;
+    assignBoundedMcpField(projectedData, "toolCallId", data.toolCallId);
   }
   if ("kind" in data) {
-    projectedData.kind = data.kind;
+    assignBoundedMcpField(projectedData, "kind", data.kind);
   }
 
   const changedFiles: string[] = [];
   collectChangedFiles(data, changedFiles, new Set<string>(), 0);
   if (changedFiles.length > 0) {
-    projectedData.files = changedFiles.map((path) => ({ path }));
+    assignBoundedMcpField(
+      projectedData,
+      "files",
+      changedFiles.map((path) => ({ path })),
+    );
   }
 
   return projectedData;
@@ -422,12 +473,55 @@ function toolLifecycleIdentity(activity: OrchestrationThreadActivity): string | 
  * rows (553 of 36,581), all pure in-flight state whose final result the
  * retained completion still shows. Dropping them is intentional; matching
  * adjacency server-side would forfeit most of the win for parallel-heavy
- * threads, which are exactly the heavy ones. Superseding completions always
- * carry a payload superset of their updates (verified across all 49,515
- * update rows: zero dropped rows held a client-merged field — detail, title,
- * command, item, kind, files — their completion lacked), so no expanded-row
- * content is lost.
+ * threads, which are exactly the heavy ones. Cocoa does not treat the
+ * measured completion payload shape as a protocol invariant: provider and
+ * version skew can omit fields from a completion, so the update is removed
+ * only when its projected client-visible fields are structurally present in
+ * the retained completion.
  */
+function deepSubsumes(available: unknown, required: unknown): boolean {
+  if (Object.is(available, required)) return true;
+  if (Array.isArray(required)) {
+    if (!Array.isArray(available)) return false;
+    return (
+      required.length <= available.length &&
+      required.every((requiredEntry, index) => deepSubsumes(available[index], requiredEntry))
+    );
+  }
+  const requiredRecord = asRecord(required);
+  if (!requiredRecord) return false;
+  const availableRecord = asRecord(available);
+  if (!availableRecord) return false;
+  return Object.entries(requiredRecord).every(
+    ([key, value]) => key in availableRecord && deepSubsumes(availableRecord[key], value),
+  );
+}
+
+function clientVisibleToolLifecycleFields(
+  activity: OrchestrationThreadActivity,
+): Record<string, unknown> {
+  const payload = asRecord(projectActivityPayload(activity).payload);
+  if (!payload) return {};
+  const data = asRecord(payload.data);
+  return {
+    ...("itemType" in payload ? { itemType: payload.itemType } : {}),
+    ...("title" in payload ? { title: payload.title } : {}),
+    ...("detail" in payload ? { detail: payload.detail } : {}),
+    ...("requestKind" in payload ? { requestKind: payload.requestKind } : {}),
+    ...(data === null ? {} : { data }),
+  };
+}
+
+function completionSubsumesUpdate(
+  completion: OrchestrationThreadActivity,
+  update: OrchestrationThreadActivity,
+): boolean {
+  return deepSubsumes(
+    clientVisibleToolLifecycleFields(completion),
+    clientVisibleToolLifecycleFields(update),
+  );
+}
+
 function dropSupersededToolUpdatedActivities(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): ReadonlyArray<OrchestrationThreadActivity> {
@@ -462,7 +556,10 @@ function dropSupersededToolUpdatedActivities(
       return true;
     }
     const indices = completionIndicesByKey.get(`${activity.turnId ?? ""} ${identity}`);
-    return !indices?.some((completionIndex) => completionIndex > index);
+    return !indices?.some(
+      (completionIndex) =>
+        completionIndex > index && completionSubsumesUpdate(activities[completionIndex]!, activity),
+    );
   });
 }
 

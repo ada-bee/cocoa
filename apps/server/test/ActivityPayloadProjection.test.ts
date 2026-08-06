@@ -259,6 +259,38 @@ describe("projectActivityPayload", () => {
     expect(JSON.stringify(projected.payload).length).toBeLessThan(500);
   });
 
+  it("bounds every provider-controlled MCP field, not only result bodies", () => {
+    const projected = projectActivityPayload(
+      makeActivity("oversized-mcp", "mcp_tool_call", {
+        item: {
+          type: "mcpToolCall",
+          id: "item-large",
+          tool: "large_tool",
+          server: "large-server",
+          arguments: { prompt: "a".repeat(100_000) },
+          appContext: { state: "b".repeat(100_000) },
+          error: "c".repeat(100_000),
+          result: { content: [{ type: "text", text: "d".repeat(100_000) }] },
+        },
+        input: { prompt: "e".repeat(100_000) },
+      }),
+    );
+
+    expect(new TextEncoder().encode(JSON.stringify(projected.payload)).byteLength).toBeLessThan(
+      20 * 1_024,
+    );
+    expect(projected.payload).toMatchObject({
+      data: {
+        item: {
+          arguments: { truncated: true, originalBytes: expect.any(Number) },
+          appContext: { truncated: true, originalBytes: expect.any(Number) },
+          error: expect.stringContaining("…"),
+        },
+        input: { truncated: true, originalBytes: expect.any(Number) },
+      },
+    });
+  });
+
   it("keeps current web and mobile derived output identical for every tool item type", () => {
     for (const activity of fixtures) {
       const projected = projectActivityPayload(activity);
@@ -324,9 +356,10 @@ describe("superseded tool.updated snapshot dedup", () => {
       readonly title?: string;
       readonly detail?: string;
       readonly toolCallId?: string;
+      readonly data?: Readonly<Record<string, unknown>>;
     } = {},
   ): OrchestrationThreadActivity {
-    const { turn = "turn-a", title = "File change", detail, toolCallId } = options;
+    const { turn = "turn-a", title = "File change", detail, toolCallId, data } = options;
     return {
       id: EventId.make(id),
       tone: "tool",
@@ -340,6 +373,7 @@ describe("superseded tool.updated snapshot dedup", () => {
           ...(toolCallId ? { toolCallId } : {}),
           toolName: "Edit",
           input: { file_path: "src/app.ts" },
+          ...data,
         },
       },
       turnId: TurnId.make(turn),
@@ -360,6 +394,71 @@ describe("superseded tool.updated snapshot dedup", () => {
     const completed = makeToolLifecycleActivity("done-1", "tool.completed");
 
     expect(projectedIds([update1, update2, completed])).toEqual([completed.id]);
+  });
+
+  it("retains updates whose client-visible fields are absent from the completion", () => {
+    for (const [suffix, data] of [
+      ["files", { files: [{ path: "src/only-in-update.ts" }] }],
+      ["command", { command: "bun test" }],
+      ["item", { item: { command: "bun test" } }],
+      ["kind", { kind: "execute" }],
+    ] as const) {
+      const update = makeToolLifecycleActivity(`upd-${suffix}`, "tool.updated", {
+        toolCallId: `call-${suffix}`,
+        data,
+      });
+      const completed = makeToolLifecycleActivity(`done-${suffix}`, "tool.completed", {
+        toolCallId: `call-${suffix}`,
+      });
+
+      expect(projectedIds([update, completed])).toEqual([update.id, completed.id]);
+    }
+  });
+
+  it("drops an update when the completion contains a structural superset", () => {
+    const update = makeToolLifecycleActivity("upd-superset", "tool.updated", {
+      toolCallId: "call-superset",
+      data: { files: [{ path: "src/one.ts" }] },
+    });
+    const completed = makeToolLifecycleActivity("done-superset", "tool.completed", {
+      toolCallId: "call-superset",
+      data: { files: [{ path: "src/one.ts" }, { path: "src/two.ts" }] },
+    });
+
+    expect(projectedIds([update, completed])).toEqual([completed.id]);
+  });
+
+  it("retains updates when completion array order would change merged client output", () => {
+    const update = makeToolLifecycleActivity("upd-order", "tool.updated", {
+      toolCallId: "call-order",
+      data: { files: [{ path: "src/one.ts" }] },
+    });
+    const completed = makeToolLifecycleActivity("done-order", "tool.completed", {
+      toolCallId: "call-order",
+      data: { files: [{ path: "src/two.ts" }, { path: "src/one.ts" }] },
+    });
+
+    expect(projectedIds([update, completed])).toEqual([update.id, completed.id]);
+  });
+
+  it("preserves web and mobile reconnect state when only an update names changed files", () => {
+    const update = makeToolLifecycleActivity("upd-client-equality", "tool.updated", {
+      toolCallId: "call-client-equality",
+      data: { files: [{ path: "src/only-in-update.ts" }] },
+    });
+    const completed = makeToolLifecycleActivity("done-client-equality", "tool.completed", {
+      toolCallId: "call-client-equality",
+    });
+    const fullHistory = [update, completed];
+    const snapshotHistory = projectThreadDetailSnapshot({
+      snapshotSequence: 7,
+      thread: makeThread(fullHistory),
+    }).thread.activities;
+
+    expect(deriveWorkLogEntries(snapshotHistory)).toEqual(deriveWorkLogEntries(fullHistory));
+    expect(JSON.parse(JSON.stringify(buildThreadFeed(makeThread(snapshotHistory))))).toEqual(
+      JSON.parse(JSON.stringify(buildThreadFeed(makeThread(fullHistory)))),
+    );
   });
 
   it("matches on toolCallId when the adapter emits one", () => {
