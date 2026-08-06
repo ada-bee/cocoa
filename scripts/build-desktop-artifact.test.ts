@@ -422,11 +422,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       const error = yield* assertDesktopStageIsolation(stageAppDir).pipe(Effect.flip);
       assert.instanceOf(error, ForbiddenDesktopStageContentError);
-      assert.includeMembers(error.forbiddenEntries, [
-        FORBIDDEN_DESKTOP_STAGE_PATHS[0],
-        FORBIDDEN_DESKTOP_STAGE_PATHS[4],
-        `node_modules/node-pty/prebuilds/linux-x64/${FORBIDDEN_DESKTOP_STAGE_FILE_NAMES[0]}`,
-      ]);
+      assert.includeMembers(
+        [...error.forbiddenEntries],
+        [
+          FORBIDDEN_DESKTOP_STAGE_PATHS[0],
+          FORBIDDEN_DESKTOP_STAGE_PATHS[4],
+          `node_modules/node-pty/prebuilds/linux-x64/${FORBIDDEN_DESKTOP_STAGE_FILE_NAMES[0]}`,
+        ],
+      );
     }),
   );
 

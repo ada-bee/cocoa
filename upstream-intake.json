@@ -1,0 +1,299 @@
+{
+  "version": 1,
+  "remote": "upstream",
+  "upstreamRef": "upstream/main",
+  "targetRef": "main",
+  "baseTag": "cocoa-fork-base-20260803",
+  "baseCommit": "30c96228067bcd3a49e432ec898e52d4acb04297",
+  "horizons": [
+    {
+      "reviewedAt": "2026-08-06",
+      "fromExclusive": "30c96228067bcd3a49e432ec898e52d4acb04297",
+      "throughInclusive": "a261a6440ae7c1a063ff23591f43960c7d2b06e5",
+      "commits": [
+        {
+          "sha": "6f04a5cffb8fcad95f709af69eb2da2605c4d472",
+          "classification": "deferred",
+          "reason": "Linux desktop secret-storage integration is outside the initial Raspberry Pi gateway and macOS reference-client deployment, but remains a candidate if Cocoa ships a Linux desktop client."
+        },
+        {
+          "sha": "a261a6440ae7c1a063ff23591f43960c7d2b06e5",
+          "classification": "deferred",
+          "reason": "The web loading-screen theme fix is useful but unrelated to the remote-control-plane cutover; defer it to a focused client polish intake."
+        }
+      ]
+    },
+    {
+      "reviewedAt": "2026-08-06",
+      "fromExclusive": "a261a6440ae7c1a063ff23591f43960c7d2b06e5",
+      "throughInclusive": "e4abc31f1e3f930e521a5bb62b38a9c5b28d8fb1",
+      "commits": [
+        {
+          "sha": "11639bf4391d9d49e48052bae755f748cbd22ff2",
+          "classification": "deferred",
+          "reason": "Useful isolated remote-terminal cursor polish; retain as a low-risk client intake candidate after architecture work."
+        },
+        {
+          "sha": "553867262cf22f982622df3eb7f3174f62b4ba2b",
+          "classification": "deferred",
+          "reason": "Useful terminal close-shortcut safety fix, but its desktop test needs a small Cocoa conflict adaptation."
+        },
+        {
+          "sha": "1cbd88aba042f3209e1538a927775a7c4f7fdb06",
+          "classification": "deferred",
+          "reason": "The sanitizer changes only the legacy terminal manager; Cocoa needs the behavior shared with ProviderManager before intake."
+        },
+        {
+          "sha": "966cc05a9007a4ad1b7f8d5d3a1fc0e5c82a5b94",
+          "classification": "deferred",
+          "reason": "High-value forward-compatible provider decoding selected for a focused low-risk intake."
+        },
+        {
+          "sha": "25ec0b9d13deaaa6d30c42f66ddfee633e9a29be",
+          "classification": "deferred",
+          "reason": "Generic accessible code-block polish with low architectural urgency."
+        },
+        {
+          "sha": "cec1bb9de38a80d7c06faa6841360002ca136080",
+          "classification": "deferred",
+          "reason": "Generic multiline error-banner polish with low architectural urgency."
+        },
+        {
+          "sha": "2b1d4fecb859b9a68f4853b8c4c5857ffe9d448d",
+          "classification": "deferred",
+          "reason": "Effect beta.103 requires a dedicated semantic upgrade because it spans Cocoa runtime hot spots and the lockfile."
+        },
+        {
+          "sha": "8a16cadbafb2ec98f79e7cb1300a3ad09ca394e5",
+          "classification": "deferred",
+          "reason": "Low-risk generic tooltip layering polish reserved for a client-polish intake."
+        },
+        {
+          "sha": "82b76e2138db7fcf8f8c1613184dc94777b2196e",
+          "classification": "skipped",
+          "reason": "Cursor provider parity is outside Cocoa's Codex-first runtime."
+        },
+        {
+          "sha": "37ae1abbe947f0e002d008276225e4af2248a969",
+          "classification": "skipped",
+          "reason": "The patch targets upstream managed tunnels, which are an explicit Cocoa non-goal; its SSH isolation idea is ported separately."
+        },
+        {
+          "sha": "c30a6d9b9943cfbf2fd47efc9de6eb9675457d52",
+          "classification": "skipped",
+          "reason": "AppImage environment cleanup applies to gateway-local PTYs, not Cocoa's provider-owned terminals."
+        },
+        {
+          "sha": "94331c58ecda6b32ee101e8f5ce2dfe5b5195afd",
+          "classification": "skipped",
+          "reason": "Grok, Cursor, and OpenCode icon parity is outside the Codex-first scope."
+        },
+        {
+          "sha": "90e3778660690e4f00bdd4e237fc541725dc1427",
+          "classification": "deferred",
+          "reason": "Provider-health banner layout is a clean client candidate for the next focused UI intake."
+        },
+        {
+          "sha": "36caf34c68b7bc6c2e967fdec1812fd08f61cdc8",
+          "classification": "deferred",
+          "reason": "Renderer-memory containment aligns with long-lived Cocoa clients and is retained for a focused client-runtime intake."
+        },
+        {
+          "sha": "d7950ac153c6fdd788ef63699a5d061243bb4997",
+          "classification": "deferred",
+          "reason": "Durable title improvements require preserving Cocoa's endpoint-backed generation and neutralizing upstream product wording."
+        },
+        {
+          "sha": "4fb03aff0bcddf3379e9f9277a87e8eae994a2ae",
+          "classification": "deferred",
+          "reason": "The diff UI's unchanged-file RPC performs gateway-local path and Git access; defer until it is provider-routed."
+        },
+        {
+          "sha": "9bd2a4c6886a4c20e0a0a937dc98dd118c645c8f",
+          "classification": "deferred",
+          "reason": "On-topic title regeneration is useful but belongs with the deferred endpoint-safe title stack."
+        },
+        {
+          "sha": "2fa1fec8d8f63bc8fa4579e7c0fd280b21de02ef",
+          "classification": "deferred",
+          "reason": "Plaintext title prompts belong with the deferred endpoint-safe title stack."
+        },
+        {
+          "sha": "8eca20005b47e197b3610f7996f3fd02355c1891",
+          "classification": "deferred",
+          "reason": "Configurable fonts are broad, nonessential client polish with settings and lockfile conflicts."
+        },
+        {
+          "sha": "da6e1a96782594cab3a6925f441731a65be57c11",
+          "classification": "deferred",
+          "reason": "Thread pinning fits Cocoa's event model but needs Cocoa migration and capability adaptation."
+        },
+        {
+          "sha": "fff6a5b028f85122ffef8d3636f390f95ade5172",
+          "classification": "skipped",
+          "reason": "Endpoint-choice QR pairing depends on discovery, Tailscale, and hosted compatibility excluded by Cocoa."
+        },
+        {
+          "sha": "94696b0f54f467062a14aa800ee257a4801c2022",
+          "classification": "deferred",
+          "reason": "Browser URL behavior should wait until remote preview ownership is defined."
+        },
+        {
+          "sha": "7537adc30f41059afcfeb8bd20368cb0acfce293",
+          "classification": "deferred",
+          "reason": "Low-risk generic model-picker layout polish reserved for a client-polish intake."
+        },
+        {
+          "sha": "7b38fb5c6b0fb46a7dadaf33e1739726be3dc104",
+          "classification": "skipped",
+          "reason": "Launcher-managed gateway self-update contradicts Cocoa's administrator-managed container lifecycle."
+        },
+        {
+          "sha": "3d429662c9bd7b731c059dc3a84ccdfc43bf3701",
+          "classification": "skipped",
+          "reason": "OpenCode and Kimi provider parity is outside Cocoa's Codex-first scope."
+        },
+        {
+          "sha": "41ebf22eea64e177b11a0709a16d6716581cc78c",
+          "classification": "deferred",
+          "reason": "This cleanup is coupled to the deferred font feature and upstream self-update UI."
+        },
+        {
+          "sha": "47dfc6526521866992f6b50beac4587b45114631",
+          "classification": "deferred",
+          "reason": "Grouped projects are valuable, but Cocoa must group by provider instance plus workspace root and avoid local VCS assumptions."
+        },
+        {
+          "sha": "70de6e17860d7343a73e117e6e9e1ce41b1b633e",
+          "classification": "deferred",
+          "reason": "Clean Android/Hermes compatibility fix retained for the next mobile intake."
+        },
+        {
+          "sha": "3c5bdb84a93682646848acf48cae94c4d189b7a6",
+          "classification": "deferred",
+          "reason": "Low-risk long-name truncation reserved for a focused client-polish intake."
+        },
+        {
+          "sha": "e0c85a20ef0ec9b49ade5989a13850493036a49b",
+          "classification": "deferred",
+          "reason": "Mobile divider polish has a small dependency conflict with deferred pinning."
+        },
+        {
+          "sha": "9235c83eb7f16c321ad02aa4cc502fbe0be252c1",
+          "classification": "deferred",
+          "reason": "Low-risk composer-menu positioning is reserved for a client-polish intake."
+        },
+        {
+          "sha": "9d9a872bccc6ed099de85a121ab042c9e078987e",
+          "classification": "deferred",
+          "reason": "Terminal-link polish is useful but requires Cocoa-specific test adaptation."
+        },
+        {
+          "sha": "9697b765e5c32232e96514e38b6ecfac351d5a8f",
+          "classification": "deferred",
+          "reason": "Release-CI quota isolation is optional and must preserve Cocoa's deleted public release documentation."
+        },
+        {
+          "sha": "37d3667de4e45ffb42dc96e8b7fbf39e3a78c1da",
+          "classification": "deferred",
+          "reason": "Low-risk model-picker shortcut refresh is reserved for a client-polish intake."
+        },
+        {
+          "sha": "2a04db134c2d88f06e5b8d61a8410cb51ea07430",
+          "classification": "deferred",
+          "reason": "This reliability follow-up depends on the deferred configurable-font feature."
+        },
+        {
+          "sha": "de592a00e89776d2e0614f3be6e666012d90cd51",
+          "classification": "deferred",
+          "reason": "Font-preview enrichment depends on the deferred configurable-font feature."
+        },
+        {
+          "sha": "30e471530b3e2ddf59caf309636bed940b8b3776",
+          "classification": "skipped",
+          "reason": "Cocoa does not contain the unwanted auto-shrink behavior; reconsider only with the deferred font feature."
+        },
+        {
+          "sha": "7251f1a1f14afdf626e7c7f8664da423594732a3",
+          "classification": "deferred",
+          "reason": "Terminal loading-flash polish is useful but needs a small adaptation to Cocoa's diverged surface."
+        },
+        {
+          "sha": "990bb0b689b23a33f8e53f12962fe2542b3f4005",
+          "classification": "skipped",
+          "reason": "This accelerates client reconnect during upstream gateway self-update, not gateway-to-Codex recovery."
+        },
+        {
+          "sha": "a2ca89aa10f13a2222e08afd98c66285121d5ba2",
+          "classification": "deferred",
+          "reason": "Subagent observability is valuable but needs a Cocoa-native shared-endpoint design and remote workflow ownership."
+        },
+        {
+          "sha": "3da315e7b5c4537cbc7280f33dadb3f5f0e3baf0",
+          "classification": "deferred",
+          "reason": "High-value MCP payload compaction selected for focused intake with Cocoa test adaptation."
+        },
+        {
+          "sha": "1ffba7093a83c99ef41dd486b10df75f2b9974e1",
+          "classification": "deferred",
+          "reason": "Low-risk plan-sidebar state polish reserved for a client-polish intake."
+        },
+        {
+          "sha": "a483337a02d4ac641db0219517816c300a33be6b",
+          "classification": "deferred",
+          "reason": "Generic time-format correctness needs a small Cocoa SidebarV2 conflict adaptation."
+        },
+        {
+          "sha": "80720ad592dc68c29677444fd7b6abb97b82c03e",
+          "classification": "deferred",
+          "reason": "Update UX must first model Cocoa's administrator-managed lifecycle instead of suggesting T3 self-update."
+        },
+        {
+          "sha": "808d6853555c8b57f414a06e0a79eb1b9e192ef5",
+          "classification": "skipped",
+          "reason": "Managed tunnel retention is an explicit Cocoa non-goal."
+        },
+        {
+          "sha": "8f341f20c91e708de1dab949dbd723e86f2ff328",
+          "classification": "skipped",
+          "reason": "This test covers the skipped managed-tunnel launcher behavior."
+        },
+        {
+          "sha": "f9e8236899f25653ce95d688fac798cd070afbc1",
+          "classification": "skipped",
+          "reason": "Launcher stop markers and managed tunnel release are outside Cocoa's container lifecycle."
+        },
+        {
+          "sha": "df2f1273e9e1f1c6f342eecbf3539a5e992163e1",
+          "classification": "skipped",
+          "reason": "Update-trial cleanup coordinated with managed tunnel ownership is outside Cocoa's lifecycle."
+        },
+        {
+          "sha": "8b2ea5721a213c3e3e3bcab56eaea6fa0fa82714",
+          "classification": "skipped",
+          "reason": "Systemd and launcher shutdown ordering for managed tunnels is outside Cocoa's packaging."
+        },
+        {
+          "sha": "48e2c27f2fef10520512fcfc482d022477ed18ab",
+          "classification": "deferred",
+          "reason": "Accessible update tooltips belong with a future administrator-managed Cocoa update UX."
+        },
+        {
+          "sha": "64a3cd6d7daab21f6bfbc00faf0104b6fd361267",
+          "classification": "skipped",
+          "reason": "Update-trial cleanup and managed tunnel handoff retention are outside Cocoa's lifecycle."
+        },
+        {
+          "sha": "b7d1981b57f1c30908808d1939fd4edbc781de12",
+          "classification": "deferred",
+          "reason": "High-value superseded-tool snapshot compaction selected to follow the MCP payload intake."
+        },
+        {
+          "sha": "e4abc31f1e3f930e521a5bb62b38a9c5b28d8fb1",
+          "classification": "deferred",
+          "reason": "The snapshot/live divergence rationale and test must accompany the selected compaction change."
+        }
+      ]
+    }
+  ]
+}
