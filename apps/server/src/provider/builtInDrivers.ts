@@ -39,6 +39,9 @@ export type BuiltInDriversEnv =
   | GrokDriverEnv
   | OpenCodeDriverEnv;
 
+/** Infrastructure required by the endpoint-only Cocoa provider catalog. */
+export type CocoaGatewayDriversEnv = CodexDriverEnv;
+
 /**
  * Ordered list of built-in drivers. Order matters only for tie-breaking in
  * UI presentation — the registry itself is keyed by `driverKind`, so
@@ -53,6 +56,6 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
 ];
 
 /** Remote-only driver catalog used by the explicit Cocoa gateway profile. */
-export const COCOA_GATEWAY_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
+export const COCOA_GATEWAY_DRIVERS: ReadonlyArray<AnyProviderDriver<CocoaGatewayDriversEnv>> = [
   CodexDriver,
 ];

@@ -58,7 +58,9 @@ import {
   BUILT_IN_DRIVERS,
   COCOA_GATEWAY_DRIVERS,
   type BuiltInDriversEnv,
+  type CocoaGatewayDriversEnv,
 } from "../builtInDrivers.ts";
+import type { AnyProviderDriver } from "../ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
 import { ProviderInstanceRegistryMutableLayer } from "./ProviderInstanceRegistryLive.ts";
@@ -166,33 +168,66 @@ const settingsWatcherLive = (runtimeProfile: ServerConfig.RuntimeProfile) =>
  * The mutator tag is technically also exposed; only this module imports
  * it, so the visibility leak is harmless in practice.
  */
+const makeProviderInstanceRegistryHydrationLive = <R>(
+  runtimeProfile: ServerConfig.RuntimeProfile,
+  drivers: ReadonlyArray<AnyProviderDriver<R>>,
+): Layer.Layer<
+  ProviderInstanceRegistry,
+  never,
+  R | ServerConfig.ServerConfig | ServerSettingsService
+> =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      yield* ServerConfig.ServerConfig;
+      const serverSettings = yield* ServerSettingsService;
+      const initialSettings: ServerSettings | undefined =
+        runtimeProfile === "cocoa-gateway"
+          ? yield* serverSettings.getSettings.pipe(Effect.orDie)
+          : yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => undefined));
+      const initialConfigMap =
+        initialSettings === undefined
+          ? ({} as ProviderInstanceConfigMap)
+          : yield* resolveProviderInstanceConfigMap(initialSettings, runtimeProfile).pipe(
+              Effect.orDie,
+            );
+
+      const mutableLayer = ProviderInstanceRegistryMutableLayer({
+        drivers,
+        configMap: initialConfigMap,
+      });
+
+      return settingsWatcherLive(runtimeProfile).pipe(Layer.provideMerge(mutableLayer));
+    }),
+  ) as Layer.Layer<
+    ProviderInstanceRegistry,
+    never,
+    R | ServerConfig.ServerConfig | ServerSettingsService
+  >;
+
+/** Endpoint-only registry hydration used by the Cocoa gateway profile. */
+export const CocoaProviderInstanceRegistryHydrationLive =
+  makeProviderInstanceRegistryHydrationLive<CocoaGatewayDriversEnv>(
+    "cocoa-gateway",
+    COCOA_GATEWAY_DRIVERS,
+  );
+
+/** Upstream-compatible registry hydration for the legacy runtime profile. */
+export const LegacyProviderInstanceRegistryHydrationLive =
+  makeProviderInstanceRegistryHydrationLive<BuiltInDriversEnv>("legacy", BUILT_IN_DRIVERS);
+
+/** Runtime-selected compatibility layer retained for callers outside server composition. */
 export const ProviderInstanceRegistryHydrationLive: Layer.Layer<
   ProviderInstanceRegistry,
   never,
   BuiltInDriversEnv | ServerConfig.ServerConfig | ServerSettingsService
 > = Layer.unwrap(
-  Effect.gen(function* () {
-    const config = yield* ServerConfig.ServerConfig;
-    const runtimeProfile = config.runtimeProfile ?? "legacy";
-    const serverSettings = yield* ServerSettingsService;
-    const initialSettings: ServerSettings | undefined =
-      runtimeProfile === "cocoa-gateway"
-        ? yield* serverSettings.getSettings.pipe(Effect.orDie)
-        : yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => undefined));
-    const initialConfigMap =
-      initialSettings === undefined
-        ? ({} as ProviderInstanceConfigMap)
-        : yield* resolveProviderInstanceConfigMap(initialSettings, runtimeProfile).pipe(
-            Effect.orDie,
-          );
-
-    const mutableLayer = ProviderInstanceRegistryMutableLayer({
-      drivers: runtimeProfile === "cocoa-gateway" ? COCOA_GATEWAY_DRIVERS : BUILT_IN_DRIVERS,
-      configMap: initialConfigMap,
-    });
-
-    return settingsWatcherLive(runtimeProfile).pipe(Layer.provideMerge(mutableLayer));
-  }),
+  ServerConfig.ServerConfig.pipe(
+    Effect.map((config) =>
+      config.runtimeProfile === "cocoa-gateway"
+        ? CocoaProviderInstanceRegistryHydrationLive
+        : LegacyProviderInstanceRegistryHydrationLive,
+    ),
+  ),
 ) as Layer.Layer<
   ProviderInstanceRegistry,
   never,

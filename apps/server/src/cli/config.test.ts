@@ -206,6 +206,46 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     }),
   );
 
+  it.effect("forces cwd project bootstrap off for the Cocoa gateway profile", () =>
+    Effect.gen(function* () {
+      const { join } = yield* Path.Path;
+      const baseDir = join(NodeOS.tmpdir(), "cocoa-cli-config-no-cwd-bootstrap");
+      const resolved = yield* resolveServerConfig(
+        {
+          runtimeProfile: Option.some("cocoa-gateway"),
+          mode: Option.some("web"),
+          port: Option.some(8788),
+          host: Option.none(),
+          baseDir: Option.some(baseDir),
+          cwd: Option.none(),
+          devUrl: Option.none(),
+          noBrowser: Option.none(),
+          bootstrapFd: Option.none(),
+          autoBootstrapProjectFromCwd: Option.some(true),
+          logWebSocketEvents: Option.none(),
+          tailscaleServeEnabled: Option.none(),
+          tailscaleServePort: Option.none(),
+        },
+        Option.none(),
+        { forceAutoBootstrapProjectFromCwd: true },
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({
+                env: { T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "true" },
+              }),
+            ),
+            NetService.layer,
+          ),
+        ),
+      );
+
+      assert.equal(resolved.runtimeProfile, "cocoa-gateway");
+      assert.equal(resolved.autoBootstrapProjectFromCwd, false);
+    }),
+  );
+
   it.effect("preserves explicit false CLI boolean flags over env and bootstrap values", () =>
     Effect.gen(function* () {
       const { join } = yield* Path.Path;

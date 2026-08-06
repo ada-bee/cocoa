@@ -87,6 +87,14 @@
           message = "gateway image must listen on every container interface";
         }
         {
+          assertion = builtins.elem "T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false" imageConfig.Env;
+          message = "gateway image must never bootstrap a provider project from its local cwd";
+        }
+        {
+          assertion = lib.hasInfix ''T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false"'' composeText;
+          message = "gateway compose deployment must disable local cwd project bootstrap";
+        }
+        {
           assertion =
             imageConfig.Healthcheck.Test == [
               "CMD"

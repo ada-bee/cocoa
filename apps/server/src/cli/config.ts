@@ -329,15 +329,18 @@ export const resolveServerConfig = (
     const desktopTelemetryFd = bootstrap?.desktopTelemetryFd;
     const desktopTelemetryControlFd = bootstrap?.desktopTelemetryControlFd;
     const resourceMonitorPath = bootstrap?.resourceMonitorPath;
-    const autoBootstrapProjectFromCwd = Option.getOrElse(
-      resolveOptionPrecedence(
-        Option.fromUndefinedOr(options?.forceAutoBootstrapProjectFromCwd),
-        isHeadlessStartup ? Option.some(false) : Option.none(),
-        normalizedFlags.autoBootstrapProjectFromCwd,
-        Option.fromUndefinedOr(env.autoBootstrapProjectFromCwd),
-      ),
-      () => mode === "web",
-    );
+    const autoBootstrapProjectFromCwd =
+      runtimeProfile === "cocoa-gateway"
+        ? false
+        : Option.getOrElse(
+            resolveOptionPrecedence(
+              Option.fromUndefinedOr(options?.forceAutoBootstrapProjectFromCwd),
+              isHeadlessStartup ? Option.some(false) : Option.none(),
+              normalizedFlags.autoBootstrapProjectFromCwd,
+              Option.fromUndefinedOr(env.autoBootstrapProjectFromCwd),
+            ),
+            () => mode === "web",
+          );
     const logWebSocketEvents = Option.getOrElse(
       resolveOptionPrecedence(
         normalizedFlags.logWebSocketEvents,

@@ -3,6 +3,7 @@ import {
   EnvironmentHttpApi,
   EnvironmentMetadataHttpApi,
   EnvironmentOrchestrationHttpApi,
+  ServerSelfUpdateError,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
@@ -32,6 +33,10 @@ import { cocoaClientV1WebSocketRouteLayer } from "./clientApi/v1/Route.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
+import {
+  CocoaExternalLauncherLayerLive,
+  CocoaUnavailableDiagnosticsLayerLive,
+} from "./cocoa/CocoaGatewayRuntimeStubs.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { ProviderCheckpointOperationRepositoryLive } from "./persistence/Layers/ProviderCheckpointOperations.ts";
 import { ProjectionCheckpointRepositoryLive } from "./persistence/Layers/ProjectionCheckpoints.ts";
@@ -56,7 +61,10 @@ import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
 import * as GitLabCli from "./sourceControl/GitLabCli.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
-import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
+import {
+  CocoaProviderInstanceRegistryHydrationLive,
+  LegacyProviderInstanceRegistryHydrationLive,
+} from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
@@ -228,7 +236,10 @@ const PlatformServicesLive = Layer.unwrap(
   }),
 );
 
-const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<ROut, E, RIn>) => {
+const makeReactorLayer = <ROut, E, RIn, EProject, RProject>(
+  orchestrationReactorLayer: Layer.Layer<ROut, E, RIn>,
+  projectRepositoryLayer: Layer.Layer<ProjectRepository.ProjectRepository, EProject, RProject>,
+) => {
   const turnDispatchJournalLayer = TurnDispatchJournalRepositoryLive;
   const postTurnCheckpointIntentLayer = PostTurnCheckpointIntentRepositoryLive;
   const checkpointRevertIntentLayer = CheckpointRevertIntentRepositoryLive;
@@ -238,7 +249,7 @@ const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<R
     Layer.provide(PersistenceLayerLive),
   );
   const checkpointCoordinatorLayer = CheckpointCoordinatorLive.pipe(
-    Layer.provide(ProjectRepositoryLayerLive),
+    Layer.provide(projectRepositoryLayer),
     Layer.provide(OrchestrationLayerLive),
     Layer.provide(providerCheckpointOperationLayer),
   );
@@ -251,13 +262,13 @@ const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<R
     Layer.provide(checkpointRevertGateLayer),
   );
   const postTurnCheckpointReactorLayer = PostTurnCheckpointReactorLive.pipe(
-    Layer.provide(ProjectRepositoryLayerLive),
+    Layer.provide(projectRepositoryLayer),
     Layer.provide(turnDispatchJournalLayer),
     Layer.provide(postTurnCheckpointIntentLayer),
     Layer.provide(providerCheckpointOperationLayer),
   );
   const checkpointRevertReactorLayer = CheckpointRevertReactorLive.pipe(
-    Layer.provide(ProjectRepositoryLayerLive),
+    Layer.provide(projectRepositoryLayer),
     Layer.provide(OrchestrationLayerLive),
     Layer.provide(providerCheckpointOperationLayer),
     Layer.provide(projectionCheckpointLayer),
@@ -291,16 +302,6 @@ const makeReactorLayer = <ROut, E, RIn>(orchestrationReactorLayer: Layer.Layer<R
 
 const LegacyOrchestrationReactorLive = OrchestrationReactorLive.pipe(
   Layer.provide(AgentAwarenessRelay.layer.pipe(Layer.provide(ServerSecretStore.layer))),
-);
-
-const ReactorLayerLive = Layer.unwrap(
-  ServerConfig.ServerConfig.pipe(
-    Effect.map((config) =>
-      config.runtimeProfile === "cocoa-gateway"
-        ? makeReactorLayer(CoreOrchestrationReactorLive)
-        : makeReactorLayer(LegacyOrchestrationReactorLive),
-    ),
-  ),
 );
 
 const ProviderSessionDirectoryLayerLive = ProviderSessionDirectoryLive.pipe(
@@ -360,10 +361,22 @@ const ReviewLayerLive = ReviewService.layer.pipe(
 );
 
 const ProjectRepositoryLayerLive = ProjectRepository.layer.pipe(
-  Layer.provide(ProviderInstanceRegistryHydrationLive),
+  Layer.provide(LegacyProviderInstanceRegistryHydrationLive),
   Layer.provide(OrchestrationLayerLive),
-  Layer.provide(ProviderEventLoggers.layer),
-  Layer.provide(OpenCodeRuntime.OpenCodeRuntimeLive),
+);
+
+const CocoaProjectRepositoryLayerLive = ProjectRepository.layer.pipe(
+  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
+  Layer.provide(OrchestrationLayerLive),
+);
+
+const LegacyReactorLayerLive = makeReactorLayer(
+  LegacyOrchestrationReactorLive,
+  ProjectRepositoryLayerLive,
+);
+const CocoaReactorLayerLive = makeReactorLayer(
+  CoreOrchestrationReactorLive,
+  CocoaProjectRepositoryLayerLive,
 );
 
 const RepositoryReadLayerLive = RepositoryReadService.layer.pipe(
@@ -402,13 +415,20 @@ const CheckpointingLayerLive = Layer.empty.pipe(
 const PortScannerLayerLive = PortScanner.layer.pipe(Layer.provide(ProcessRunner.layer));
 
 const ProjectTerminalLayerLive = ProjectTerminal.layer.pipe(
-  Layer.provide(ProviderInstanceRegistryHydrationLive),
+  Layer.provide(LegacyProviderInstanceRegistryHydrationLive),
   Layer.provide(OrchestrationLayerLive),
-  Layer.provide(ProviderEventLoggers.layer),
-  Layer.provide(OpenCodeRuntime.OpenCodeRuntimeLive),
+);
+
+const CocoaProjectTerminalLayerLive = ProjectTerminal.layer.pipe(
+  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
+  Layer.provide(OrchestrationLayerLive),
 );
 
 const TerminalLayerLive = TerminalManager.layer.pipe(Layer.provide(ProjectTerminalLayerLive));
+
+const CocoaTerminalLayerLive = TerminalManager.layer.pipe(
+  Layer.provide(CocoaProjectTerminalLayerLive),
+);
 
 const PreviewLayerLive = Layer.empty.pipe(
   Layer.provideMerge(PreviewManager.layer),
@@ -420,16 +440,21 @@ const WorkspaceEntriesLayerLive = WorkspaceEntries.layer.pipe(Layer.provide(Work
 const WorkspaceLayerLive = Layer.mergeAll(WorkspacePaths.layer, WorkspaceEntriesLayerLive);
 
 const ProjectWorkspaceLayerLive = ProjectWorkspace.layer.pipe(
-  Layer.provide(ProviderInstanceRegistryHydrationLive),
+  Layer.provide(LegacyProviderInstanceRegistryHydrationLive),
   Layer.provide(OrchestrationLayerLive),
-  Layer.provide(ProviderEventLoggers.layer),
-  Layer.provide(OpenCodeRuntime.OpenCodeRuntimeLive),
+);
+
+const CocoaProjectWorkspaceLayerLive = ProjectWorkspace.layer.pipe(
+  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
+  Layer.provide(OrchestrationLayerLive),
 );
 
 const ProviderFilesystemBrowseLayerLive = ProviderFilesystemBrowse.layer.pipe(
-  Layer.provide(ProviderInstanceRegistryHydrationLive),
-  Layer.provide(ProviderEventLoggers.layer),
-  Layer.provide(OpenCodeRuntime.OpenCodeRuntimeLive),
+  Layer.provide(LegacyProviderInstanceRegistryHydrationLive),
+);
+
+const CocoaProviderFilesystemBrowseLayerLive = ProviderFilesystemBrowse.layer.pipe(
+  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
 );
 
 const WorkspaceAccessLayerLive = Layer.mergeAll(
@@ -438,10 +463,20 @@ const WorkspaceAccessLayerLive = Layer.mergeAll(
   ProviderFilesystemBrowseLayerLive,
 );
 
+const CocoaWorkspaceAccessLayerLive = Layer.mergeAll(
+  CocoaProjectWorkspaceLayerLive,
+  CocoaProviderFilesystemBrowseLayerLive,
+);
+
 const ProjectFaviconResolverLayerLive = ProjectFaviconResolver.layer.pipe(
   Layer.provide(WorkspacePaths.layer),
   Layer.provide(T3ProjectFileLoader.layer),
 );
+
+// The default favicon resolver is deliberately gateway-safe: it returns no
+// provider-workspace match. The local discovery dependencies above remain a
+// legacy-only composition detail.
+const CocoaProjectFaviconResolverLayerLive = ProjectFaviconResolver.layer;
 
 const AuthLayerLive = EnvironmentAuth.layer.pipe(
   Layer.provideMerge(PersistenceLayerLive),
@@ -469,7 +504,7 @@ const ProviderRuntimeLayerLive = ProviderSessionReaperLive.pipe(
   Layer.provideMerge(OrchestrationLayerLive),
 );
 
-const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
+const LegacyRuntimeCoreDependenciesLive = LegacyReactorLayerLive.pipe(
   // Core Services
   Layer.provideMerge(ServerSettingsLayerLive),
   Layer.provideMerge(CheckpointingLayerLive),
@@ -486,7 +521,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // through this layer. Built-in drivers come from `BUILT_IN_DRIVERS`;
   // `providerInstances` hydration merges `settings.providers.<kind>`
   // with explicit `providerInstances` entries on boot.
-  Layer.provideMerge(ProviderInstanceRegistryHydrationLive),
+  Layer.provideMerge(LegacyProviderInstanceRegistryHydrationLive),
   // Shared native/canonical NDJSON writers used by both the per-instance
   // drivers (native stream, written from inside each `<X>Adapter`) and
   // `ProviderService` (canonical stream, written after event normalization).
@@ -507,6 +542,76 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   Layer.provideMerge(ServerSecretStore.layer),
 );
 
+/**
+ * Remote-only Cocoa runtime graph.
+ *
+ * Keep this list explicit. In particular, none of the legacy local workspace,
+ * Git/VCS process, PTY, port-scanner, hosted relay, or local Codex process
+ * layers belong here. Project-scoped operations are resolved through the
+ * provider-bound facades and the explicit endpoint registry.
+ */
+const CocoaRepositoryReadLayerLive = RepositoryReadService.layer.pipe(
+  Layer.provide(CocoaProjectRepositoryLayerLive),
+);
+
+const CocoaRepositoryStatusLayerLive = RepositoryStatusBroadcaster.layer.pipe(
+  Layer.provide(CocoaRepositoryReadLayerLive),
+);
+
+const CocoaCheckpointingLayerLive = CheckpointDiffQuery.layer.pipe(
+  Layer.provide(CocoaProjectRepositoryLayerLive),
+  Layer.provide(OrchestrationLayerLive),
+  Layer.provide(
+    ProviderCheckpointOperationRepositoryLive.pipe(Layer.provide(PersistenceLayerLive)),
+  ),
+);
+
+const CocoaTextGenerationLayerLive = TextGeneration.layer.pipe(
+  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
+);
+
+const CocoaProjectSetupScriptRunnerLayerLive = ProjectSetupScriptRunner.layer.pipe(
+  Layer.provide(CocoaTerminalLayerLive),
+  Layer.provide(OrchestrationLayerLive),
+);
+
+const CocoaBackgroundLayerLive = BackgroundPolicy.layer.pipe(
+  Layer.provide(Layer.effect(HostPowerMonitor.HostPowerMonitor, HostPowerMonitor.make())),
+  Layer.provide(ServerSettingsLayerLive),
+);
+
+const CocoaServerEnvironmentLayerLive = ServerEnvironment.cocoaGatewayLayer;
+
+const CocoaRuntimeBaseDependenciesLive = CocoaReactorLayerLive.pipe(
+  Layer.provideMerge(ServerSettingsLayerLive),
+  Layer.provideMerge(CocoaCheckpointingLayerLive),
+  Layer.provideMerge(ProviderRuntimeLayerLive),
+  Layer.provideMerge(PersistenceLayerLive),
+  Layer.provideMerge(Keybindings.layer),
+  Layer.provideMerge(ProviderRegistryLive),
+  Layer.provideMerge(CocoaProviderInstanceRegistryHydrationLive),
+  Layer.provideMerge(ProviderEventLoggers.layer),
+  Layer.provideMerge(CocoaWorkspaceAccessLayerLive),
+  Layer.provideMerge(CocoaProjectRepositoryLayerLive),
+  Layer.provideMerge(CocoaRepositoryReadLayerLive),
+  Layer.provideMerge(CocoaRepositoryStatusLayerLive),
+  Layer.provideMerge(CocoaProjectTerminalLayerLive),
+  Layer.provideMerge(CocoaTerminalLayerLive),
+  Layer.provideMerge(CocoaProjectSetupScriptRunnerLayerLive),
+  Layer.provideMerge(PreviewManager.layer),
+);
+
+const CocoaRuntimeCoreDependenciesLive = CocoaRuntimeBaseDependenciesLive.pipe(
+  Layer.provideMerge(CocoaProjectFaviconResolverLayerLive),
+  Layer.provideMerge(CocoaTextGenerationLayerLive),
+  Layer.provideMerge(CocoaServerEnvironmentLayerLive),
+  Layer.provideMerge(AuthLayerLive),
+  Layer.provideMerge(ServerSecretStore.layer),
+  Layer.provideMerge(CocoaBackgroundLayerLive),
+  Layer.provideMerge(CocoaExternalLauncherLayerLive),
+  Layer.provideMerge(CocoaUnavailableDiagnosticsLayerLive),
+);
+
 const AnalyticsLayerLive = Layer.unwrap(
   ServerConfig.ServerConfig.pipe(
     Effect.map((config) =>
@@ -517,7 +622,7 @@ const AnalyticsLayerLive = Layer.unwrap(
   ),
 );
 
-const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
+const LegacyRuntimeDependenciesLive = LegacyRuntimeCoreDependenciesLive.pipe(
   // Misc.
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),
@@ -526,6 +631,51 @@ const RuntimeDependenciesLive = RuntimeCoreDependenciesLive.pipe(
   Layer.provideMerge(ExternalLauncher.layer),
   Layer.provideMerge(ServerLifecycleEvents.layer),
   Layer.provide(NetService.layer),
+  Layer.provide(OpenCodeRuntime.OpenCodeRuntimeLive),
+  Layer.provide(ProviderEventLoggers.layer),
+  Layer.provide(ServerSettingsLayerLive),
+);
+
+const LegacyRuntimeDependenciesWithVcsLive = LegacyRuntimeDependenciesLive.pipe(
+  Layer.provideMerge(VcsProcess.layer),
+);
+
+const CocoaRuntimeDependenciesLive = CocoaRuntimeCoreDependenciesLive.pipe(
+  Layer.provideMerge(TraceDiagnostics.layer),
+  Layer.provideMerge(AnalyticsLayerLive),
+  Layer.provideMerge(ServerLifecycleEvents.layer),
+  Layer.provide(NetService.layer),
+  Layer.provide(ProviderEventLoggers.layer),
+  Layer.provide(ServerSettingsLayerLive),
+);
+
+type RuntimeDependenciesLayer = Layer.Layer<
+  | Layer.Success<typeof CocoaRuntimeDependenciesLive>
+  | Layer.Success<typeof LegacyRuntimeDependenciesWithVcsLive>,
+  | Layer.Error<typeof CocoaRuntimeDependenciesLive>
+  | Layer.Error<typeof LegacyRuntimeDependenciesWithVcsLive>,
+  | Layer.Services<typeof CocoaRuntimeDependenciesLive>
+  | Layer.Services<typeof LegacyRuntimeDependenciesWithVcsLive>
+>;
+
+const ServerSelfUpdateLayerLive = Layer.unwrap(
+  ServerConfig.ServerConfig.pipe(
+    Effect.map((config) =>
+      config.runtimeProfile === "cocoa-gateway"
+        ? Layer.succeed(
+            ServerSelfUpdate.ServerSelfUpdate,
+            ServerSelfUpdate.ServerSelfUpdate.of({
+              update: () =>
+                Effect.fail(
+                  new ServerSelfUpdateError({
+                    reason: "Cocoa gateway updates are administrator-managed.",
+                  }),
+                ),
+            }),
+          )
+        : ServerSelfUpdate.layer,
+    ),
+  ),
 );
 
 const commandReadinessLayer = HttpRouter.middleware()(
@@ -580,7 +730,7 @@ const commandReadyRoutesLayer = Layer.mergeAll(
   McpHttpServer.layer.pipe(Layer.provide(McpSessionRegistry.layer)),
 ).pipe(
   Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(ServerSelfUpdate.layer),
+  Layer.provide(ServerSelfUpdateLayerLive),
   Layer.provide(commandReadinessLayer),
 );
 
@@ -592,6 +742,11 @@ export const makeRoutesLayer = Layer.mergeAll(
 export const makeServerLayer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
+    const runtimeDependenciesLive = (
+      config.runtimeProfile === "cocoa-gateway"
+        ? CocoaRuntimeDependenciesLive
+        : LegacyRuntimeDependenciesWithVcsLive
+    ) as RuntimeDependenciesLayer;
     const activation = yield* Deferred.make<void>();
     const awaitActivation = Deferred.await(activation);
     const activationLayer = Layer.succeed(ServerActivation, awaitActivation);
@@ -601,7 +756,9 @@ export const makeServerLayer = Layer.unwrap(
     const routesReady = yield* Deferred.make<void>();
     const launcherLayer = ServiceLauncherClient.layer;
 
-    yield* fixPath();
+    if (config.runtimeProfile !== "cocoa-gateway") {
+      yield* fixPath();
+    }
 
     const httpListeningLayer = Layer.effectDiscard(
       Effect.gen(function* () {
@@ -770,7 +927,7 @@ export const makeServerLayer = Layer.unwrap(
         ],
         { concurrency: "unbounded" },
       ).pipe(Effect.asVoid),
-    }).pipe(Layer.provideMerge(RuntimeDependenciesLive), Layer.provide(launcherLayer));
+    }).pipe(Layer.provideMerge(runtimeDependenciesLive), Layer.provide(launcherLayer));
 
     const routesLayer = HttpRouter.serve(makeRoutesLayer.pipe(Layer.provide(launcherLayer)), {
       disableLogger: !config.logWebSocketEvents,
@@ -784,7 +941,6 @@ export const makeServerLayer = Layer.unwrap(
     );
 
     const relayTracingLayer = legacyFleetFeatures ? serverRelayBrokerTracingLayer : Layer.empty;
-
     return serverApplicationLayer.pipe(
       Layer.provideMerge(runtimeServicesLive),
       Layer.provide(activationLayer),
@@ -794,7 +950,6 @@ export const makeServerLayer = Layer.unwrap(
       Layer.provide(ApplicationObservabilityLive),
       Layer.provide(hostedRuntimeLayer),
       Layer.provideMerge(FetchHttpClient.layer),
-      Layer.provideMerge(VcsProcess.layer),
       Layer.provideMerge(PlatformServicesLive),
     );
   }),

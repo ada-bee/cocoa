@@ -188,9 +188,13 @@ export const resolveWelcomeBase = Effect.gen(function* () {
 });
 
 export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
+  const serverConfig = yield* ServerConfig.ServerConfig;
+  if (serverConfig.runtimeProfile === "cocoa-gateway") {
+    return {};
+  }
+
   const crypto = yield* Crypto.Crypto;
   const randomUUID = crypto.randomUUIDv4;
-  const serverConfig = yield* ServerConfig.ServerConfig;
   const projectionReadModelQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
   const path = yield* Path.Path;

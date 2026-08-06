@@ -44,6 +44,7 @@ let
       "T3CODE_HOST=0.0.0.0"
       "T3CODE_PORT=7331"
       "T3CODE_HOME=/data"
+      "T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false"
       "T3CODE_NO_BROWSER=true"
     ];
     ExposedPorts."7331/tcp" = { };

@@ -1,5 +1,9 @@
 import { EnvironmentId, type ExecutionEnvironmentDescriptor } from "@t3tools/contracts";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import {
+  HostProcessArchitecture,
+  HostProcessHostname,
+  HostProcessPlatform,
+} from "@t3tools/shared/hostProcess";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -62,13 +66,10 @@ function platformArch(
   }
 }
 
-export const make = Effect.gen(function* () {
+const loadOrCreateEnvironmentId = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig.ServerConfig;
   const crypto = yield* Crypto.Crypto;
-  const hostPlatform = yield* HostProcessPlatform;
-  const hostArchitecture = yield* HostProcessArchitecture;
 
   const readPersistedEnvironmentId = Effect.gen(function* () {
     const exists = yield* fileSystem.exists(serverConfig.environmentIdPath).pipe(
@@ -123,7 +124,16 @@ export const make = Effect.gen(function* () {
     return generated;
   });
 
-  const environmentId = EnvironmentId.make(environmentIdRaw);
+  return EnvironmentId.make(environmentIdRaw);
+});
+
+export const make = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const serverConfig = yield* ServerConfig.ServerConfig;
+  const hostPlatform = yield* HostProcessPlatform;
+  const hostArchitecture = yield* HostProcessArchitecture;
+
+  const environmentId = yield* loadOrCreateEnvironmentId;
   const cwdBaseName = path.basename(serverConfig.cwd).trim();
   const label = yield* resolveServerEnvironmentLabel({ cwdBaseName });
   const launcher = yield* resolveServiceLauncherMode();
@@ -156,6 +166,45 @@ export const make = Effect.gen(function* () {
     getDescriptor: Effect.succeed(descriptor),
   });
 });
+
+/**
+ * Cocoa gateway environment metadata.
+ *
+ * The gateway still owns its durable environment identity, but its label and
+ * capabilities must not require host command probes or advertise local
+ * repository/update behavior. Provider-host details are exposed separately by
+ * the configured provider instances.
+ */
+export const makeCocoaGateway = Effect.gen(function* () {
+  const hostPlatform = yield* HostProcessPlatform;
+  const hostArchitecture = yield* HostProcessArchitecture;
+  const hostName = (yield* HostProcessHostname).trim();
+  const environmentId = yield* loadOrCreateEnvironmentId;
+
+  const descriptor: ExecutionEnvironmentDescriptor = {
+    environmentId,
+    label: hostName.length > 0 ? hostName : "Cocoa Gateway",
+    platform: {
+      os: platformOs(hostPlatform),
+      arch: platformArch(hostArchitecture),
+    },
+    serverVersion: packageJson.version,
+    capabilities: {
+      repositoryIdentity: false,
+      connectionProbe: true,
+      threadSettlement: true,
+      threadSnooze: true,
+      threadTitleRegeneration: true,
+    },
+  };
+
+  return ServerEnvironment.of({
+    getEnvironmentId: Effect.succeed(descriptor.environmentId),
+    getDescriptor: Effect.succeed(descriptor),
+  });
+});
+
+export const cocoaGatewayLayer = Layer.effect(ServerEnvironment, makeCocoaGateway);
 
 /**
  * ServerEnvironment is acquired from persisted filesystem and host-process

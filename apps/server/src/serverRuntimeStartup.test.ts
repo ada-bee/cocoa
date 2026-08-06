@@ -182,6 +182,27 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
   });
 });
 
+it.effect("resolveAutoBootstrapWelcomeTargets ignores injected cwd bootstrap in Cocoa", () =>
+  Effect.gen(function* () {
+    const targets = yield* ServerRuntimeStartup.resolveAutoBootstrapWelcomeTargets.pipe(
+      Effect.provideService(ServerConfig.ServerConfig, {
+        runtimeProfile: "cocoa-gateway",
+        cwd: "/gateway/data",
+        autoBootstrapProjectFromCwd: true,
+      } as never),
+      Effect.provideService(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
+        getActiveProjectByWorkspaceRoot: () => Effect.die("must not inspect gateway cwd"),
+      } as never),
+      Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
+        dispatch: () => Effect.die("must not create a gateway-local project"),
+      } as never),
+      Effect.provide(NodeServices.layer),
+    );
+
+    assert.deepStrictEqual(targets, {});
+  }),
+);
+
 it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when missing", () =>
   Effect.gen(function* () {
     const dispatchCalls = yield* Ref.make<ReadonlyArray<string>>([]);

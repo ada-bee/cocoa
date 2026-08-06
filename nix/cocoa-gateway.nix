@@ -71,6 +71,7 @@ stdenv.mkDerivation (finalAttrs: {
       --set-default T3CODE_HOST 0.0.0.0 \
       --set-default T3CODE_PORT 7331 \
       --set-default T3CODE_HOME /data \
+      --set-default T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD false \
       --set-default T3CODE_NO_BROWSER true
 
     runHook postInstall
