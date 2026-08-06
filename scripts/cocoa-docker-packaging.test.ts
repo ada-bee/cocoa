@@ -45,6 +45,11 @@ describe("Cocoa Docker packaging policy", () => {
     expect(compose).toContain("COCOA_GATEWAY_IMAGE_REFERENCE");
     expect(compose).not.toContain("cocoa-gateway:latest");
     expect(compose).not.toContain("/var/run/docker.sock");
+
+    const verifier = readRootFile("deploy/raspberry-pi/verify-image.sh");
+    expect(verifier).toContain("forbidden provider-host or build executable");
+    expect(verifier).toContain("node-compatibility-target /usr/local/bin/bun");
+    expect(verifier).toContain("runtime credential material found in gateway image");
   });
 
   it("keeps credentials, local state, and build products out of the context", () => {

@@ -59,8 +59,13 @@ trap cleanup EXIT HUP INT TERM
 container_id=$(docker create --platform linux/arm64 "$image_reference")
 docker export "$container_id" | tar -tf - > "$scratch/image-files.txt"
 
-if grep -E '(^|/)(codex|git|node(js)?|python[0-9.]*|cocoa-workspace-helper)$' \
-  "$scratch/image-files.txt"; then
+forbidden_executables=$(grep -E '(^|/)(codex|git|node(js)?|python[0-9.]*|cocoa-workspace-helper)$' \
+  "$scratch/image-files.txt" \
+  | grep -Ev '(^|/)node_modules/' \
+  | grep -Fvx 'usr/local/bun-node-fallback-bin/node' \
+  || true)
+if [ -n "$forbidden_executables" ]; then
+  printf '%s\n' "$forbidden_executables"
   echo 'forbidden provider-host or build executable found in gateway image' >&2
   exit 1
 fi
@@ -76,6 +81,12 @@ if grep -E '(^|/)(auth\.json|credentials\.json|cocoa_ssh_identity|id_(rsa|ed2551
   echo 'runtime credential material found in gateway image' >&2
   exit 1
 fi
+
+node_compatibility_target=$(docker run --rm --read-only --platform linux/arm64 \
+  --entrypoint /bin/sh \
+  "$image_reference" \
+  -c 'readlink -f "$(command -v node)"')
+assert_equal node-compatibility-target /usr/local/bin/bun "$node_compatibility_target"
 
 help=$(docker run --rm --read-only --platform linux/arm64 \
   --entrypoint bun \
