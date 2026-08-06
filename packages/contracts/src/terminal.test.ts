@@ -11,6 +11,7 @@ import {
   TerminalOpenInput,
   TerminalResizeInput,
   TerminalSessionSnapshot,
+  TerminalSubscriptionOverflowError,
   TerminalThreadInput,
   TerminalWriteInput,
 } from "./terminal.ts";
@@ -210,7 +211,7 @@ describe("TerminalCloseInput", () => {
   });
 });
 
-describe("TerminalError", () => {
+describe("terminal errors", () => {
   it("accepts sanitized provider failures without a gateway pid or remote path", () => {
     const parsed = decodeSync(TerminalError, {
       _tag: "TerminalProviderError",
@@ -222,6 +223,20 @@ describe("TerminalError", () => {
     expect(parsed._tag).toBe("TerminalProviderError");
     expect("terminalPid" in parsed).toBe(false);
     expect("cwd" in parsed).toBe(false);
+  });
+
+  it("accepts a typed reset-required terminal subscription overflow", () => {
+    const parsed = decodeSync(TerminalSubscriptionOverflowError, {
+      _tag: "TerminalSubscriptionOverflowError",
+      subscription: "attach",
+      code: "reset_required",
+      retryable: true,
+    });
+
+    expect(parsed).toBeInstanceOf(TerminalSubscriptionOverflowError);
+    expect(parsed.message).toBe(
+      "The terminal attach buffer overflowed. Reconnect to load a fresh snapshot.",
+    );
   });
 });
 

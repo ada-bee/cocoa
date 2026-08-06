@@ -376,6 +376,27 @@ export class TerminalProviderError extends Schema.TaggedErrorClass<TerminalProvi
   }
 }
 
+export const TerminalSubscriptionKind = Schema.Literals(["attach", "events", "metadata"]);
+export type TerminalSubscriptionKind = typeof TerminalSubscriptionKind.Type;
+
+/**
+ * A client-specific terminal tail fell behind its bounded gateway buffer.
+ * Reconnecting is safe: attach and metadata subscriptions begin with an
+ * authoritative snapshot, while the aggregate event tail is ephemeral.
+ */
+export class TerminalSubscriptionOverflowError extends Schema.TaggedErrorClass<TerminalSubscriptionOverflowError>()(
+  "TerminalSubscriptionOverflowError",
+  {
+    subscription: TerminalSubscriptionKind,
+    code: Schema.Literal("reset_required"),
+    retryable: Schema.Literal(true),
+  },
+) {
+  override get message() {
+    return `The terminal ${this.subscription} buffer overflowed. Reconnect to load a fresh snapshot.`;
+  }
+}
+
 export const TerminalError = Schema.Union([
   TerminalCwdError,
   TerminalHistoryError,

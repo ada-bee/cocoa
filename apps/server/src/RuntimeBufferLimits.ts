@@ -26,6 +26,10 @@ import * as Context from "effect/Context";
  * - `clientLiveEvents`: shared event stream -> one client subscription. Offers
  *   never block internal delivery; overflow terminates the client tail with a
  *   sanitized reset-required error so it can reconnect from a fresh snapshot.
+ * - `terminalClientEvents`: provider-owned terminal stream -> one client
+ *   subscription. Offers never block provider ingestion or other clients;
+ *   overflow drains the already admitted events in order, then terminates that
+ *   client tail with a typed reset-required error.
  */
 export interface RuntimeBufferLimits {
   readonly codexSessionNotifications: number;
@@ -34,6 +38,7 @@ export interface RuntimeBufferLimits {
   readonly orchestrationCommands: number;
   readonly orchestrationEvents: number;
   readonly clientLiveEvents: number;
+  readonly terminalClientEvents: number;
 }
 
 export const DEFAULT_RUNTIME_BUFFER_LIMITS = {
@@ -43,6 +48,7 @@ export const DEFAULT_RUNTIME_BUFFER_LIMITS = {
   orchestrationCommands: 256,
   orchestrationEvents: 1_024,
   clientLiveEvents: 256,
+  terminalClientEvents: 256,
 } as const satisfies RuntimeBufferLimits;
 
 export type RuntimeBufferLimitOverrides = Partial<RuntimeBufferLimits>;

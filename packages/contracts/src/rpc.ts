@@ -94,6 +94,7 @@ import {
   TerminalClearInput,
   TerminalCloseInput,
   TerminalError,
+  TerminalSubscriptionOverflowError,
   TerminalEvent,
   TerminalMetadataStreamEvent,
   TerminalOpenInput,
@@ -584,7 +585,11 @@ export const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {
 export const WsTerminalAttachRpc = Rpc.make(WS_METHODS.terminalAttach, {
   payload: TerminalAttachInput,
   success: TerminalAttachStreamEvent,
-  error: Schema.Union([TerminalError, EnvironmentAuthorizationError]),
+  error: Schema.Union([
+    TerminalError,
+    TerminalSubscriptionOverflowError,
+    EnvironmentAuthorizationError,
+  ]),
   stream: true,
 });
 
@@ -746,14 +751,14 @@ export const WsOrchestrationSubscribeThreadRpc = Rpc.make(
 export const WsSubscribeTerminalEventsRpc = Rpc.make(WS_METHODS.subscribeTerminalEvents, {
   payload: Schema.Struct({}),
   success: TerminalEvent,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([TerminalSubscriptionOverflowError, EnvironmentAuthorizationError]),
   stream: true,
 });
 
 export const WsSubscribeTerminalMetadataRpc = Rpc.make(WS_METHODS.subscribeTerminalMetadata, {
   payload: Schema.Struct({}),
   success: TerminalMetadataStreamEvent,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([TerminalSubscriptionOverflowError, EnvironmentAuthorizationError]),
   stream: true,
 });
 
