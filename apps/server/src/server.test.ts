@@ -4797,6 +4797,71 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("serves signed workspace previews from the owning provider", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly operation: string; readonly relativePath: string }> = [];
+      const snapshot = makeDefaultOrchestrationReadModel();
+      const project = snapshot.projects[0]!;
+      const thread = makeDefaultOrchestrationThreadShell();
+      yield* buildAppUnderTest({
+        layers: {
+          projectionSnapshotQuery: {
+            getProjectShellById: () => Effect.succeed(Option.some(project)),
+            getThreadShellById: () => Effect.succeed(Option.some(thread)),
+          },
+          projectWorkspace: {
+            getMetadata: (input) =>
+              Effect.sync(() => {
+                calls.push({ operation: "metadata", relativePath: input.relativePath });
+                return { kind: "file" as const, size: 4 };
+              }),
+            readFile: (input) =>
+              Effect.sync(() => {
+                calls.push({ operation: "read", relativePath: input.relativePath });
+                return {
+                  bytes: new Uint8Array([137, 80, 78, 71]),
+                  byteLength: 4,
+                  truncated: false,
+                };
+              }),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const signed = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[WS_METHODS.assetsCreateUrl]({
+            resource: {
+              _tag: "workspace-file",
+              threadId: defaultThreadId,
+              path: "screenshots/result.png",
+            },
+          }),
+        ),
+      );
+      const response = yield* fetchEffect(signed.relativeUrl);
+      const bytes = new Uint8Array(yield* response.arrayBuffer);
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers["content-type"], "image/png");
+      assert.include(response.headers["content-security-policy"] ?? "", "sandbox allow-scripts");
+      assert.include(response.headers["content-security-policy"] ?? "", "connect-src 'none'");
+      assert.include(response.headers["content-security-policy"] ?? "", "form-action 'none'");
+      assert.equal(response.headers["content-disposition"], "inline");
+      assert.equal(response.headers["cross-origin-embedder-policy"], "credentialless");
+      assert.equal(response.headers["cross-origin-opener-policy"], "same-origin");
+      assert.equal(response.headers["referrer-policy"], "no-referrer");
+      assert.equal(response.headers["x-content-type-options"], "nosniff");
+      assert.equal(response.headers["x-frame-options"], "SAMEORIGIN");
+      assert.deepEqual(bytes, new Uint8Array([137, 80, 78, 71]));
+      assert.deepEqual(calls, [
+        { operation: "metadata", relativePath: "screenshots/result.png" },
+        { operation: "read", relativePath: "screenshots/result.png" },
+      ]);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("reports project search RPCs as unsupported without local fallback", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

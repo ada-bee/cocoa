@@ -1355,7 +1355,7 @@ function ChatMarkdown({
       }
       return openFileInPreview({
         threadRef,
-        filePath: path,
+        relativePath: path,
         httpBaseUrl: preparedConnection.value.httpBaseUrl,
         createAssetUrl,
         openPreview,
@@ -1396,8 +1396,9 @@ function ChatMarkdown({
           onOpenInBrowser={
             threadRef &&
             isPreviewSupportedInRuntime() &&
-            isBrowserPreviewFile(fileLinkMeta.filePath)
-              ? () => openMarkdownFileInPreview(fileLinkMeta.filePath)
+            fileLinkMeta.workspaceRelativePath !== null &&
+            isBrowserPreviewFile(fileLinkMeta.workspaceRelativePath)
+              ? () => openMarkdownFileInPreview(fileLinkMeta.workspaceRelativePath!)
               : undefined
           }
           className={className}

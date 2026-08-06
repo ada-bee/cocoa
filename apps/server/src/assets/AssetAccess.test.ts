@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import { describe, expect, it } from "@effect/vitest";
 import * as Clock from "effect/Clock";
@@ -13,14 +13,24 @@ import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { base64UrlEncode, signPayload } from "../auth/utils.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
+import * as ProjectWorkspace from "../project/ProjectWorkspace.ts";
+import type { ProjectWorkspaceShape } from "../project/ProjectWorkspace.ts";
 import { ASSET_ROUTE_PREFIX, issueAssetUrl, resolveAsset } from "./AssetAccess.ts";
 
 const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3-asset-access-test-",
 });
+const unavailableProjectWorkspace = ProjectWorkspace.ProjectWorkspace.of({
+  validateRoot: () => Effect.die("unexpected validateRoot"),
+  getMetadata: () => Effect.die("unexpected getMetadata"),
+  listDirectory: () => Effect.die("unexpected listDirectory"),
+  listEntries: () => Effect.die("unexpected listEntries"),
+  readFile: () => Effect.die("unexpected readFile"),
+});
 const testLayer = Layer.mergeAll(
   configLayer,
   ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
+  Layer.succeed(ProjectWorkspace.ProjectWorkspace, unavailableProjectWorkspace),
 ).pipe(Layer.provideMerge(NodeServices.layer));
 const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
 
@@ -70,28 +80,47 @@ const makeExplodingPath = (path: Path.Path, onCall: () => void) =>
     }),
   );
 
+const makeProjectWorkspace = (
+  overrides: Pick<ProjectWorkspaceShape, "getMetadata" | "readFile">,
+): ProjectWorkspace.ProjectWorkspace["Service"] =>
+  ProjectWorkspace.ProjectWorkspace.of({
+    ...unavailableProjectWorkspace,
+    ...overrides,
+  });
+
 describe("AssetAccess", () => {
-  it.effect("fails workspace asset issuance closed without inspecting gateway paths", () =>
+  it.effect("serves a bounded binary workspace asset through its owning provider", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       let fileSystemCalls = 0;
       let pathCalls = 0;
-      let resolverCalls = 0;
-      const resolver = ProjectFaviconResolver.ProjectFaviconResolver.of({
-        resolvePath: () => {
-          resolverCalls += 1;
-          return Effect.die("project favicon resolver must not be called");
+      const requested: Array<{ readonly operation: string; readonly relativePath: string }> = [];
+      const workspace = makeProjectWorkspace({
+        getMetadata: (input) => {
+          requested.push({ operation: "metadata", relativePath: input.relativePath });
+          return Effect.succeed({ kind: "file", size: 3 });
+        },
+        readFile: (input) => {
+          requested.push({ operation: "read", relativePath: input.relativePath });
+          return Effect.succeed({
+            bytes: new Uint8Array([1, 2, 3]),
+            byteLength: 3,
+            truncated: false,
+          });
         },
       });
 
-      const error = yield* issueAssetUrl({
+      const result = yield* issueAssetUrl({
         resource: {
           _tag: "workspace-file",
           threadId: ThreadId.make("thread-1"),
-          path: "/provider/workspace/report.html",
+          path: "images/report.png",
         },
-        workspaceRoot: "/provider/workspace",
+        workspaceTarget: {
+          projectId: ProjectId.make("project-1"),
+          threadId: ThreadId.make("thread-1"),
+        },
       }).pipe(
         Effect.provideService(
           FileSystem.FileSystem,
@@ -105,17 +134,137 @@ describe("AssetAccess", () => {
             pathCalls += 1;
           }),
         ),
-        Effect.provideService(ProjectFaviconResolver.ProjectFaviconResolver, resolver),
-        Effect.flip,
+        Effect.provideService(ProjectWorkspace.ProjectWorkspace, workspace),
+      );
+      const { token, fileName } = parseAssetUrl(result.relativeUrl);
+      const resolved = yield* resolveAsset(token, fileName).pipe(
+        Effect.provideService(
+          FileSystem.FileSystem,
+          makeExplodingFileSystem(fileSystem, () => {
+            fileSystemCalls += 1;
+          }),
+        ),
+        Effect.provideService(
+          Path.Path,
+          makeExplodingPath(path, () => {
+            pathCalls += 1;
+          }),
+        ),
+        Effect.provideService(ProjectWorkspace.ProjectWorkspace, workspace),
       );
 
-      expect(error).toMatchObject({
-        _tag: "AssetWorkspaceAssetNotFoundError",
-        resource: { _tag: "workspace-file", path: "/provider/workspace/report.html" },
+      expect(resolved).toEqual({
+        kind: "bytes",
+        bytes: new Uint8Array([1, 2, 3]),
+        relativePath: "images/report.png",
       });
+      expect(requested).toEqual([
+        { operation: "metadata", relativePath: "images/report.png" },
+        { operation: "read", relativePath: "images/report.png" },
+      ]);
       expect(fileSystemCalls).toBe(0);
       expect(pathCalls).toBe(0);
-      expect(resolverCalls).toBe(0);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps browser-preview subresources rooted and bounded", () =>
+    Effect.gen(function* () {
+      const reads: Array<string> = [];
+      const workspace = makeProjectWorkspace({
+        getMetadata: () => Effect.succeed({ kind: "file", size: 20 }),
+        readFile: (input) => {
+          reads.push(input.relativePath);
+          return Effect.succeed({
+            bytes: new TextEncoder().encode("body{}"),
+            byteLength: 6,
+            truncated: false,
+          });
+        },
+      });
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: "site/index.html",
+        },
+        workspaceTarget: {
+          projectId: ProjectId.make("project-1"),
+          threadId: ThreadId.make("thread-1"),
+        },
+      }).pipe(Effect.provideService(ProjectWorkspace.ProjectWorkspace, workspace));
+      const { token } = parseAssetUrl(result.relativeUrl);
+
+      expect(
+        yield* resolveAsset(token, "assets/site.css").pipe(
+          Effect.provideService(ProjectWorkspace.ProjectWorkspace, workspace),
+        ),
+      ).toEqual({
+        kind: "bytes",
+        bytes: new TextEncoder().encode("body{}"),
+        relativePath: "site/assets/site.css",
+      });
+      expect(yield* resolveAsset(token, "../secret.css")).toBeNull();
+      expect(yield* resolveAsset(token, "payload.exe")).toBeNull();
+      expect(reads).toEqual(["site/assets/site.css"]);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects absolute, oversized, and truncated workspace previews", () =>
+    Effect.gen(function* () {
+      const target = {
+        projectId: ProjectId.make("project-1"),
+        threadId: ThreadId.make("thread-1"),
+      };
+      const oversized = makeProjectWorkspace({
+        getMetadata: () => Effect.succeed({ kind: "file", size: 1024 * 1024 + 1 }),
+        readFile: () => Effect.die("oversized assets must not be read"),
+      });
+      const tooLarge = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: target.threadId,
+          path: "large.png",
+        },
+        workspaceTarget: target,
+      }).pipe(Effect.provideService(ProjectWorkspace.ProjectWorkspace, oversized), Effect.flip);
+      expect(tooLarge).toMatchObject({
+        _tag: "AssetWorkspaceAssetTooLargeError",
+        maxBytes: 1024 * 1024,
+      });
+
+      const absolute = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: target.threadId,
+          path: "/provider/workspace/image.png",
+        },
+        workspaceTarget: target,
+      }).pipe(Effect.flip);
+      expect(absolute._tag).toBe("AssetWorkspacePathValidationError");
+
+      const truncated = makeProjectWorkspace({
+        getMetadata: () => Effect.succeed({ kind: "file" }),
+        readFile: () =>
+          Effect.succeed({
+            bytes: new Uint8Array(1024 * 1024),
+            byteLength: 1024 * 1024 + 1,
+            truncated: true,
+          }),
+      });
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: target.threadId,
+          path: "image.png",
+        },
+        workspaceTarget: target,
+      }).pipe(Effect.provideService(ProjectWorkspace.ProjectWorkspace, truncated));
+      const { token, fileName } = parseAssetUrl(result.relativeUrl);
+      expect(
+        yield* resolveAsset(token, fileName).pipe(
+          Effect.provideService(ProjectWorkspace.ProjectWorkspace, truncated),
+        ),
+      ).toBeNull();
     }).pipe(Effect.provide(testLayer)),
   );
 

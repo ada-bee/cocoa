@@ -37,6 +37,41 @@ const HEALTH_RESPONSE_HEADERS = {
   "content-type": "application/json; charset=utf-8",
 } as const;
 
+/**
+ * Provider-owned HTML may execute for an interactive preview, but it runs in
+ * an opaque sandboxed origin. Relative signed assets remain loadable while
+ * API/WebSocket access, forms, frames, popups, downloads, and external
+ * exfiltration channels stay disabled.
+ */
+const PROVIDER_WORKSPACE_PREVIEW_HEADERS = {
+  "Cache-Control": "private, max-age=3600",
+  "Content-Disposition": "inline",
+  "Content-Security-Policy": [
+    "sandbox allow-scripts",
+    "default-src 'none'",
+    "base-uri 'none'",
+    "connect-src 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'self'",
+    "frame-src 'none'",
+    "object-src 'none'",
+    "worker-src 'none'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' data: blob:",
+    "style-src 'self' 'unsafe-inline'",
+    "font-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+  ].join("; "),
+  "Cross-Origin-Embedder-Policy": "credentialless",
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Origin-Agent-Cluster": "?1",
+  "Permissions-Policy":
+    "accelerometer=(), camera=(), display-capture=(), geolocation=(), microphone=(), payment=(), usb=()",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "SAMEORIGIN",
+} as const;
+
 /** Process liveness is intentionally dependency-free and available during startup. */
 export const gatewayLivenessRouteLayer = HttpRouter.add(
   "GET",
@@ -233,6 +268,14 @@ export const assetRouteLayer = HttpRouter.add(
     );
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
+    }
+    if (asset.kind === "bytes") {
+      const contentType = Mime.getType(asset.relativePath) ?? "application/octet-stream";
+      return HttpServerResponse.uint8Array(asset.bytes, {
+        status: 200,
+        contentType,
+        headers: PROVIDER_WORKSPACE_PREVIEW_HEADERS,
+      });
     }
     return yield* HttpServerResponse.file(asset.path, {
       status: 200,

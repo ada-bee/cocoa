@@ -54,7 +54,7 @@ export async function openUrlInPreview<E>(input: {
 
 export async function openFileInPreview<AssetError, PreviewError>(input: {
   readonly threadRef: ScopedThreadRef;
-  readonly filePath: string;
+  readonly relativePath: string;
   readonly httpBaseUrl: string;
   readonly createAssetUrl: (input: {
     readonly environmentId: EnvironmentId;
@@ -77,7 +77,7 @@ export async function openFileInPreview<AssetError, PreviewError>(input: {
       resource: {
         _tag: "workspace-file",
         threadId: input.threadRef.threadId,
-        path: input.filePath,
+        path: input.relativePath,
       },
     },
   });

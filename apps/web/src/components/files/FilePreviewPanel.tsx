@@ -123,13 +123,13 @@ type FilePostRender = NonNullable<FileOptions<unknown>["onPostRender"]>;
 function WorkspaceImagePreview(props: {
   readonly environmentId: EnvironmentId;
   readonly threadRef: ScopedThreadRef;
-  readonly absolutePath: string;
+  readonly relativePath: string;
   readonly alt: string;
 }) {
   const assetUrl = useAssetUrlState(props.environmentId, {
     _tag: "workspace-file",
     threadId: props.threadRef.threadId,
-    path: props.absolutePath,
+    path: props.relativePath,
   });
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
 
@@ -835,11 +835,11 @@ export default function FilePreviewPanel({
   };
 
   const handleOpenInBrowser = useCallback(() => {
-    if (!absolutePath || !environmentHttpBaseUrl) return;
+    if (!relativePath || !environmentHttpBaseUrl) return;
     void (async () => {
       const result = await openFileInPreview({
         threadRef,
-        filePath: absolutePath,
+        relativePath,
         httpBaseUrl: environmentHttpBaseUrl,
         createAssetUrl,
         openPreview,
@@ -856,7 +856,7 @@ export default function FilePreviewPanel({
         }),
       );
     })();
-  }, [absolutePath, createAssetUrl, environmentHttpBaseUrl, openPreview, threadRef]);
+  }, [createAssetUrl, environmentHttpBaseUrl, openPreview, relativePath, threadRef]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
@@ -984,12 +984,12 @@ export default function FilePreviewPanel({
             relativePath ? "flex" : "hidden",
           )}
         >
-          {relativePath && isImage && absolutePath ? (
+          {relativePath && isImage ? (
             <WorkspaceImagePreview
-              key={absolutePath}
+              key={relativePath}
               environmentId={environmentId}
               threadRef={threadRef}
-              absolutePath={absolutePath}
+              relativePath={relativePath}
               alt={relativePath}
             />
           ) : relativePath && file.error && file.data === null ? (

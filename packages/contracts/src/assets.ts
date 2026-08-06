@@ -110,6 +110,18 @@ export class AssetWorkspaceAssetNotFoundError extends Schema.TaggedErrorClass<As
   }
 }
 
+export class AssetWorkspaceAssetTooLargeError extends Schema.TaggedErrorClass<AssetWorkspaceAssetTooLargeError>()(
+  "AssetWorkspaceAssetTooLargeError",
+  {
+    resource: AssetResource,
+    maxBytes: Schema.Int,
+  },
+) {
+  override get message(): string {
+    return `Workspace assets are limited to ${this.maxBytes} bytes.`;
+  }
+}
+
 export class AssetWorkspaceResolutionError extends Schema.TaggedErrorClass<AssetWorkspaceResolutionError>()(
   "AssetWorkspaceResolutionError",
   {
@@ -188,6 +200,7 @@ export const AssetAccessError = Schema.Union([
   AssetPreviewTypeValidationError,
   AssetWorkspaceAssetInspectionError,
   AssetWorkspaceAssetNotFoundError,
+  AssetWorkspaceAssetTooLargeError,
   AssetWorkspaceResolutionError,
   AssetAttachmentNotFoundError,
   AssetProjectFaviconResolutionError,

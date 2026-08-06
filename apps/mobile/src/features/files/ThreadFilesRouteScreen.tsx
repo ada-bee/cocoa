@@ -488,7 +488,6 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
   const resolvedActiveMode = canPreview ? activeMode : "source";
   const assetPreviewPath = isBrowserFile || isImageFile ? relativePath : null;
   const assetPreviewUri = useWorkspaceFileAssetUrl({
-    cwd,
     environmentId,
     relativePath: assetPreviewPath,
     threadId,

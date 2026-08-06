@@ -1,9 +1,22 @@
 import type { AssetResource } from "@t3tools/contracts";
 import {
   AssetAttachmentNotFoundError,
+  AssetPreviewTypeValidationError,
   AssetSigningKeyLoadError,
+  AssetWorkspaceAssetInspectionError,
   AssetWorkspaceAssetNotFoundError,
+  AssetWorkspaceAssetTooLargeError,
+  AssetWorkspaceContextNotFoundError,
+  AssetWorkspacePathValidationError,
+  ProjectId,
+  ThreadId,
 } from "@t3tools/contracts";
+import {
+  isWorkspaceImagePreviewPath,
+  isWorkspacePreviewEntryPath,
+  WORKSPACE_BROWSER_PREVIEW_EXTENSIONS,
+  WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
+} from "@t3tools/shared/filePreview";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
@@ -22,14 +35,52 @@ import {
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { resolveAttachmentPathById } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import * as ProjectWorkspace from "../project/ProjectWorkspace.ts";
+import {
+  PROVIDER_WORKSPACE_MAX_READ_BYTES,
+  ProviderWorkspaceReadByteLimit,
+} from "../provider/ProviderWorkspaceAdapter.ts";
 
 export const ASSET_ROUTE_PREFIX = "/api/assets";
 
 const SIGNING_SECRET_NAME = "asset-access-signing-key";
 const ASSET_TOKEN_TTL_MS = 60 * 60 * 1000;
 const PROJECT_FAVICON_TOKEN_BUCKET_MS = 30 * 60 * 1000;
+const PREVIEW_RELATIVE_PATH_MAX_LENGTH = 1024;
+const PREVIEW_READ_BYTE_LIMIT = ProviderWorkspaceReadByteLimit.make(
+  PROVIDER_WORKSPACE_MAX_READ_BYTES,
+);
+const PREVIEW_ASSET_EXTENSIONS = new Set([
+  ...WORKSPACE_BROWSER_PREVIEW_EXTENSIONS,
+  ...WORKSPACE_IMAGE_PREVIEW_EXTENSIONS,
+  ".css",
+  ".js",
+  ".mjs",
+  ".otf",
+  ".ttf",
+  ".woff",
+  ".woff2",
+]);
 
 const AssetClaimsSchema = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(2),
+    kind: Schema.Literal("workspace-file"),
+    projectId: ProjectId,
+    threadId: ThreadId,
+    baseRelativePath: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(2),
+    kind: Schema.Literal("workspace-file-exact"),
+    projectId: ProjectId,
+    threadId: ThreadId,
+    relativePath: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+  // Provider-owned v1 claims are decoded only so they can fail closed without
+  // ever being interpreted against the gateway filesystem.
   Schema.Struct({
     version: Schema.Literal(1),
     kind: Schema.Literal("workspace-file"),
@@ -69,7 +120,13 @@ const AssetClaimsJson = Schema.fromJsonString(AssetClaimsSchema);
 const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
-export type ResolvedAsset = { readonly kind: "file"; readonly path: string };
+export type ResolvedAsset =
+  | { readonly kind: "file"; readonly path: string }
+  | {
+      readonly kind: "bytes";
+      readonly bytes: Uint8Array;
+      readonly relativePath: string;
+    };
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
   try {
@@ -77,6 +134,53 @@ function decodeClaims(encodedPayload: string): AssetClaims | null {
   } catch {
     return null;
   }
+}
+
+function decodeRelativePath(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function basename(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
+}
+
+function dirname(path: string): string {
+  const separatorIndex = path.lastIndexOf("/");
+  return separatorIndex < 0 ? "." : path.slice(0, separatorIndex) || ".";
+}
+
+function extension(path: string): string {
+  const fileName = basename(path);
+  const extensionIndex = fileName.lastIndexOf(".");
+  return extensionIndex < 0 ? "" : fileName.slice(extensionIndex).toLowerCase();
+}
+
+function isSafeRelativeAssetPath(path: string, options?: { readonly rejectHidden?: boolean }) {
+  if (
+    path.length === 0 ||
+    path.length > PREVIEW_RELATIVE_PATH_MAX_LENGTH ||
+    path.startsWith("/") ||
+    path.includes("\\") ||
+    path.includes("\0")
+  ) {
+    return false;
+  }
+  const segments = path.split("/");
+  return segments.every(
+    (segment) =>
+      segment.length > 0 &&
+      segment !== "." &&
+      segment !== ".." &&
+      (!options?.rejectHidden || !segment.startsWith(".")),
+  );
+}
+
+function joinRelativePath(base: string, path: string): string {
+  return base === "." ? path : `${base}/${path}`;
 }
 
 const optionOnNotFound = <A, R>(
@@ -92,20 +196,80 @@ const optionOnNotFound = <A, R>(
 
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
-  readonly workspaceRoot?: string;
+  readonly workspaceTarget?: {
+    readonly projectId: ProjectId;
+    readonly threadId: ThreadId;
+  };
 }) {
-  if (input.resource._tag === "workspace-file") {
-    return yield* new AssetWorkspaceAssetNotFoundError({
-      resource: input.resource,
-    });
-  }
-
   const issuedAt = yield* Clock.currentTimeMillis;
   let expiresAt = issuedAt + ASSET_TOKEN_TTL_MS;
   let claims: AssetClaims;
   let fileName: string;
 
   switch (input.resource._tag) {
+    case "workspace-file": {
+      if (input.workspaceTarget === undefined) {
+        return yield* new AssetWorkspaceContextNotFoundError({ resource: input.resource });
+      }
+      const relativePath = input.resource.path;
+      if (!isSafeRelativeAssetPath(relativePath)) {
+        return yield* new AssetWorkspacePathValidationError({
+          resource: input.resource,
+          cause: new Error("Workspace asset path is not a normalized relative path."),
+        });
+      }
+      if (!isWorkspacePreviewEntryPath(relativePath)) {
+        return yield* new AssetPreviewTypeValidationError({ resource: input.resource });
+      }
+
+      const projectWorkspace = yield* ProjectWorkspace.ProjectWorkspace;
+      const metadata = yield* projectWorkspace
+        .getMetadata({ target: input.workspaceTarget, relativePath })
+        .pipe(
+          Effect.tapError((cause) =>
+            Effect.logWarning("Failed to inspect provider workspace asset.", {
+              projectId: input.workspaceTarget?.projectId,
+              threadId: input.workspaceTarget?.threadId,
+              relativePath,
+              cause,
+            }),
+          ),
+          Effect.mapError(
+            () =>
+              new AssetWorkspaceAssetInspectionError({
+                resource: input.resource,
+                cause: new Error("Provider workspace asset inspection failed."),
+              }),
+          ),
+        );
+      if (metadata.kind !== "file") {
+        return yield* new AssetWorkspaceAssetNotFoundError({ resource: input.resource });
+      }
+      if (metadata.size !== undefined && metadata.size > PREVIEW_READ_BYTE_LIMIT) {
+        return yield* new AssetWorkspaceAssetTooLargeError({
+          resource: input.resource,
+          maxBytes: PREVIEW_READ_BYTE_LIMIT,
+        });
+      }
+
+      claims = isWorkspaceImagePreviewPath(relativePath)
+        ? {
+            version: 2,
+            kind: "workspace-file-exact",
+            ...input.workspaceTarget,
+            relativePath,
+            expiresAt,
+          }
+        : {
+            version: 2,
+            kind: "workspace-file",
+            ...input.workspaceTarget,
+            baseRelativePath: dirname(relativePath),
+            expiresAt,
+          };
+      fileName = basename(relativePath);
+      break;
+    }
     case "attachment": {
       const config = yield* ServerConfig.ServerConfig;
       const path = yield* Path.Path;
@@ -161,7 +325,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
 
 export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   token: string,
-  _relativePath: string,
+  requestedPath: string,
 ) {
   const [encodedPayload, signature] = token.split(".");
   if (!encodedPayload || !signature) return null;
@@ -198,6 +362,49 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
     return Option.isSome(info) && info.value.type === "File"
       ? ({ kind: "file", path: attachmentPath } satisfies ResolvedAsset)
       : null;
+  }
+
+  if (
+    (claims.kind === "workspace-file" || claims.kind === "workspace-file-exact") &&
+    claims.version === 2
+  ) {
+    const decodedPath = decodeRelativePath(requestedPath);
+    if (decodedPath === null || !isSafeRelativeAssetPath(decodedPath, { rejectHidden: true })) {
+      return null;
+    }
+
+    let relativePath: string;
+    if (claims.kind === "workspace-file-exact") {
+      if (decodedPath !== basename(claims.relativePath)) return null;
+      relativePath = claims.relativePath;
+    } else {
+      if (!PREVIEW_ASSET_EXTENSIONS.has(extension(decodedPath))) return null;
+      relativePath = joinRelativePath(claims.baseRelativePath, decodedPath);
+    }
+
+    const projectWorkspace = yield* ProjectWorkspace.ProjectWorkspace;
+    const read = yield* projectWorkspace
+      .readFile({
+        target: {
+          projectId: claims.projectId,
+          threadId: claims.threadId,
+        },
+        relativePath,
+        maxBytes: PREVIEW_READ_BYTE_LIMIT,
+      })
+      .pipe(
+        Effect.tapError((cause) =>
+          Effect.logWarning("Failed to read provider workspace asset.", {
+            projectId: claims.projectId,
+            threadId: claims.threadId,
+            relativePath,
+            cause,
+          }),
+        ),
+        Effect.orElseSucceed(() => null),
+      );
+    if (read === null || read.truncated) return null;
+    return { kind: "bytes", bytes: read.bytes, relativePath } satisfies ResolvedAsset;
   }
 
   // All non-attachment claims describe provider-owned workspace paths. This
