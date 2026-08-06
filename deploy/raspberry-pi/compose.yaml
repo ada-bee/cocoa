@@ -1,6 +1,7 @@
 services:
   cocoa-gateway:
-    image: ${COCOA_GATEWAY_IMAGE_REPOSITORY:-cocoa-gateway}@${COCOA_GATEWAY_IMAGE_DIGEST:?Set COCOA_GATEWAY_IMAGE_DIGEST to the loaded or published sha256 digest}
+    image: ${COCOA_GATEWAY_IMAGE_REFERENCE:?Set COCOA_GATEWAY_IMAGE_REFERENCE to a local sha256 image ID or published repository digest}
+    pull_policy: never
     platform: linux/arm64
     user: "10001:10001"
     read_only: true
