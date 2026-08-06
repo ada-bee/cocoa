@@ -302,9 +302,16 @@ export const resolveServerConfig = (
         resolveOptionPrecedence(explicitBaseDir, Option.fromUndefinedOr(bootstrap?.t3Home)),
       ),
     );
-    const rawCwd = Option.getOrElse(normalizedFlags.cwd, () => process.cwd());
+    // Cocoa has no gateway-local project cwd. Keep the legacy field pinned to
+    // Cocoa's own data root so startup never resolves or creates a caller path.
+    const rawCwd =
+      runtimeProfile === "cocoa-gateway"
+        ? baseDir
+        : Option.getOrElse(normalizedFlags.cwd, () => process.cwd());
     const cwd = path.resolve(yield* expandHomePath(rawCwd.trim()));
-    yield* fs.makeDirectory(cwd, { recursive: true });
+    if (runtimeProfile !== "cocoa-gateway") {
+      yield* fs.makeDirectory(cwd, { recursive: true });
+    }
     const derivedPaths = yield* ServerConfig.deriveServerPaths(baseDir, devUrl, {
       baseDirIsExplicit: Option.isSome(explicitBaseDir),
     });

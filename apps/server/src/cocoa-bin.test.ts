@@ -35,6 +35,8 @@ const expectCocoaHelp = (result: NodeChildProcess.SpawnSyncReturns<string>) => {
   );
   expect(result.stdout).not.toContain("--runtime-profile");
   expect(result.stdout).not.toContain("--tailscale-serve");
+  expect(result.stdout).not.toContain("--auto-bootstrap-project-from-cwd");
+  expect(result.stdout).not.toContain("Working directory for provider sessions");
 };
 
 describe("Cocoa Bun entrypoint", () => {

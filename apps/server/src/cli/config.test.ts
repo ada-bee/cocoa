@@ -116,7 +116,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         mode: "desktop",
         runtimeProfile: "cocoa-gateway",
         port: 4001,
-        cwd: process.cwd(),
+        cwd: baseDir,
         baseDir,
         ...derivedPaths,
         host: "0.0.0.0",
@@ -209,7 +209,9 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
   it.effect("forces cwd project bootstrap off for the Cocoa gateway profile", () =>
     Effect.gen(function* () {
       const { join } = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
       const baseDir = join(NodeOS.tmpdir(), "cocoa-cli-config-no-cwd-bootstrap");
+      const ignoredCwd = join(baseDir, "must-not-create-as-project-cwd");
       const resolved = yield* resolveServerConfig(
         {
           runtimeProfile: Option.some("cocoa-gateway"),
@@ -217,7 +219,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           port: Option.some(8788),
           host: Option.none(),
           baseDir: Option.some(baseDir),
-          cwd: Option.none(),
+          cwd: Option.some(ignoredCwd),
           devUrl: Option.none(),
           noBrowser: Option.none(),
           bootstrapFd: Option.none(),
@@ -242,7 +244,9 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       );
 
       assert.equal(resolved.runtimeProfile, "cocoa-gateway");
+      assert.equal(resolved.cwd, baseDir);
       assert.equal(resolved.autoBootstrapProjectFromCwd, false);
+      assert.isFalse(yield* fs.exists(ignoredCwd));
     }),
   );
 

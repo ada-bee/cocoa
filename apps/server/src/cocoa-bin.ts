@@ -15,12 +15,18 @@ const {
   runtimeProfile: _runtimeProfile,
   tailscaleServeEnabled: _tailscaleServe,
   tailscaleServePort: _tailscaleServePort,
+  cwd: _cwd,
+  autoBootstrapProjectFromCwd: _autoBootstrapProjectFromCwd,
   ...cocoaServerCommandFlags
 } = sharedServerCommandFlags;
 
 type CocoaServerFlags = Omit<
   CliServerFlags,
-  "runtimeProfile" | "tailscaleServeEnabled" | "tailscaleServePort"
+  | "runtimeProfile"
+  | "tailscaleServeEnabled"
+  | "tailscaleServePort"
+  | "cwd"
+  | "autoBootstrapProjectFromCwd"
 >;
 
 const runCocoaGateway = (
@@ -36,6 +42,8 @@ const runCocoaGateway = (
       runtimeProfile: Option.some("cocoa-gateway"),
       tailscaleServeEnabled: Option.some(false),
       tailscaleServePort: Option.none(),
+      cwd: Option.none(),
+      autoBootstrapProjectFromCwd: Option.some(false),
     },
     options,
   );
