@@ -770,7 +770,15 @@ it("confines the inline Python helper with descriptors and enforces read/list bo
   const python = process.env.COCOA_TEST_PYTHON3 ?? "python3";
   if (NodeChildProcess.spawnSync(python, ["--version"], { encoding: "utf8" }).status !== 0) return;
 
-  const temporary = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "cocoa-workspace-helper-"));
+  // macOS reports its temp directory through `/var`, which is an ambient
+  // symlink to `/private/var`. The helper deliberately rejects every symlink
+  // component supplied by a caller, so build the fixture under the canonical
+  // host path instead of weakening the containment contract for a platform
+  // alias outside the provider workspace.
+  const canonicalTempRoot = NodeFS.realpathSync(NodeOS.tmpdir());
+  const temporary = NodeFS.mkdtempSync(
+    NodePath.join(canonicalTempRoot, "cocoa-workspace-helper-"),
+  );
   try {
     const workspace = NodePath.join(temporary, "workspace");
     const outside = NodePath.join(temporary, "outside");
