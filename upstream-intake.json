@@ -45,8 +45,9 @@
         },
         {
           "sha": "966cc05a9007a4ad1b7f8d5d3a1fc0e5c82a5b94",
-          "classification": "deferred",
-          "reason": "High-value forward-compatible provider decoding selected for a focused low-risk intake."
+          "classification": "imported",
+          "reason": "Forward-compatible provider decoding directly supports independently evolving Cocoa clients and gateway instances.",
+          "cocoaCommit": "96fc6349663fcf17fa5a7223f31f695293134ce8"
         },
         {
           "sha": "25ec0b9d13deaaa6d30c42f66ddfee633e9a29be",
@@ -230,8 +231,9 @@
         },
         {
           "sha": "3da315e7b5c4537cbc7280f33dadb3f5f0e3baf0",
-          "classification": "deferred",
-          "reason": "High-value MCP payload compaction selected for focused intake with Cocoa test adaptation."
+          "classification": "imported",
+          "reason": "MCP result compaction bounds live and snapshot client payloads while retaining full durable events.",
+          "cocoaCommit": "ae2e32df9084cdf7a58c00c76d184fc02acea685"
         },
         {
           "sha": "1ffba7093a83c99ef41dd486b10df75f2b9974e1",
@@ -285,13 +287,15 @@
         },
         {
           "sha": "b7d1981b57f1c30908808d1939fd4edbc781de12",
-          "classification": "deferred",
-          "reason": "High-value superseded-tool snapshot compaction selected to follow the MCP payload intake."
+          "classification": "imported",
+          "reason": "Superseded tool-update compaction bounds reconnect snapshots without altering live event delivery.",
+          "cocoaCommit": "a1e3fb0c745b2a81a79b21349b16105307e67395"
         },
         {
           "sha": "e4abc31f1e3f930e521a5bb62b38a9c5b28d8fb1",
-          "classification": "deferred",
-          "reason": "The snapshot/live divergence rationale and test must accompany the selected compaction change."
+          "classification": "imported",
+          "reason": "The upstream rationale and regression test make the intentional snapshot/live compaction divergence executable.",
+          "cocoaCommit": "1ffe8b4b159183298ac3be251d5bd919af7d088a"
         }
       ]
     }

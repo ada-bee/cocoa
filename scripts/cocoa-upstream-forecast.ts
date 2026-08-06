@@ -252,7 +252,8 @@ export const buildUpstreamForecast = (
     return {
       ...commit,
       subject: subjectFor(git, commit.sha),
-      conflict: forecastConflict(git, targetRef, commit.sha),
+      conflict:
+        commit.classification === "imported" ? false : forecastConflict(git, targetRef, commit.sha),
     } satisfies ForecastCommit;
   });
 
@@ -296,8 +297,10 @@ const formatHuman = (forecast: UpstreamForecast): string => {
     `Reviewed through: ${forecast.reviewedThrough}`,
   ];
   for (const commit of forecast.classified) {
+    const forecastState =
+      commit.classification === "imported" ? "applied" : commit.conflict ? "conflict" : "clean";
     lines.push(
-      `${commit.sha.slice(0, 12)}  ${commit.classification.padEnd(8)}  ${commit.conflict ? "conflict" : "clean"}  ${commit.subject}`,
+      `${commit.sha.slice(0, 12)}  ${commit.classification.padEnd(8)}  ${forecastState.padEnd(8)}  ${commit.subject}`,
     );
   }
   if (forecast.unreviewed.length === 0) {

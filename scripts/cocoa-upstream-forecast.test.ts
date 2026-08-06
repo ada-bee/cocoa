@@ -90,7 +90,7 @@ const makeRunner = (
 describe("Cocoa upstream intake forecast", () => {
   it("parses a complete ledger and requires -x evidence for imported commits", () => {
     const ledger = parseUpstreamIntakeLedger(ledgerValue());
-    const { git } = makeRunner();
+    const { git, calls } = makeRunner();
     const forecast = buildUpstreamForecast(ledger, git);
 
     expect(forecast).toMatchObject({
@@ -104,6 +104,7 @@ describe("Cocoa upstream intake forecast", () => {
         { sha: SECOND, classification: "imported", conflict: false, subject: "second subject" },
       ],
     });
+    expect(calls.some((args) => args[0] === "merge-tree" && args.at(-1) === SECOND)).toBe(false);
   });
 
   it("reports new upstream commits without silently extending the reviewed horizon", () => {
