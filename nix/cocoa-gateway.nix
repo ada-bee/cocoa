@@ -46,7 +46,7 @@ stdenv.mkDerivation (finalAttrs: {
 
     pnpm --filter t3 rebuild node-pty esbuild
     pnpm --filter @t3tools/web build
-    pnpm --filter t3 build:bundle
+    pnpm --filter t3 build:cocoa-bundle
 
     rm -rf apps/server/dist/client
     cp -R apps/web/dist apps/server/dist/client
@@ -66,7 +66,7 @@ stdenv.mkDerivation (finalAttrs: {
       "$out/libexec/cocoa-gateway"
 
     makeBinaryWrapper ${lib.getExe bun} "$out/bin/cocoa-gateway" \
-      --add-flags "$out/libexec/cocoa-gateway/dist/bin.mjs" \
+      --add-flags "$out/libexec/cocoa-gateway/dist/cocoa-bin.mjs" \
       --set-default T3CODE_RUNTIME_PROFILE cocoa-gateway \
       --set-default T3CODE_HOST 0.0.0.0 \
       --set-default T3CODE_PORT 7331 \
@@ -80,8 +80,14 @@ stdenv.mkDerivation (finalAttrs: {
   doInstallCheck = true;
   installCheckPhase = ''
     test -x "$out/bin/cocoa-gateway"
-    test -f "$out/libexec/cocoa-gateway/dist/bin.mjs"
+    test -f "$out/libexec/cocoa-gateway/dist/cocoa-bin.mjs"
     test -f "$out/libexec/cocoa-gateway/dist/client/index.html"
+    help="$($out/bin/cocoa-gateway --help)"
+    printf '%s\n' "$help" | grep -q 'Run the self-hosted Cocoa gateway.'
+    if printf '%s\n' "$help" | grep -Eq '(^|[[:space:]])(connect|service|__service-preflight)([[:space:]]|$)'; then
+      echo "Cocoa gateway help exposes a legacy hosted or service command" >&2
+      exit 1
+    fi
   '';
 
   passthru = {

@@ -51,6 +51,7 @@
       );
 
       composeText = builtins.readFile ./deploy/raspberry-pi/compose.yaml;
+      gatewayPackageText = builtins.readFile ./nix/cocoa-gateway.nix;
       settings = builtins.fromJSON (builtins.readFile ./deploy/raspberry-pi/settings.example.json);
       imageConfig = cocoaGatewayImage.passthru.ociConfig;
       targetArchitecture = cocoaGatewayImage.passthru.targetArchitecture;
@@ -91,6 +92,14 @@
           message = "gateway image must never bootstrap a provider project from its local cwd";
         }
         {
+          assertion =
+            lib.hasInfix "build:cocoa-bundle" gatewayPackageText
+            && lib.hasInfix "dist/cocoa-bin.mjs" gatewayPackageText
+            && !(lib.hasInfix "build:bundle" gatewayPackageText)
+            && !(lib.hasInfix "dist/bin.mjs" gatewayPackageText);
+          message = "gateway package must build and execute only the dedicated Cocoa entrypoint";
+        }
+        {
           assertion = lib.hasInfix ''T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false"'' composeText;
           message = "gateway compose deployment must disable local cwd project bootstrap";
         }
@@ -116,6 +125,10 @@
         {
           assertion = !(builtins.elem "cocoa-provider-host-helper" runtimeNames);
           message = "provider-host helper must never be included in the gateway image";
+        }
+        {
+          assertion = builtins.all (name: !(lib.hasPrefix "node" name)) runtimeNames;
+          message = "gateway image must use Bun without adding a Node.js runtime";
         }
         {
           assertion = builtins.all (mainProgram: mainProgram == "cocoa-workspace-helper") providerHostHelperMainPrograms;

@@ -21,7 +21,7 @@ import {
   PinnedRuntimeInstallError,
   PinnedRuntimePreflightBlockedError,
 } from "./pinnedRuntime.ts";
-import { decodeServicePreflightResult } from "./servicePreflight.ts";
+import { decodeServicePreflightResult } from "./servicePreflightProtocol.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 

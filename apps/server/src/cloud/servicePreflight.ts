@@ -2,19 +2,8 @@ import * as NodeSqlite from "node:sqlite";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { migrationManifest } from "../persistence/Migrations.ts";
+import type { ServicePreflightResult } from "./servicePreflightProtocol.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
-
-export type ServicePreflightResult =
-  | {
-      readonly status: "ready";
-      readonly version: string;
-      readonly launcherProtocol: typeof SERVICE_LAUNCHER_PROTOCOL;
-    }
-  | {
-      readonly status: "blocked";
-      readonly version: string;
-      readonly reason: string;
-    };
 
 const localUpdateReason = (version: string) =>
   `This version includes a database update and cannot be installed remotely. Run \`npx t3@${version} service update\` on the server machine.`;
@@ -67,30 +56,4 @@ export function runServicePreflight(input: {
   }
 
   return { status: "ready", version, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL };
-}
-
-export function decodeServicePreflightResult(value: unknown): ServicePreflightResult | undefined {
-  if (typeof value !== "object" || value === null) {
-    return undefined;
-  }
-  const record = value as Record<string, unknown>;
-  if (
-    record.status === "ready" &&
-    record.launcherProtocol === SERVICE_LAUNCHER_PROTOCOL &&
-    typeof record.version === "string"
-  ) {
-    return {
-      status: "ready",
-      version: record.version,
-      launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
-    };
-  }
-  if (
-    record.status === "blocked" &&
-    typeof record.version === "string" &&
-    typeof record.reason === "string"
-  ) {
-    return { status: "blocked", version: record.version, reason: record.reason };
-  }
-  return undefined;
 }
