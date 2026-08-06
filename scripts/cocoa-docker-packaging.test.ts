@@ -11,12 +11,14 @@ describe("Cocoa Docker packaging policy", () => {
 
     expect(dockerfile).toContain("FROM node:${NODE_VERSION}-bookworm-slim AS build");
     expect(dockerfile).toContain("corepack prepare pnpm@11.10.0 --activate");
+    expect(dockerfile).toContain("--ignore-scripts");
     expect(dockerfile).toContain("--filter '@cocoa/gateway-runtime...'");
     expect(dockerfile).toContain("pnpm --filter t3 build:cocoa-bundle");
     expect(dockerfile).toContain("pnpm --filter @t3tools/web build");
     expect(dockerfile).toContain("--filter @cocoa/gateway-runtime");
     expect(dockerfile).toContain("FROM oven/bun:${BUN_VERSION}-debian AS runtime");
     expect(dockerfile).toContain("COPY --from=build --chown=10001:10001 /opt/cocoa /opt/cocoa");
+    expect(dockerfile).not.toContain("rebuild node-pty");
     expect(dockerfile).not.toMatch(/FROM[^\n]+\b(nix|nixos)\b/i);
   });
 

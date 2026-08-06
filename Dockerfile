@@ -17,6 +17,7 @@ COPY . .
 RUN --mount=type=cache,id=cocoa-pnpm,target=/pnpm/store \
   pnpm install \
     --frozen-lockfile \
+    --ignore-scripts \
     --filter 't3...' \
     --filter '@t3tools/web...' \
     --filter '@cocoa/gateway-runtime...'
