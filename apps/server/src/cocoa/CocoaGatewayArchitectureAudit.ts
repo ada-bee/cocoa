@@ -50,7 +50,7 @@ export interface CocoaGatewayArchitectureAuditResult {
 }
 
 const staticImportSpecifierPattern =
-  /^\s*(?:import|export)\s+(?:type\s+)?(?:[A-Za-z0-9_*{},\s]+?\s+from\s+)?["']([^"']+)["']/gm;
+  /^\s*(?:import|export)\b\s*(?:type\b\s*)?(?:[A-Za-z0-9_*{},\s]+?\s*from\b\s*)?["']([^"']+)["']/gm;
 const dynamicImportSpecifierPattern = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
 const requireSpecifierPattern = /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g;
 const opaqueModuleLoadPattern = /\b(import|require)\s*\(([^)]*)\)/g;
@@ -76,6 +76,11 @@ const assertNoOpaqueModuleLoads = (sourcePath: string, source: string): void => 
         `Cocoa runtime module '${sourcePath}' contains non-literal ${match[1]}(${argument}); dependency closure cannot be proven.`,
       );
     }
+  }
+  if (/\bcreateRequire\b|\brequire\s*\.\s*resolve\b/.test(withoutComments)) {
+    throw new Error(
+      `Cocoa runtime module '${sourcePath}' constructs or resolves an opaque CommonJS loader; dependency closure cannot be proven.`,
+    );
   }
 };
 
@@ -140,7 +145,14 @@ const forbiddenSymbolPatterns: ReadonlyArray<{
   readonly capability: CocoaGatewayForbiddenCapability;
 }> = [
   {
-    pattern: /\bBun\.spawn(?:Sync)?\s*\(/,
+    pattern:
+      /\b(?:globalThis\s*\.\s*)?Bun\s*(?:\.\s*spawn(?:Sync)?\b|\[\s*["']spawn(?:Sync)?["']\s*\])/,
+    specifier: "symbol:Bun.spawn",
+    capability: "provider-process-lifecycle",
+  },
+  {
+    pattern:
+      /\b(?:const|let|var)\s*\{[^}]*\bspawn(?:Sync)?\b[^}]*\}\s*=\s*(?:globalThis\s*\.\s*)?Bun\b/,
     specifier: "symbol:Bun.spawn",
     capability: "provider-process-lifecycle",
   },
@@ -150,7 +162,7 @@ const forbiddenSymbolPatterns: ReadonlyArray<{
     capability: "local-shell-or-pty",
   },
   {
-    pattern: /\bprocess\.kill\s*\(/,
+    pattern: /\bprocess\s*(?:\.\s*kill|\[\s*["']kill["']\s*\])\s*\(/,
     specifier: "symbol:process.kill",
     capability: "local-shell-or-pty",
   },

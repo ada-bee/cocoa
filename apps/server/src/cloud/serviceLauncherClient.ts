@@ -1,9 +1,7 @@
-import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
 
 import packageJson from "../../package.json" with { type: "json" };
 import {
@@ -13,53 +11,18 @@ import {
   type ServiceLauncherChildMessage,
   type ServiceLauncherParentMessage,
 } from "./serviceProtocol.ts";
+import {
+  cocoaGatewayLayer,
+  ServiceLauncherClient,
+  ServiceLauncherClientError,
+  ServiceLauncherRejectedError,
+} from "./ServiceLauncherClientService.ts";
 
-export class ServiceLauncherClientError extends Schema.TaggedErrorClass<ServiceLauncherClientError>()(
-  "ServiceLauncherClientError",
-  {
-    operation: Schema.Literals([
-      "decode-context",
-      "version-mismatch",
-      "ipc-unavailable",
-      "unmanaged",
-      "send",
-      "disconnect",
-      "timeout",
-    ]),
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    switch (this.operation) {
-      case "decode-context":
-        return "The service launcher supplied invalid startup context.";
-      case "version-mismatch":
-        return "The service launcher started a different t3 version.";
-      case "ipc-unavailable":
-        return "The service launcher IPC channel is unavailable.";
-      case "unmanaged":
-        return "This server is not managed by the launcher.";
-      case "send":
-        return "Could not send a request to the service launcher.";
-      case "disconnect":
-        return "The service launcher disconnected before acknowledging the request.";
-      case "timeout":
-        return "The service launcher did not respond within 30 seconds.";
-    }
-  }
-}
-
-export class ServiceLauncherRejectedError extends Schema.TaggedErrorClass<ServiceLauncherRejectedError>()(
-  "ServiceLauncherRejectedError",
-  {
-    targetVersion: Schema.String,
-    reason: Schema.String,
-  },
-) {
-  override get message(): string {
-    return this.reason;
-  }
-}
+export {
+  ServiceLauncherClient,
+  ServiceLauncherClientError,
+  ServiceLauncherRejectedError,
+} from "./ServiceLauncherClientService.ts";
 
 interface ServiceLauncherProcess {
   readonly connected: boolean;
@@ -95,21 +58,6 @@ export const ServiceLauncherHostProcess = Context.Reference<ServiceLauncherProce
     }),
   },
 );
-
-export class ServiceLauncherClient extends Context.Service<
-  ServiceLauncherClient,
-  {
-    readonly managed: boolean;
-    readonly trial: boolean;
-    readonly requestUpdate: (input: {
-      readonly targetVersion: string;
-    }) => Effect.Effect<string, ServiceLauncherClientError | ServiceLauncherRejectedError>;
-    readonly prepareTrial: Effect.Effect<
-      ServerSelfUpdateOutcome | undefined,
-      ServiceLauncherClientError
-    >;
-  }
->()("t3/cloud/serviceLauncherClient") {}
 
 const resolveStartup = Effect.fn("cloud.service_launcher_client.resolve_startup")(
   function* (options?: { readonly currentVersion?: string }) {
@@ -252,15 +200,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
  * Keep this as a value-only layer: unlike `layer`, acquiring it must not inspect
  * launcher environment, process IPC state, or pending trial metadata.
  */
-export const cocoaGatewayLayer = Layer.succeed(
-  ServiceLauncherClient,
-  ServiceLauncherClient.of({
-    managed: false,
-    trial: false,
-    requestUpdate: () => Effect.fail(new ServiceLauncherClientError({ operation: "unmanaged" })),
-    prepareTrial: Effect.sync((): ServerSelfUpdateOutcome | undefined => undefined),
-  }),
-);
+export { cocoaGatewayLayer } from "./ServiceLauncherClientService.ts";
 
 export const layer = Layer.effect(ServiceLauncherClient, make());
 

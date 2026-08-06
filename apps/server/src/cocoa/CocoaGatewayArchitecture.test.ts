@@ -18,11 +18,6 @@ import {
 } from "./CocoaGatewayArchitecture.ts";
 
 const sourceRoot = NodePath.resolve(new URL("..", import.meta.url).pathname);
-const serverSource = NodeFS.readFileSync(NodePath.join(sourceRoot, "server.ts"), "utf8");
-const serverEnvironmentSource = NodeFS.readFileSync(
-  NodePath.join(sourceRoot, "environment/ServerEnvironment.ts"),
-  "utf8",
-);
 
 const normalizePath = (path: string): string => path.split(NodePath.sep).join("/");
 
@@ -89,13 +84,11 @@ describe("Cocoa gateway architecture", () => {
     expect(COCOA_GATEWAY_FORBIDDEN_DEPENDENCY_ALLOWLIST).toEqual([]);
   });
 
-  it("keeps the complete Cocoa runtime composition outside mixed legacy server source", () => {
-    expect(serverSource).toContain(
-      'import { CocoaRuntimeDependenciesLive } from "./cocoa/CocoaGatewayRuntime.ts";',
-    );
-    expect(serverSource).not.toContain("const CocoaRuntimeBaseDependenciesLive =");
-    expect(serverSource).not.toContain("const CocoaRuntimeCoreDependenciesLive =");
-    expect(serverSource).not.toContain("const CocoaRuntimeDependenciesLive =");
+  it("audits the deployed Cocoa executable instead of an inner layer", () => {
+    expect(COCOA_GATEWAY_RUNTIME_ENTRY).toBe("cocoa-bin.ts");
+    const entrySource = readSource(COCOA_GATEWAY_RUNTIME_ENTRY)!;
+    expect(entrySource).toContain('./cocoa/CocoaGatewayServer.ts"');
+    expect(entrySource).not.toMatch(/(?:\.\/server\.ts|\.\/cli\/server\.ts)/);
   });
 
   it("classifies every direct Cocoa runtime import with an exact file path", () => {
@@ -110,10 +103,58 @@ describe("Cocoa gateway architecture", () => {
 
   it("walks and reports the complete transitive closure with no unclassified callsites", () => {
     const result = audit();
-    expect(result.modules[0]).toBeDefined();
-    expect(result.modules).toMatchSnapshot();
+    expect(result.modules).toContain("cocoa-bin.ts");
+    expect(result.modules).toContain("cocoa/CocoaGatewayServer.ts");
     expect(result.unclassifiedCallsites, formatAudit(result)).toEqual([]);
     expect(result.staleClassifications, formatAudit(result)).toEqual([]);
+  });
+
+  it("excludes legacy providers, local project tools, hosted product code, and telemetry", () => {
+    const result = audit();
+    const forbiddenModules = [
+      "server.ts",
+      "cli/server.ts",
+      "cloud/selfUpdate.ts",
+      "cloud/serviceLauncherClient.ts",
+      "diagnostics/ProcessDiagnostics.ts",
+      "diagnostics/ProcessResourceMonitor.ts",
+      "diagnostics/TraceDiagnostics.ts",
+      "observability/Layers/Observability.ts",
+      "provider/Drivers/CodexDriver.ts",
+      "provider/Drivers/CodexHomeLayout.ts",
+      "provider/Layers/CodexAdapter.ts",
+      "provider/Layers/CodexProvider.ts",
+      "provider/Layers/CodexSessionRuntime.ts",
+      "provider/Layers/EventNdjsonLogger.ts",
+      "provider/providerMaintenance.ts",
+      "provider/providerSnapshot.ts",
+      "resourceTelemetry/DesktopTelemetryReceiver.ts",
+      "resourceTelemetry/NativeTelemetryClient.ts",
+      "resourceTelemetry/ResourceMonitorBinary.ts",
+      "resourceTelemetry/ResourceTelemetry.ts",
+      "telemetry/AnalyticsService.ts",
+      "terminal/Manager.ts",
+      "terminal/PtyAdapter.ts",
+      "textGeneration/CodexTextGeneration.ts",
+    ];
+    for (const module of forbiddenModules) {
+      expect(result.modules, module).not.toContain(module);
+    }
+    expect(result.modules.filter((module) => /(?:^|\/)relay\//.test(module))).toEqual([]);
+    expect(result.modules.filter((module) => /(?:^|\/)(?:git|vcs)\//.test(module))).toEqual([]);
+
+    const externalSpecifiers = new Set(
+      result.imports.filter((edge) => edge.targetPath === null).map((edge) => edge.specifier),
+    );
+    for (const specifier of [
+      "@anthropic-ai/claude-agent-sdk",
+      "@opencode-ai/sdk",
+      "@t3tools/shared/relayClient",
+      "@t3tools/tailscale",
+      "node-pty",
+    ]) {
+      expect(externalSpecifiers, specifier).not.toContain(specifier);
+    }
   });
 
   it("keeps Cocoa SQLite hard-pinned to durable local mode without hosted launcher resolution", () => {
@@ -156,10 +197,37 @@ describe("Cocoa gateway architecture", () => {
   it.each([
     ["dynamic import", "const moduleName = './nested.ts'; import(moduleName);"],
     ["CommonJS require", "const moduleName = './nested.ts'; require(moduleName);"],
+    ["CommonJS resolver", "require.resolve('./nested.ts');"],
+    ["CommonJS loader factory", "createRequire(import.meta.url)('./nested.ts');"],
+    [
+      "aliased CommonJS loader factory",
+      "const makeRequire = createRequire; makeRequire(import.meta.url)('./nested.ts');",
+    ],
   ])("fails closed for an opaque %s", (_label, source) => {
     expect(() => virtualAudit({ "entry.ts": source })).toThrow(
       /dependency closure cannot be proven/,
     );
+  });
+
+  it.each([
+    ["compact side-effect import", 'import"node:child_process";'],
+    ["compact re-export", 'export{x}from"node:child_process";'],
+  ])("does not miss a %s", (_label, source) => {
+    const result = virtualAudit({ "entry.ts": source });
+    expect(result.unclassifiedCallsites).toMatchObject([
+      { sourcePath: "entry.ts", specifier: "node:child_process", capability: "local-shell-or-pty" },
+    ]);
+  });
+
+  it.each([
+    ["computed Bun spawn", 'Bun["spawn"](["codex"]);', "symbol:Bun.spawn"],
+    ["global Bun spawn", 'globalThis.Bun.spawn(["codex"]);', "symbol:Bun.spawn"],
+    ["aliased Bun spawn", "const launch = Bun.spawn; launch(['codex']);", "symbol:Bun.spawn"],
+    ["destructured Bun spawn", "const { spawn } = Bun; spawn(['codex']);", "symbol:Bun.spawn"],
+    ["computed process kill", 'process["kill"](123);', "symbol:process.kill"],
+  ])("does not miss a %s", (_label, source, specifier) => {
+    const result = virtualAudit({ "entry.ts": source });
+    expect(result.unclassifiedCallsites).toMatchObject([{ sourcePath: "entry.ts", specifier }]);
   });
 
   it("retains the named legacy boundary map as a human-readable cross-check", () => {
@@ -174,38 +242,11 @@ describe("Cocoa gateway architecture", () => {
     ]);
   });
 
-  it("keeps conditional legacy process services out of the Cocoa branch", () => {
-    expect(serverSource).toContain(
-      "const LegacyRuntimeDependenciesWithVcsLive = LegacyRuntimeDependenciesLive.pipe(",
-    );
-    expect(serverSource).toContain(
-      "const hostedRuntimeLayer = legacyFleetFeatures ? LegacyHostedRuntimeLayerLive : Layer.empty;",
-    );
-    expect(serverSource).toContain('config.runtimeProfile === "cocoa-gateway"');
-    expect(serverSource).toContain("Cocoa gateway updates are administrator-managed.");
-    expect(serverSource).toContain(
-      'if (config.runtimeProfile !== "cocoa-gateway") {\n      yield* fixPath();',
-    );
-    expect(serverSource.match(/yield\* fixPath\(\);/g)).toHaveLength(1);
-  });
-
   it("keeps Cocoa environment metadata free of host command probes", () => {
-    const cocoaEnvironmentStart = serverEnvironmentSource.indexOf(
-      "export const makeCocoaGateway =",
-    );
-    const cocoaEnvironmentEnd = serverEnvironmentSource.indexOf(
-      "export const cocoaGatewayLayer =",
-      cocoaEnvironmentStart,
-    );
-    expect(cocoaEnvironmentStart).toBeGreaterThanOrEqual(0);
-    expect(cocoaEnvironmentEnd).toBeGreaterThan(cocoaEnvironmentStart);
-
-    const cocoaEnvironment = serverEnvironmentSource.slice(
-      cocoaEnvironmentStart,
-      cocoaEnvironmentEnd,
-    );
+    const cocoaEnvironment = readSource("environment/CocoaServerEnvironment.ts")!;
     expect(cocoaEnvironment).not.toContain("ProcessRunner");
     expect(cocoaEnvironment).not.toContain("resolveServerEnvironmentLabel");
     expect(cocoaEnvironment).not.toContain("resolveServiceLauncherMode");
+    expect(cocoaEnvironment).not.toContain("serviceLauncherClient");
   });
 });

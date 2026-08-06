@@ -20,7 +20,6 @@ import {
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { isCommandAvailable, resolveSpawnCommand } from "@t3tools/shared/shell";
 import * as Config from "effect/Config";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
@@ -29,6 +28,9 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import { ExternalLauncher } from "./ExternalLauncherService.ts";
+
+export { ExternalLauncher } from "./ExternalLauncherService.ts";
 
 // ==============================
 // Definitions
@@ -301,21 +303,6 @@ const resolveAvailableEditors = Effect.fn("externalLauncher.resolveAvailableEdit
 /**
  * ExternalLauncher - Service tag for browser/editor launch operations.
  */
-export class ExternalLauncher extends Context.Service<
-  ExternalLauncher,
-  {
-    readonly resolveAvailableEditors: () => Effect.Effect<ReadonlyArray<EditorId>>;
-    /** Launch a URL target in the default browser. */
-    readonly launchBrowser: (target: string) => Effect.Effect<void, ExternalLauncherError>;
-    /**
-     * Launch a workspace path in a selected editor integration.
-     *
-     * Launches the editor as a detached process so server startup is not blocked.
-     */
-    readonly launchEditor: (input: LaunchEditorInput) => Effect.Effect<void, ExternalLauncherError>;
-  }
->()("t3/process/externalLauncher") {}
-
 // ==============================
 // Implementations
 // ==============================

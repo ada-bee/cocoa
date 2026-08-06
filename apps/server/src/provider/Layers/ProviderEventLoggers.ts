@@ -24,13 +24,19 @@
  *
  * @module provider/Layers/ProviderEventLoggers
  */
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../../config.ts";
 import * as ResourceAttribution from "../../resourceTelemetry/ResourceAttribution.ts";
 import * as EventNdjsonLogger from "./EventNdjsonLogger.ts";
+import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggersService.ts";
+
+export {
+  NoOpProviderEventLoggers,
+  ProviderEventLoggers,
+  layerDisabled,
+} from "./ProviderEventLoggersService.ts";
 
 /**
  * Shared logger pair for native + canonical provider event streams.
@@ -40,24 +46,6 @@ import * as EventNdjsonLogger from "./EventNdjsonLogger.ts";
  * (`layer`); consumers (drivers, `ProviderService`) read one tag and pluck the
  * field they need.
  */
-export class ProviderEventLoggers extends Context.Service<
-  ProviderEventLoggers,
-  {
-    readonly native: EventNdjsonLogger.EventNdjsonLogger | undefined;
-    readonly canonical: EventNdjsonLogger.EventNdjsonLogger | undefined;
-  }
->()("t3/provider/Layers/ProviderEventLoggers") {}
-
-/**
- * Constant value used by tests / boot layers that want to opt out of native
- * + canonical logging entirely. Keeps the tag non-optional in the type
- * system while letting the runtime treat absence as a no-op.
- */
-export const NoOpProviderEventLoggers: ProviderEventLoggers["Service"] = {
-  native: undefined,
-  canonical: undefined,
-};
-
 /**
  * Builds both stream views over one shared store. Setup failures are logged
  * and downgraded to the no-op service so diagnostics never block startup.

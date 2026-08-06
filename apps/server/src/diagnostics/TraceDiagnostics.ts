@@ -7,7 +7,6 @@ import type {
   ServerTraceDiagnosticsSpanOccurrence,
   ServerTraceDiagnosticsSpanSummary,
 } from "@t3tools/contracts";
-import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -16,6 +15,9 @@ import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { TraceDiagnostics } from "../ws/WsRuntimeServices.ts";
+
+export { TraceDiagnostics } from "../ws/WsRuntimeServices.ts";
 
 interface TraceRecordLike {
   readonly name?: unknown;
@@ -53,15 +55,6 @@ export class TraceFileReadError extends Schema.TaggedErrorClass<TraceFileReadErr
     return `Failed to read local trace file '${this.traceFilePath}'.`;
   }
 }
-
-export class TraceDiagnostics extends Context.Service<
-  TraceDiagnostics,
-  {
-    readonly read: (
-      options: TraceDiagnosticsOptions,
-    ) => Effect.Effect<ServerTraceDiagnosticsResult>;
-  }
->()("t3/diagnostics/TraceDiagnostics") {}
 
 interface TraceDiagnosticsInput {
   readonly traceFilePath: string;

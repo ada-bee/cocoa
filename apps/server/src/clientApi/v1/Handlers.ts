@@ -29,7 +29,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as CheckpointDiffQuery from "../../checkpointing/CheckpointDiffQuery.ts";
-import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
+import * as ServerEnvironment from "../../environment/ServerEnvironmentService.ts";
 import {
   normalizeDispatchCommand,
   withNormalizedDispatchCommand,
@@ -44,7 +44,7 @@ import { CheckpointRevertGate } from "../../orchestration/Services/CheckpointRev
 import * as ProviderRegistry from "../../provider/Services/ProviderRegistry.ts";
 import * as ProjectExecution from "../../project/ProjectExecution.ts";
 import * as ServerRuntimeStartup from "../../serverRuntimeStartup.ts";
-import * as TerminalManager from "../../terminal/Manager.ts";
+import * as TerminalManager from "../../terminal/TerminalManagerService.ts";
 import { DEFAULT_RUNTIME_BUFFER_LIMITS } from "../../RuntimeBufferLimits.ts";
 import type * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";

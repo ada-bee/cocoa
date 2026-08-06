@@ -48,7 +48,7 @@ import {
   ProviderTerminalRows,
   type ProviderTerminalSession,
 } from "../provider/ProviderTerminalAdapter.ts";
-import type { TerminalManager } from "./Manager.ts";
+import type { TerminalManager } from "./TerminalManagerService.ts";
 import { sanitizeTerminalHistoryChunk } from "./TerminalHistorySanitizer.ts";
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;

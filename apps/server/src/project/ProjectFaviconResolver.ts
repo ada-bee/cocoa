@@ -6,17 +6,23 @@
  *
  * @module ProjectFaviconResolver
  */
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
-import * as Schema from "effect/Schema";
 
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as T3ProjectFileLoader from "./T3ProjectFileLoader.ts";
+import {
+  ProjectFaviconResolutionError,
+  ProjectFaviconResolver,
+} from "./ProjectFaviconResolverService.ts";
+export {
+  ProjectFaviconResolutionError,
+  ProjectFaviconResolver,
+} from "./ProjectFaviconResolverService.ts";
 
 // Well-known favicon paths checked in order.
 const FAVICON_CANDIDATES = [
@@ -59,41 +65,6 @@ const LINK_ICON_HTML_RE =
   /<link\b(?=[^>]*\brel=["'](?:icon|shortcut icon)["'])(?=[^>]*\bhref=["']([^"'?]+))[^>]*>/i;
 const LINK_ICON_OBJ_RE =
   /(?=[^}]*\brel\s*:\s*["'](?:icon|shortcut icon)["'])(?=[^}]*\bhref\s*:\s*["']([^"'?]+))[^}]*/i;
-
-export class ProjectFaviconResolutionError extends Schema.TaggedErrorClass<ProjectFaviconResolutionError>()(
-  "ProjectFaviconResolutionError",
-  {
-    operation: Schema.Literals([
-      "normalize-workspace",
-      "resolve-path",
-      "stat-candidate",
-      "read-source",
-    ]),
-    workspaceRoot: Schema.String,
-    relativePath: Schema.optional(Schema.String),
-    absolutePath: Schema.optional(Schema.String),
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return `Failed to resolve project favicon during ${this.operation} for workspace ${this.workspaceRoot}.`;
-  }
-}
-
-/** Service tag for project favicon resolution. */
-export class ProjectFaviconResolver extends Context.Service<
-  ProjectFaviconResolver,
-  {
-    /**
-     * Resolve a favicon or icon file path for the provided workspace root.
-     *
-     * Returns `null` when no candidate icon file can be found.
-     */
-    readonly resolvePath: (
-      cwd: string,
-    ) => Effect.Effect<string | null, ProjectFaviconResolutionError>;
-  }
->()("t3/project/ProjectFaviconResolver") {}
 
 function extractIconHref(source: string): string | null {
   const htmlMatch = source.match(LINK_ICON_HTML_RE);

@@ -4,7 +4,6 @@ import {
   HostProcessHostname,
   HostProcessPlatform,
 } from "@t3tools/shared/hostProcess";
-import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -18,6 +17,8 @@ import { resolveServiceLauncherMode } from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { resolveServerEnvironmentLabel } from "./ServerEnvironmentLabel.ts";
+import { ServerEnvironment } from "./ServerEnvironmentService.ts";
+export { ServerEnvironment } from "./ServerEnvironmentService.ts";
 
 export class ServerEnvironmentIdPersistenceError extends Schema.TaggedErrorClass<ServerEnvironmentIdPersistenceError>()(
   "ServerEnvironmentIdPersistenceError",
@@ -31,14 +32,6 @@ export class ServerEnvironmentIdPersistenceError extends Schema.TaggedErrorClass
     return `Server environment ID ${this.operation} failed at '${this.environmentIdPath}'.`;
   }
 }
-
-export class ServerEnvironment extends Context.Service<
-  ServerEnvironment,
-  {
-    readonly getEnvironmentId: Effect.Effect<EnvironmentId>;
-    readonly getDescriptor: Effect.Effect<ExecutionEnvironmentDescriptor>;
-  }
->()("t3/environment/ServerEnvironment") {}
 
 function platformOs(platform: NodeJS.Platform): ExecutionEnvironmentDescriptor["platform"]["os"] {
   switch (platform) {

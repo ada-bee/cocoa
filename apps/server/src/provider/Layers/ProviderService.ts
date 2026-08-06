@@ -66,9 +66,8 @@ import {
 import * as ProviderAdapterRegistry from "../Services/ProviderAdapterRegistry.ts";
 import * as ProviderService from "../Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "../Services/ProviderSessionDirectory.ts";
-import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
-import * as ProviderEventLoggers from "./ProviderEventLoggers.ts";
-import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
+import { type ProviderEventLogger, ProviderEventLoggers } from "./ProviderEventLoggersService.ts";
+import * as AnalyticsService from "../../telemetry/AnalyticsServiceContract.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import {
@@ -89,7 +88,7 @@ const isModelSelection = Schema.is(ModelSelection);
  * reads the logger off the tag.
  */
 export interface ProviderServiceLiveOptions {
-  readonly canonicalEventLogger?: EventNdjsonLogger;
+  readonly canonicalEventLogger?: ProviderEventLogger;
   /** Internal test seams; production uses the active MCP registry functions. */
   readonly issueMcpCredential?: typeof McpSessionRegistry.issueActiveMcpCredential;
   readonly revokeMcpThread?: typeof McpSessionRegistry.revokeActiveMcpThread;
@@ -273,7 +272,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   options?: ProviderServiceLiveOptions,
 ) {
   const analytics = yield* Effect.service(AnalyticsService.AnalyticsService);
-  const eventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
+  const eventLoggers = yield* ProviderEventLoggers;
   // Options-provided logger wins (test overrides); otherwise we take whatever
   // the `ProviderEventLoggers` tag exposes — `undefined` means "no canonical
   // log writer is attached", which downstream code already handles as a

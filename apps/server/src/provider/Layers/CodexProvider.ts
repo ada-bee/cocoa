@@ -9,6 +9,7 @@ import * as Scope from "effect/Scope";
 import * as Types from "effect/Types";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as CodexChildProcessClient from "effect-codex-app-server/child-process-client";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexSchema from "effect-codex-app-server/schema";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -365,7 +366,7 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
           }),
       ),
     );
-  const clientContext = yield* Layer.build(CodexClient.layerChildProcess(child));
+  const clientContext = yield* Layer.build(CodexChildProcessClient.layerChildProcess(child));
   const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
     Effect.provide(clientContext),
   );

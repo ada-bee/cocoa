@@ -9,6 +9,10 @@ const packageRoot = NodePath.resolve(import.meta.dirname, "..");
 const workspaceRoot = NodePath.resolve(packageRoot, "../..");
 const vitePlusBin = NodePath.join(workspaceRoot, "node_modules/vite-plus/bin/vp");
 const cocoaBinSource = NodeFS.readFileSync(NodePath.join(packageRoot, "src/cocoa-bin.ts"), "utf8");
+const cocoaServerSource = NodeFS.readFileSync(
+  NodePath.join(packageRoot, "src/cocoa/CocoaGatewayServer.ts"),
+  "utf8",
+);
 const cloudEnvironment = {
   T3CODE_RELAY_URL: "https://relay.example.test",
   T3CODE_CLERK_PUBLISHABLE_KEY: "pk_test_cocoa",
@@ -36,12 +40,14 @@ const expectCocoaHelp = (result: NodeChildProcess.SpawnSyncReturns<string>) => {
   expect(result.stdout).not.toContain("--runtime-profile");
   expect(result.stdout).not.toContain("--tailscale-serve");
   expect(result.stdout).not.toContain("--auto-bootstrap-project-from-cwd");
+  expect(result.stdout).not.toContain("--bootstrap-fd");
   expect(result.stdout).not.toContain("Working directory for provider sessions");
 };
 
 describe("Cocoa Bun entrypoint", () => {
   it("keeps legacy hosted and service commands out of its static command graph", () => {
-    expect(cocoaBinSource).toContain('runtimeProfile: Option.some("cocoa-gateway")');
+    expect(cocoaBinSource).toContain("resolveCocoaGatewayConfig");
+    expect(cocoaBinSource).toContain('./cocoa/CocoaGatewayCliConfig.ts"');
     expect(cocoaBinSource).toContain(
       "Command.withSubcommands([cocoaStartCommand, cocoaServeCommand])",
     );
@@ -49,7 +55,21 @@ describe("Cocoa Bun entrypoint", () => {
       /(?:connectCommand|serviceCommand|servicePreflightCommand|hasCloudPublicConfig|node:sqlite)/,
     );
     expect(cocoaBinSource).not.toMatch(
-      /(?:\.\/bin\.ts|\.\/cli\/(?:connect|service|servicePreflight)\.ts)/,
+      /(?:\.\/bin\.ts|\.\/server\.ts|\.\/cli\/(?:connect|server|service|servicePreflight)\.ts)/,
+    );
+    expect(cocoaBinSource).toContain('./cocoa/CocoaGatewayServer.ts"');
+  });
+
+  it("uses a dedicated Cocoa-only server composition", () => {
+    expect(cocoaServerSource).toContain('config.runtimeProfile !== "cocoa-gateway"');
+    expect(cocoaServerSource).toContain("websocketRpcRouteLayer");
+    expect(cocoaServerSource).toContain("cocoaClientV1WebSocketRouteLayer");
+    expect(cocoaServerSource).toContain("gatewayHealthRouteLayer");
+    expect(cocoaServerSource).toContain("cocoaGatewayEnvironmentHttpApiLayer");
+    expect(cocoaServerSource).toContain("CocoaRuntimeDependenciesLive");
+    expect(cocoaServerSource).toContain("persistServerRuntimeState");
+    expect(cocoaServerSource).not.toMatch(
+      /(?:from "\.\.\/server\.ts"|LegacyRuntime|connectHttpApiLayer|tailscale|relayTracing|CloudManagedEndpointRuntime)/,
     );
   });
 
@@ -73,7 +93,18 @@ describe("Cocoa Bun entrypoint", () => {
       ]);
       expect(build.error).toBeUndefined();
       expect(build.status, build.stderr).toBe(0);
-      expectCocoaHelp(run("bun", [NodePath.join(outputDirectory, "cocoa-bin.mjs"), "--help"]));
+      const bundlePath = NodePath.join(outputDirectory, "cocoa-bin.mjs");
+      const bundle = NodeFS.readFileSync(bundlePath, "utf8");
+      for (const forbiddenRuntimeDependency of [
+        "@anthropic-ai/claude-agent-sdk",
+        "@opencode-ai/sdk",
+        "node-pty",
+        "@t3tools/tailscale",
+        "effect-codex-app-server/child-process-client",
+      ]) {
+        expect(bundle, forbiddenRuntimeDependency).not.toContain(forbiddenRuntimeDependency);
+      }
+      expectCocoaHelp(run("bun", [bundlePath, "--help"]));
     } finally {
       NodeFS.rmSync(outputDirectory, { recursive: true, force: true });
     }

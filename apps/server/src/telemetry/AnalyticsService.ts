@@ -8,7 +8,6 @@
  */
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Config from "effect/Config";
-import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -21,6 +20,9 @@ import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import { getTelemetryIdentifier } from "./Identify.ts";
+import { AnalyticsService } from "./AnalyticsServiceContract.ts";
+
+export { AnalyticsService } from "./AnalyticsServiceContract.ts";
 
 interface BufferedAnalyticsEvent {
   readonly event: string;
@@ -42,31 +44,6 @@ const TelemetryEnvConfig = Config.all({
   ),
   wslDistroName: Config.string("WSL_DISTRO_NAME").pipe(Config.option),
 });
-
-export class AnalyticsService extends Context.Service<
-  AnalyticsService,
-  {
-    /** Record an anonymous event for best-effort buffered delivery. */
-    readonly record: (
-      event: string,
-      properties?: Readonly<Record<string, unknown>>,
-    ) => Effect.Effect<void>;
-
-    /** Flush all currently queued telemetry events. */
-    readonly flush: Effect.Effect<void>;
-  }
->()("t3/telemetry/AnalyticsService") {
-  /** No-op layer for runtimes that intentionally disable product analytics. */
-  static readonly layerDisabled = Layer.succeed(
-    AnalyticsService,
-    AnalyticsService.of({
-      record: () => Effect.void,
-      flush: Effect.void,
-    }),
-  );
-
-  static readonly layerTest = AnalyticsService.layerDisabled;
-}
 
 export const make = Effect.gen(function* () {
   const telemetryConfig = yield* TelemetryEnvConfig;

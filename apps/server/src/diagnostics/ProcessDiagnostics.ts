@@ -1,17 +1,16 @@
 import type {
   ResourceTelemetryProcessCategory,
   ServerProcessDiagnosticsEntry,
-  ServerProcessDiagnosticsResult,
-  ServerProcessSignal,
-  ServerSignalProcessResult,
 } from "@t3tools/contracts";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import * as ResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts";
+import { ProcessDiagnostics } from "../ws/WsRuntimeServices.ts";
+
+export { ProcessDiagnostics } from "../ws/WsRuntimeServices.ts";
 
 export class ProcessSignalFailed extends Schema.TaggedErrorClass<ProcessSignalFailed>()(
   "ProcessSignalFailed",
@@ -25,18 +24,6 @@ export class ProcessSignalFailed extends Schema.TaggedErrorClass<ProcessSignalFa
     return `Failed to signal process ${this.pid} with ${this.signal}.`;
   }
 }
-
-export class ProcessDiagnostics extends Context.Service<
-  ProcessDiagnostics,
-  {
-    readonly read: Effect.Effect<ServerProcessDiagnosticsResult>;
-    readonly signal: (input: {
-      readonly pid: number;
-      readonly startTimeMs: number;
-      readonly signal: ServerProcessSignal;
-    }) => Effect.Effect<ServerSignalProcessResult>;
-  }
->()("t3/diagnostics/ProcessDiagnostics") {}
 
 function formatElapsed(runTimeMs: number): string {
   const totalSeconds = Math.max(0, Math.floor(runTimeMs / 1_000));

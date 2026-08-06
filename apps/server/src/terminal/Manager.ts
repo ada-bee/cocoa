@@ -20,23 +20,18 @@ import {
   TerminalWriteError,
   type TerminalAttachInput,
   type TerminalAttachStreamEvent,
-  type TerminalClearInput,
-  type TerminalCloseInput,
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
   type TerminalOpenInput,
   type TerminalResizeInput,
-  type TerminalRestartInput,
   type TerminalSessionSnapshot,
   type TerminalSessionStatus,
   type TerminalSummary,
-  type TerminalWriteInput,
 } from "@t3tools/contracts";
 import { makeKeyedCoalescingWorker } from "@t3tools/shared/KeyedCoalescingWorker";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as DateTime from "effect/DateTime";
-import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as Equal from "effect/Equal";
@@ -60,6 +55,8 @@ import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectTerminal from "../project/ProjectTerminal.ts";
 import * as PtyAdapter from "./PtyAdapter.ts";
 import { makeProviderTerminalManager } from "./ProviderManager.ts";
+import { TerminalManager } from "./TerminalManagerService.ts";
+export { TerminalManager } from "./TerminalManagerService.ts";
 import { sanitizeTerminalHistoryChunk } from "./TerminalHistorySanitizer.ts";
 
 export {
@@ -115,80 +112,6 @@ class TerminalProcessSignalError extends Schema.TaggedErrorClass<TerminalProcess
 /**
  * TerminalManager - Service tag for terminal session orchestration.
  */
-export class TerminalManager extends Context.Service<
-  TerminalManager,
-  {
-    /**
-     * Open or attach to a terminal session.
-     *
-     * Reuses an existing session for the same thread/terminal id and restores
-     * persisted history on first open.
-     */
-    readonly open: (
-      input: TerminalOpenInput,
-    ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
-
-    /**
-     * Attach to a terminal and stream its initial snapshot followed by live events.
-     *
-     * Returns an unsubscribe function.
-     */
-    readonly attachStream: (
-      input: TerminalAttachInput,
-      listener: (event: TerminalAttachStreamEvent) => Effect.Effect<void>,
-    ) => Effect.Effect<() => void, TerminalError>;
-
-    /**
-     * Write input bytes to a terminal session.
-     */
-    readonly write: (input: TerminalWriteInput) => Effect.Effect<void, TerminalError>;
-
-    /**
-     * Resize the PTY backing a terminal session.
-     */
-    readonly resize: (input: TerminalResizeInput) => Effect.Effect<void, TerminalError>;
-
-    /**
-     * Clear terminal output history.
-     */
-    readonly clear: (input: TerminalClearInput) => Effect.Effect<void, TerminalError>;
-
-    /**
-     * Restart a terminal session in place.
-     *
-     * Always resets history before spawning the new process.
-     */
-    readonly restart: (
-      input: TerminalRestartInput,
-    ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
-
-    /**
-     * Close an active terminal session.
-     *
-     * When `terminalId` is omitted, closes all sessions for the thread.
-     */
-    readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
-
-    /**
-     * Subscribe to terminal runtime events with a direct callback.
-     *
-     * Returns an unsubscribe function.
-     */
-    readonly subscribe: (
-      listener: (event: TerminalEvent) => Effect.Effect<void>,
-    ) => Effect.Effect<() => void>;
-
-    /**
-     * Subscribe to lightweight terminal metadata with an initial full snapshot.
-     *
-     * Returns an unsubscribe function.
-     */
-    readonly subscribeMetadata: (
-      listener: (event: TerminalMetadataStreamEvent) => Effect.Effect<void>,
-    ) => Effect.Effect<() => void>;
-  }
->()("t3/terminal/Manager/TerminalManager") {}
-
 interface TerminalSubprocessInspectResult {
   readonly hasRunningSubprocess: boolean;
   readonly childCommand: string | null;

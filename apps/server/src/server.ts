@@ -20,7 +20,6 @@ import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
 import * as HttpResponseCompression from "./httpCompression/HttpResponseCompression.ts";
 import {
-  otlpTracesProxyRouteLayer,
   assetRouteLayer,
   serverEnvironmentHttpApiLayer,
   staticAndDevRouteLayer,
@@ -28,6 +27,7 @@ import {
   gatewayHealthRouteLayer,
   httpCompressionLayer,
 } from "./http.ts";
+import { otlpTracesProxyRouteLayer } from "./observability/OtlpTracesProxyRoute.ts";
 import * as GatewayHealth from "./health/GatewayHealth.ts";
 import { cocoaClientV1WebSocketRouteLayer } from "./clientApi/v1/Route.ts";
 import { fixPath } from "./os-jank.ts";

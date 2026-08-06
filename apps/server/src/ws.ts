@@ -58,6 +58,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { HttpRouter, HttpServerRequest, HttpServerRespondable } from "effect/unstable/http";
 import { RpcSerialization, RpcServer } from "effect/unstable/rpc";
 
@@ -87,11 +88,10 @@ import {
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderFilesystemBrowse from "./provider/ProviderFilesystemBrowse.ts";
-import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSettings from "./serverSettings.ts";
-import * as TerminalManager from "./terminal/Manager.ts";
+import * as TerminalManager from "./terminal/TerminalManagerService.ts";
 import { makeTerminalClientStream } from "./terminal/ClientStreamBuffer.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -101,18 +101,14 @@ import * as ProjectWorkspaceRpc from "./project/ProjectWorkspaceRpc.ts";
 import * as RepositoryReadService from "./project/RepositoryReadService.ts";
 import * as RepositoryStatusBroadcaster from "./project/RepositoryStatusBroadcaster.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
-import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
+import * as ServerEnvironment from "./environment/ServerEnvironmentService.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
-import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
-import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
-import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
-import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
-import * as RelayClient from "@t3tools/shared/relayClient";
+import * as WsRuntimeServices from "./ws/WsRuntimeServices.ts";
 import { DEFAULT_RUNTIME_BUFFER_LIMITS } from "./RuntimeBufferLimits.ts";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
 const isOrchestrationCommandBusyError = Schema.is(OrchestrationCommandBusyError);
@@ -305,6 +301,7 @@ const makeWsRpcLayer = (
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
+      const hostPlatform = yield* HostProcessPlatform;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointRevertGate = yield* CheckpointRevertGate;
@@ -316,7 +313,7 @@ const makeWsRpcLayer = (
       const terminalManager = yield* TerminalManager.TerminalManager;
       const previewManager = yield* PreviewManager.PreviewManager;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
-      const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
+      const serverSelfUpdate = yield* WsRuntimeServices.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -354,10 +351,11 @@ const makeWsRpcLayer = (
       );
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
       const sessions = yield* SessionStore.SessionStore;
-      const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
-      const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
-      const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
-      const relayClientOption = yield* Effect.serviceOption(RelayClient.RelayClient);
+      const processDiagnostics = yield* WsRuntimeServices.ProcessDiagnostics;
+      const processResourceMonitor = yield* WsRuntimeServices.ProcessResourceMonitor;
+      const resourceTelemetry = yield* WsRuntimeServices.ResourceTelemetry;
+      const traceDiagnostics = yield* WsRuntimeServices.TraceDiagnostics;
+      const relayClientOption = yield* Effect.serviceOption(WsRuntimeServices.RelayClient);
       if (config.runtimeProfile === "cocoa-gateway" && Option.isSome(relayClientOption)) {
         return yield* Effect.die(
           new Error("Cocoa gateway composition must not provide a RelayClient service"),
@@ -367,13 +365,13 @@ const makeWsRpcLayer = (
         return yield* Effect.die(new Error("Legacy composition requires a RelayClient service"));
       }
       const relayClient = Option.getOrNull(relayClientOption);
-      const relayClientStatus: Effect.Effect<RelayClient.RelayClientStatus> =
+      const relayClientStatus =
         relayClient === null
           ? Effect.succeed({
-              status: "unsupported",
-              platform: process.platform,
+              status: "unsupported" as const,
+              platform: hostPlatform,
               arch: "external-provider",
-              version: RelayClient.CLOUDFLARED_VERSION,
+              version: WsRuntimeServices.LEGACY_RELAY_CLIENT_VERSION,
             })
           : relayClient.resolve;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
@@ -1494,7 +1492,7 @@ const makeWsRpcLayer = (
         [WS_METHODS.serverGetTraceDiagnostics]: (_input) =>
           observeRpcEffect(
             WS_METHODS.serverGetTraceDiagnostics,
-            TraceDiagnostics.readTraceDiagnostics({
+            traceDiagnostics.read({
               traceFilePath: config.serverTracePath,
               maxFiles: config.traceMaxFiles,
             }),
@@ -2089,7 +2087,7 @@ const makeWsRpcLayer = (
 export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
-    const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
+    const serverSelfUpdate = yield* WsRuntimeServices.ServerSelfUpdate;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2111,7 +2109,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
           Effect.provide(
             makeWsRpcLayer(session, previewAutomationBroker).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
-              Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
+              Layer.provide(Layer.succeed(WsRuntimeServices.ServerSelfUpdate, serverSelfUpdate)),
             ),
           ),
         );

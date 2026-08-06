@@ -1,23 +1,12 @@
-import type {
-  ResourceTelemetryProcessCategory,
-  ServerProcessResourceHistoryInput,
-  ServerProcessResourceHistoryResult,
-} from "@t3tools/contracts";
-import * as Context from "effect/Context";
+import type { ResourceTelemetryProcessCategory } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as ResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts";
+import { ProcessResourceMonitor } from "../ws/WsRuntimeServices.ts";
 
-export class ProcessResourceMonitor extends Context.Service<
-  ProcessResourceMonitor,
-  {
-    readonly readHistory: (
-      input: ServerProcessResourceHistoryInput,
-    ) => Effect.Effect<ServerProcessResourceHistoryResult>;
-  }
->()("t3/diagnostics/ProcessResourceMonitor") {}
+export { ProcessResourceMonitor } from "../ws/WsRuntimeServices.ts";
 
 function isLegacyBackendCategory(category: ResourceTelemetryProcessCategory): boolean {
   return (

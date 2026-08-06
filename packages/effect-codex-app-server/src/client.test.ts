@@ -16,6 +16,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 
 import * as CodexClient from "./client.ts";
+import * as CodexChildProcessClient from "./child-process-client.ts";
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 
@@ -163,7 +164,7 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       const messageDeltas = yield* Ref.make<Array<unknown>>([]);
       const handle = yield* makeHandle();
       const scope = yield* Scope.make();
-      const clientLayer = CodexClient.layerChildProcess(handle);
+      const clientLayer = CodexChildProcessClient.layerChildProcess(handle);
       const context = yield* Layer.buildWithScope(clientLayer, scope);
 
       const result = yield* Effect.gen(function* () {
@@ -257,7 +258,7 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
         CODEX_APP_SERVER_TEST_STDERR_BYTES: String(512 * 1024),
       });
       const scope = yield* Scope.make();
-      const clientLayer = CodexClient.layerChildProcess(handle);
+      const clientLayer = CodexChildProcessClient.layerChildProcess(handle);
       const context = yield* Layer.buildWithScope(clientLayer, scope);
 
       const initialized = yield* Effect.gen(function* () {

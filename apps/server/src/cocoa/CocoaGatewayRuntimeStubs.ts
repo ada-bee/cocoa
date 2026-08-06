@@ -4,11 +4,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
-import * as HostPowerMonitor from "../background/HostPowerMonitor.ts";
-import * as ProcessDiagnostics from "../diagnostics/ProcessDiagnostics.ts";
-import * as ProcessResourceMonitor from "../diagnostics/ProcessResourceMonitor.ts";
-import * as ExternalLauncher from "../process/externalLauncher.ts";
-import * as ResourceTelemetry from "../resourceTelemetry/ResourceTelemetry.ts";
+import * as HostPowerMonitor from "../background/HostPowerMonitorService.ts";
+import * as ExternalLauncher from "../process/ExternalLauncherService.ts";
+import * as WsRuntimeServices from "../ws/WsRuntimeServices.ts";
 
 export const CocoaExternalLauncherLayerLive = Layer.succeed(
   ExternalLauncher.ExternalLauncher,
@@ -76,7 +74,7 @@ export const CocoaUnavailableDiagnosticsLayerLive = Layer.unwrap(
         health,
       } as const;
       const changes = Stream.empty;
-      const telemetry = ResourceTelemetry.ResourceTelemetry.of({
+      const telemetry = WsRuntimeServices.ResourceTelemetry.of({
         latest: Effect.succeed(snapshot),
         changes,
         subscribe: Effect.succeed({ latest: snapshot, changes }),
@@ -96,7 +94,7 @@ export const CocoaUnavailableDiagnosticsLayerLive = Layer.unwrap(
         validateProcessIdentity: () => Effect.succeed(false),
         retry: Effect.succeed({ accepted: false, snapshot }),
       });
-      const processDiagnostics = ProcessDiagnostics.ProcessDiagnostics.of({
+      const processDiagnostics = WsRuntimeServices.ProcessDiagnostics.of({
         read: Effect.succeed({
           serverPid: process.pid,
           readAt,
@@ -114,7 +112,7 @@ export const CocoaUnavailableDiagnosticsLayerLive = Layer.unwrap(
             message: Option.some("Cocoa gateway does not signal local processes."),
           }),
       });
-      const processResourceMonitor = ProcessResourceMonitor.ProcessResourceMonitor.of({
+      const processResourceMonitor = WsRuntimeServices.ProcessResourceMonitor.of({
         readHistory: (input) =>
           Effect.succeed({
             readAt,
@@ -131,10 +129,38 @@ export const CocoaUnavailableDiagnosticsLayerLive = Layer.unwrap(
             }),
           }),
       });
+      const traceDiagnostics = WsRuntimeServices.TraceDiagnostics.of({
+        read: (options) =>
+          Effect.succeed({
+            traceFilePath: options.traceFilePath,
+            scannedFilePaths: [],
+            readAt,
+            recordCount: 0,
+            parseErrorCount: 0,
+            firstSpanAt: Option.none(),
+            lastSpanAt: Option.none(),
+            failureCount: 0,
+            interruptionCount: 0,
+            slowSpanThresholdMs: 0,
+            slowSpanCount: 0,
+            logLevelCounts: {},
+            topSpansByCount: [],
+            slowestSpans: [],
+            commonFailures: [],
+            latestFailures: [],
+            latestWarningAndErrorLogs: [],
+            partialFailure: Option.none(),
+            error: Option.some({
+              kind: "trace-file-not-found" as const,
+              message: "Trace diagnostics are unavailable in Cocoa gateway.",
+            }),
+          }),
+      });
       return Layer.mergeAll(
-        Layer.succeed(ResourceTelemetry.ResourceTelemetry, telemetry),
-        Layer.succeed(ProcessDiagnostics.ProcessDiagnostics, processDiagnostics),
-        Layer.succeed(ProcessResourceMonitor.ProcessResourceMonitor, processResourceMonitor),
+        Layer.succeed(WsRuntimeServices.ResourceTelemetry, telemetry),
+        Layer.succeed(WsRuntimeServices.ProcessDiagnostics, processDiagnostics),
+        Layer.succeed(WsRuntimeServices.ProcessResourceMonitor, processResourceMonitor),
+        Layer.succeed(WsRuntimeServices.TraceDiagnostics, traceDiagnostics),
       );
     }),
   ),

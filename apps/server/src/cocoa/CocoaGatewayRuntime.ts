@@ -5,11 +5,11 @@ import * as NetService from "@t3tools/shared/Net";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
-import * as HostPowerMonitor from "../background/HostPowerMonitor.ts";
+import * as HostPowerMonitor from "../background/HostPowerMonitorCore.ts";
 import * as CheckpointDiffQuery from "../checkpointing/CheckpointDiffQuery.ts";
-import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ServerEnvironment from "../environment/CocoaServerEnvironment.ts";
 import * as Keybindings from "../keybindings.ts";
-import { CoreOrchestrationReactorLive } from "../orchestration/Layers/OrchestrationReactor.ts";
+import { CoreOrchestrationReactorLive } from "../orchestration/Layers/CoreOrchestrationReactor.ts";
 import { CheckpointCoordinatorLive } from "../orchestration/Layers/CheckpointCoordinator.ts";
 import { CheckpointRevertGateLive } from "../orchestration/Layers/CheckpointRevertGate.ts";
 import { CheckpointRevertReactorLive } from "../orchestration/Layers/CheckpointRevertReactor.ts";
@@ -29,7 +29,7 @@ import { TurnDispatchJournalRepositoryLive } from "../persistence/Layers/TurnDis
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as ProjectExecution from "../project/ProjectExecution.ts";
-import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
+import * as ProjectFaviconResolver from "../project/CocoaProjectFaviconResolver.ts";
 import * as ProjectRepository from "../project/ProjectRepository.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProjectTerminal from "../project/ProjectTerminal.ts";
@@ -37,7 +37,7 @@ import * as ProjectWorkspace from "../project/ProjectWorkspace.ts";
 import * as RepositoryReadService from "../project/RepositoryReadService.ts";
 import * as RepositoryStatusBroadcaster from "../project/RepositoryStatusBroadcaster.ts";
 import { ProviderAdapterRegistryLive } from "../provider/Layers/ProviderAdapterRegistry.ts";
-import * as ProviderEventLoggers from "../provider/Layers/ProviderEventLoggers.ts";
+import * as ProviderEventLoggers from "../provider/Layers/ProviderEventLoggersService.ts";
 import { ProviderGenerationRecoveryReactorLive } from "../provider/Layers/ProviderGenerationRecoveryReactor.ts";
 import { CocoaProviderInstanceRegistryHydrationLive } from "../provider/Layers/CocoaProviderInstanceRegistryHydration.ts";
 import { ProviderRegistryLive } from "../provider/Layers/ProviderRegistry.ts";
@@ -47,10 +47,9 @@ import { ProviderSessionReaperLive } from "../provider/Layers/ProviderSessionRea
 import * as ProviderFilesystemBrowse from "../provider/ProviderFilesystemBrowse.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ServerLifecycleEvents from "../serverLifecycleEvents.ts";
-import * as TerminalManager from "../terminal/Manager.ts";
+import * as TerminalManager from "../terminal/ProviderManagerLayer.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
-import * as TraceDiagnostics from "../diagnostics/TraceDiagnostics.ts";
-import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
+import * as AnalyticsService from "../telemetry/AnalyticsServiceContract.ts";
 import {
   CocoaExternalLauncherLayerLive,
   CocoaUnavailableDiagnosticsLayerLive,
@@ -211,7 +210,7 @@ const CocoaRuntimeBaseDependenciesLive = CocoaReactorLayerLive.pipe(
   Layer.provideMerge(Keybindings.layer),
   Layer.provideMerge(ProviderRegistryLive),
   Layer.provideMerge(CocoaProviderInstanceRegistryHydrationLive),
-  Layer.provideMerge(ProviderEventLoggers.layer),
+  Layer.provideMerge(ProviderEventLoggers.layerDisabled),
   Layer.provideMerge(CocoaWorkspaceAccessLayerLive),
   Layer.provideMerge(CocoaProjectExecutionLayerLive),
   Layer.provideMerge(CocoaProjectRepositoryLayerLive),
@@ -226,7 +225,7 @@ const CocoaRuntimeBaseDependenciesLive = CocoaReactorLayerLive.pipe(
 const CocoaRuntimeCoreDependenciesLive = CocoaRuntimeBaseDependenciesLive.pipe(
   Layer.provideMerge(CocoaProjectFaviconResolverLayerLive),
   Layer.provideMerge(CocoaTextGenerationLayerLive),
-  Layer.provideMerge(ServerEnvironment.cocoaGatewayLayer),
+  Layer.provideMerge(ServerEnvironment.layer),
   Layer.provideMerge(AuthLayerLive),
   Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(CocoaBackgroundLayerLive),
@@ -235,11 +234,10 @@ const CocoaRuntimeCoreDependenciesLive = CocoaRuntimeBaseDependenciesLive.pipe(
 );
 
 export const CocoaRuntimeDependenciesLive = CocoaRuntimeCoreDependenciesLive.pipe(
-  Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(AnalyticsService.layerDisabled),
   Layer.provideMerge(ServerLifecycleEvents.layer),
   Layer.provide(NetService.layer),
-  Layer.provide(ProviderEventLoggers.layer),
+  Layer.provide(ProviderEventLoggers.layerDisabled),
   Layer.provide(ServerSettingsLayerLive),
 );
 

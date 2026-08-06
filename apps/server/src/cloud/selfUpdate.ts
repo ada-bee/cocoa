@@ -1,12 +1,5 @@
-import {
-  ServerSelfUpdateError,
-  type ServerSelfUpdateCapability,
-  type ServerSelfUpdateInput,
-  type ServerSelfUpdateProgressStage,
-  type ServerSelfUpdateResult,
-} from "@t3tools/contracts";
+import { ServerSelfUpdateError, type ServerSelfUpdateCapability } from "@t3tools/contracts";
 import { HostProcessExecutablePath } from "@t3tools/shared/hostProcess";
-import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -24,6 +17,9 @@ import {
 import { decodeServicePreflightResult } from "./servicePreflightProtocol.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import { ServerSelfUpdate } from "../ws/WsRuntimeServices.ts";
+
+export { ServerSelfUpdate } from "../ws/WsRuntimeServices.ts";
 
 const PREFLIGHT_TIMEOUT = Duration.seconds(30);
 
@@ -34,16 +30,6 @@ export function resolveServerSelfUpdateCapability(input: {
   if (input.desktopManaged) return "desktop-managed" as const;
   return input.launcherManaged ? ("boot-service" as const) : null;
 }
-
-export class ServerSelfUpdate extends Context.Service<
-  ServerSelfUpdate,
-  {
-    readonly update: (
-      input: ServerSelfUpdateInput,
-      reportProgress?: (stage: ServerSelfUpdateProgressStage) => Effect.Effect<void>,
-    ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
-  }
->()("t3/cloud/selfUpdate/ServerSelfUpdate") {}
 
 export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;

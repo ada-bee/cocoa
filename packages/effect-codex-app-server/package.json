@@ -7,6 +7,10 @@
       "types": "./src/client.ts",
       "import": "./src/client.ts"
     },
+    "./child-process-client": {
+      "types": "./src/child-process-client.ts",
+      "import": "./src/child-process-client.ts"
+    },
     "./schema": {
       "types": "./src/schema.ts",
       "import": "./src/schema.ts"

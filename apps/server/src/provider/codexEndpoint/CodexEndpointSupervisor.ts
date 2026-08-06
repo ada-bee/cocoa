@@ -13,7 +13,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as FileSystem from "effect/FileSystem";
 
-import { CodexSessionRuntimeEndpointUnavailableError } from "../Layers/CodexSessionRuntime.ts";
+import { CodexSessionRuntimeEndpointUnavailableError } from "../Layers/CodexSessionRuntimeCore.ts";
 import * as CodexEndpointFactory from "./CodexEndpointFactory.ts";
 import type { CodexEndpointConnection } from "./CodexEndpointConnection.ts";
 import { type CodexEndpointRouter, makeCodexEndpointRouter } from "./CodexEndpointRouter.ts";

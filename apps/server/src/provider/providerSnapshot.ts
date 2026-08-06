@@ -1,13 +1,4 @@
-import type {
-  ProviderDriverKind,
-  ModelCapabilities,
-  ServerProvider,
-  ServerProviderAuth,
-  ServerProviderSkill,
-  ServerProviderSlashCommand,
-  ServerProviderModel,
-  ServerProviderState,
-} from "@t3tools/contracts";
+import type { ModelCapabilities, ServerProviderModel } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
@@ -15,8 +6,20 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { normalizeCustomModelSlug } from "@t3tools/shared/model";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
-import { createProviderVersionAdvisory } from "./providerMaintenance.ts";
 import { collectUint8StreamText } from "../stream/collectUint8StreamText.ts";
+import {
+  buildServerProvider,
+  type ProviderProbeResult,
+  type ServerProviderDraft,
+  type ServerProviderPresentation,
+} from "./ProviderSnapshotBase.ts";
+
+export {
+  buildServerProvider,
+  type ProviderProbeResult,
+  type ServerProviderDraft,
+  type ServerProviderPresentation,
+} from "./ProviderSnapshotBase.ts";
 
 export const DEFAULT_TIMEOUT_MS = 4_000;
 // Auth status checks involve disk/network lookups and can be slow on first run (especially Windows)
@@ -43,23 +46,6 @@ export class ProviderCommandNotFoundError extends Schema.TaggedErrorClass<Provid
 }
 
 const isProviderCommandNotFoundError = Schema.is(ProviderCommandNotFoundError);
-
-export interface ProviderProbeResult {
-  readonly installed: boolean;
-  readonly version: string | null;
-  readonly status: Exclude<ServerProviderState, "disabled">;
-  readonly auth: ServerProviderAuth;
-  readonly message?: string;
-}
-
-export interface ServerProviderPresentation {
-  readonly displayName: string;
-  readonly badgeLabel?: string;
-  readonly showInteractionModeToggle?: boolean;
-  readonly requiresNewThreadForModelChange?: boolean;
-}
-
-export type ServerProviderDraft = Omit<ServerProvider, "instanceId" | "driver">;
 
 export function nonEmptyTrimmed(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -204,46 +190,6 @@ export function buildBooleanOptionDescriptor(input: {
     type: "boolean" as const,
     ...(input.description ? { description: input.description } : {}),
     ...(typeof input.currentValue === "boolean" ? { currentValue: input.currentValue } : {}),
-  };
-}
-
-export function buildServerProvider(input: {
-  driver?: ProviderDriverKind;
-  presentation: ServerProviderPresentation;
-  enabled: boolean;
-  checkedAt: string;
-  models: ReadonlyArray<ServerProviderModel>;
-  slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
-  skills?: ReadonlyArray<ServerProviderSkill>;
-  probe: ProviderProbeResult;
-}): ServerProviderDraft {
-  const versionAdvisory = input.driver
-    ? createProviderVersionAdvisory({
-        driver: input.driver,
-        currentVersion: input.probe.version,
-        checkedAt: input.checkedAt,
-      })
-    : undefined;
-  return {
-    displayName: input.presentation.displayName,
-    ...(input.presentation.badgeLabel ? { badgeLabel: input.presentation.badgeLabel } : {}),
-    ...(typeof input.presentation.showInteractionModeToggle === "boolean"
-      ? { showInteractionModeToggle: input.presentation.showInteractionModeToggle }
-      : {}),
-    ...(typeof input.presentation.requiresNewThreadForModelChange === "boolean"
-      ? { requiresNewThreadForModelChange: input.presentation.requiresNewThreadForModelChange }
-      : {}),
-    enabled: input.enabled,
-    installed: input.probe.installed,
-    version: input.probe.version,
-    status: input.enabled ? input.probe.status : "disabled",
-    auth: input.probe.auth,
-    checkedAt: input.checkedAt,
-    ...(input.probe.message ? { message: input.probe.message } : {}),
-    models: input.models,
-    slashCommands: [...(input.slashCommands ?? [])],
-    skills: [...(input.skills ?? [])],
-    ...(versionAdvisory ? { versionAdvisory } : {}),
   };
 }
 

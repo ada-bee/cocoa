@@ -6,6 +6,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 
 import * as CodexClient from "../../src/client.ts";
+import * as CodexChildProcessClient from "../../src/child-process-client.ts";
 
 const program = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -15,7 +16,7 @@ const program = Effect.gen(function* () {
       shell: false,
     }),
   );
-  const codexLayer = CodexClient.layerChildProcess(handle, {
+  const codexLayer = CodexChildProcessClient.layerChildProcess(handle, {
     logIncoming: true,
     logOutgoing: true,
   });

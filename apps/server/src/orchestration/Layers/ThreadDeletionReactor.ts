@@ -6,7 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
-import * as TerminalManager from "../../terminal/Manager.ts";
+import * as TerminalManager from "../../terminal/TerminalManagerService.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ThreadDeletionReactor,

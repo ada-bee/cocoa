@@ -3,12 +3,9 @@ import type {
   HostPowerSnapshot,
   ResourceMonitorSnapshotEvent,
   ResourceTelemetryHealth,
-  ResourceTelemetryHistoryInput,
-  ResourceTelemetryProcessIdentity,
   ResourceTelemetryRetryResult,
   ResourceTelemetrySnapshot,
 } from "@t3tools/contracts";
-import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -34,9 +31,11 @@ import * as ResourceAttribution from "./ResourceAttribution.ts";
 import {
   buildResourceTelemetryHistory,
   normalizeResourceTelemetryHistoryInput,
-  type ResourceTelemetryHistoryWithLegacyBuckets,
 } from "./ResourceTelemetryHistory.ts";
 import { subscribeBeforeSnapshot } from "../utils/subscribeBeforeSnapshot.ts";
+import { ResourceTelemetry } from "../ws/WsRuntimeServices.ts";
+
+export { ResourceTelemetry } from "../ws/WsRuntimeServices.ts";
 
 export class ResourceTelemetryRefreshFailed extends Schema.TaggedErrorClass<ResourceTelemetryRefreshFailed>()(
   "ResourceTelemetryRefreshFailed",
@@ -49,30 +48,6 @@ export class ResourceTelemetryRefreshFailed extends Schema.TaggedErrorClass<Reso
     return `Resource telemetry operation '${this.operation}' failed.`;
   }
 }
-
-export class ResourceTelemetry extends Context.Service<
-  ResourceTelemetry,
-  {
-    readonly latest: Effect.Effect<ResourceTelemetrySnapshot>;
-    readonly changes: Stream.Stream<ResourceTelemetrySnapshot>;
-    readonly subscribe: Effect.Effect<
-      {
-        readonly latest: ResourceTelemetrySnapshot;
-        readonly changes: Stream.Stream<ResourceTelemetrySnapshot>;
-      },
-      never,
-      Scope.Scope
-    >;
-    readonly readHistory: (
-      input: ResourceTelemetryHistoryInput,
-    ) => Effect.Effect<ResourceTelemetryHistoryWithLegacyBuckets>;
-    readonly refresh: Effect.Effect<ResourceTelemetrySnapshot, ResourceTelemetryRefreshFailed>;
-    readonly validateProcessIdentity: (
-      identity: ResourceTelemetryProcessIdentity,
-    ) => Effect.Effect<boolean, ResourceTelemetryRefreshFailed>;
-    readonly retry: Effect.Effect<ResourceTelemetryRetryResult>;
-  }
->()("t3/resourceTelemetry/ResourceTelemetry") {}
 
 interface TelemetryState {
   readonly nativeSnapshot: Option.Option<ResourceMonitorSnapshotEvent>;
