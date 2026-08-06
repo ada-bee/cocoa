@@ -184,6 +184,7 @@ const buildProvider = (input: {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProvider["auth"];
   readonly message?: string;
+  readonly connectionState: NonNullable<ServerProvider["connectionState"]>;
 }): CodexEndpointProviderDraft => ({
   ...PRESENTATION,
   enabled: input.enabled,
@@ -191,6 +192,7 @@ const buildProvider = (input: {
   version: input.version,
   status: input.enabled ? input.status : "disabled",
   auth: input.auth,
+  connectionState: input.connectionState,
   checkedAt: input.checkedAt,
   ...(input.message ? { message: input.message } : {}),
   models: input.models,
@@ -212,6 +214,7 @@ export const makePendingCodexEndpointProvider = (
         version: null,
         status: "warning",
         auth: { status: "unknown" },
+        connectionState: settings.enabled ? "connecting" : "disconnected",
         message: settings.enabled
           ? "Codex endpoint provider status has not been checked in this session yet."
           : "Codex is disabled in Cocoa settings.",
@@ -293,6 +296,7 @@ export const checkCodexEndpointProviderStatus = Effect.fn("CodexEndpointProvider
         version: null,
         status: "warning",
         auth: { status: "unknown" },
+        connectionState: "disconnected",
         message: "Codex is disabled in Cocoa settings.",
       });
     }
@@ -317,6 +321,7 @@ export const checkCodexEndpointProviderStatus = Effect.fn("CodexEndpointProvider
         version: connection.compatibility.serverVersion ?? null,
         status: "error",
         auth: { status: "unknown" },
+        connectionState: "ready",
         message: `Codex endpoint provider status request failed: ${result.failure.message}.`,
       });
     }
@@ -329,6 +334,7 @@ export const checkCodexEndpointProviderStatus = Effect.fn("CodexEndpointProvider
         version: connection.compatibility.serverVersion ?? null,
         status: "error",
         auth: { status: "unknown" },
+        connectionState: "ready",
         message: "Timed out while checking Codex endpoint provider status.",
       });
     }
@@ -342,6 +348,7 @@ export const checkCodexEndpointProviderStatus = Effect.fn("CodexEndpointProvider
       version: connection.compatibility.serverVersion ?? null,
       status: accountStatus.status,
       auth: accountStatus.auth,
+      connectionState: accountStatus.auth.status === "unauthenticated" ? "blocked" : "ready",
       message:
         accountStatus.message ??
         "Cocoa gateway MCP tools are deferred for endpoint-backed Codex sessions until a routable gateway MCP endpoint is configured.",

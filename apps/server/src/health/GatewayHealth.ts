@@ -45,13 +45,15 @@ const summarizeProvider = (provider: ServerProvider): GatewayProviderHealth => (
   state:
     !provider.enabled || provider.status === "disabled"
       ? "disabled"
-      : provider.availability === "unavailable" || provider.auth.status === "unauthenticated"
-        ? "blocked"
-        : provider.status === "ready"
-          ? "ready"
-          : provider.status === "warning"
-            ? "connecting"
-            : "disconnected",
+      : provider.connectionState !== undefined
+        ? provider.connectionState
+        : provider.availability === "unavailable" || provider.auth.status === "unauthenticated"
+          ? "blocked"
+          : provider.status === "ready"
+            ? "ready"
+            : provider.status === "warning"
+              ? "connecting"
+              : "disconnected",
 });
 
 /** Evaluate independent health sources concurrently without exposing their failure details. */

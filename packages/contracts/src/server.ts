@@ -116,6 +116,19 @@ export type ServerProviderSkill = typeof ServerProviderSkill.Type;
 export const ServerProviderAvailability = Schema.Literals(["available", "unavailable"]);
 export type ServerProviderAvailability = typeof ServerProviderAvailability.Type;
 
+/**
+ * Normalized runtime connection state for provider implementations that own a
+ * long-lived external endpoint. Optional so snapshots from older gateways and
+ * provider drivers continue to decode and use the legacy status inference.
+ */
+export const ServerProviderConnectionState = Schema.Literals([
+  "ready",
+  "connecting",
+  "disconnected",
+  "blocked",
+]);
+export type ServerProviderConnectionState = typeof ServerProviderConnectionState.Type;
+
 export const ServerProviderContinuation = Schema.Struct({
   groupKey: TrimmedNonEmptyString,
 });
@@ -184,6 +197,9 @@ export const ServerProvider = Schema.Struct({
   // explicitly so the UI can render unavailable shadows from
   // `ServerSettings.providerInstances`.
   availability: Schema.optional(ServerProviderAvailability),
+  // Optional for back-compat. When present, consumers should prefer this
+  // endpoint lifecycle state over inferring connectivity from `status`.
+  connectionState: Schema.optional(ServerProviderConnectionState),
   // Human-readable reason populated when `availability === "unavailable"`.
   // Surfaces in the UI alongside the missing-driver affordance.
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
@@ -198,9 +214,10 @@ export const ServerProvider = Schema.Struct({
 export type ServerProvider = typeof ServerProvider.Type;
 
 // Provider status kinds grow over time (ServerProviderState,
-// ServerProviderAuthStatus, ServerProviderVersionAdvisoryStatus,
-// ServerProviderUpdateStatus); an older client must not fail the whole config
-// decode over one provider it cannot render.
+// ServerProviderConnectionState, ServerProviderAuthStatus,
+// ServerProviderVersionAdvisoryStatus, ServerProviderUpdateStatus); an older
+// client must not fail the whole config decode over one provider it cannot
+// render.
 export const ServerProviders = ForwardCompatibleArray(ServerProvider);
 export type ServerProviders = typeof ServerProviders.Type;
 

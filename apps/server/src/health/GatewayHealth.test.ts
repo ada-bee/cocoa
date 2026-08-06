@@ -18,6 +18,7 @@ const provider = (
   status: "ready" | "warning" | "error" | "disabled",
   enabled = true,
   authStatus: "authenticated" | "unauthenticated" | "unknown" = "authenticated",
+  connectionState?: "ready" | "connecting" | "disconnected" | "blocked",
 ) =>
   decodeProvider({
     instanceId,
@@ -29,6 +30,7 @@ const provider = (
     auth: { status: authStatus },
     checkedAt: "2026-08-03T20:00:00.000Z",
     models: [],
+    ...(connectionState === undefined ? {} : { connectionState }),
   });
 
 const sources = (overrides: Partial<GatewayHealthSources> = {}) => ({
@@ -53,6 +55,26 @@ describe("GatewayHealth", () => {
       });
       assert.deepEqual(report.providers, [
         { instanceId: ProviderInstanceId.make("macbook_air"), state: "ready" },
+      ]);
+    }),
+  );
+
+  it.effect("prefers explicit connection state while preserving disabled precedence", () =>
+    Effect.gen(function* () {
+      const report = yield* evaluateGatewayReadiness(
+        sources({
+          providerSnapshots: Effect.succeed([
+            provider("protocol_blocked", "warning", true, "authenticated", "blocked"),
+            provider("connected", "error", true, "authenticated", "ready"),
+            provider("disabled", "disabled", false, "authenticated", "ready"),
+          ]),
+        }),
+      );
+
+      assert.deepEqual(report.providers, [
+        { instanceId: ProviderInstanceId.make("protocol_blocked"), state: "blocked" },
+        { instanceId: ProviderInstanceId.make("connected"), state: "ready" },
+        { instanceId: ProviderInstanceId.make("disabled"), state: "disabled" },
       ]);
     }),
   );

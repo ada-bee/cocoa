@@ -45,6 +45,16 @@ describe("ServerProvider", () => {
     expect(parsed.skills).toEqual([]);
     expect(parsed.versionAdvisory).toBeUndefined();
     expect(parsed.updateState).toBeUndefined();
+    expect(parsed.connectionState).toBeUndefined();
+  });
+
+  it("decodes an explicit normalized provider connection state", () => {
+    const parsed = decodeServerProvider({
+      ...baseProviderSnapshot,
+      connectionState: "blocked",
+    });
+
+    expect(parsed.connectionState).toBe("blocked");
   });
 
   it("defaults one-click update support when decoding older advisory snapshots", () => {

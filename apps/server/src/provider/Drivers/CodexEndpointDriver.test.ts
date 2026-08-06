@@ -14,10 +14,17 @@ import {
   NoOpProviderEventLoggers,
   ProviderEventLoggers,
 } from "../Layers/ProviderEventLoggersService.ts";
+import { CodexEndpointInvalidCredentialError } from "../codexEndpoint/DirectWebSocketConnector.ts";
+import * as CodexEndpointConnection from "../codexEndpoint/CodexEndpointConnection.ts";
 import {
+  codexEndpointLifecyclePresentation,
   makeCodexEndpointDriver,
   type CodexEndpointDriverDependencies,
 } from "./CodexEndpointDriver.ts";
+import {
+  checkCodexEndpointProviderStatus,
+  makePendingCodexEndpointProvider,
+} from "./CodexEndpointProviderSnapshot.ts";
 
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 const INSTANCE_ID = ProviderInstanceId.make("remote_codex");
@@ -73,6 +80,80 @@ const createInput = (config: CodexSettings, enabled = true) => ({
   enabled,
   config,
 });
+
+it("normalizes endpoint lifecycle states and exposes only safe compatibility detail", () => {
+  const incompatible = codexEndpointLifecyclePresentation({
+    _tag: "Blocked",
+    error: new CodexEndpointConnection.CodexEndpointCompatibilityError({
+      providerInstanceId: INSTANCE_ID,
+      method: "thread/start",
+      reason: "missing",
+    }),
+  });
+  assert.equal(incompatible.connectionState, "blocked");
+  assert.include(incompatible.message, "required method 'thread/start' is missing");
+
+  const credentialPath = "/run/secrets/highly-sensitive-key-name";
+  const credentialFailure = codexEndpointLifecyclePresentation({
+    _tag: "Blocked",
+    error: new CodexEndpointInvalidCredentialError({
+      path: credentialPath,
+      reason: "too-short",
+    }),
+  });
+  assert.equal(credentialFailure.connectionState, "blocked");
+  assert.notInclude(credentialFailure.message, credentialPath);
+  assert.notInclude(credentialFailure.message, "too-short");
+
+  assert.equal(
+    codexEndpointLifecyclePresentation({ _tag: "Connecting", attempt: 2 }).connectionState,
+    "connecting",
+  );
+  assert.equal(
+    codexEndpointLifecyclePresentation({
+      _tag: "Retrying",
+      attempt: 3,
+      error: new CodexEndpointInvalidCredentialError({ path: credentialPath, reason: "too-short" }),
+      delay: null,
+    }).connectionState,
+    "disconnected",
+  );
+  assert.equal(
+    codexEndpointLifecyclePresentation({ _tag: "Closed" }).connectionState,
+    "disconnected",
+  );
+  assert.equal(
+    codexEndpointLifecyclePresentation({
+      _tag: "Ready",
+      generationId: 1,
+      compatibility: {} as never,
+    }).connectionState,
+    "ready",
+  );
+});
+
+it.effect("stamps pending and account-blocked endpoint snapshots with connection state", () =>
+  Effect.gen(function* () {
+    const settings = decodeCodexSettings({
+      endpointTransport: {
+        type: "direct-websocket",
+        url: "ws://127.0.0.1:7777",
+        authentication: { type: "none" },
+      },
+    });
+    assert.equal((yield* makePendingCodexEndpointProvider(settings)).connectionState, "connecting");
+
+    const snapshot = yield* checkCodexEndpointProviderStatus(settings, {
+      compatibility: { serverVersion: "0.146.0" },
+      client: {
+        request: () => Effect.succeed({ account: null, requiresOpenaiAuth: true }),
+      },
+    } as never);
+    assert.equal(snapshot.status, "error");
+    assert.equal(snapshot.auth.status, "unauthenticated");
+    assert.equal(snapshot.connectionState, "blocked");
+  }),
+);
 
 it.layer(TestLayer)("CodexEndpointDriver", (it) => {
   it.effect("fails closed when endpoint transport is absent", () =>
@@ -136,7 +217,9 @@ it.layer(TestLayer)("CodexEndpointDriver", (it) => {
         assert.isUndefined(instance.execution);
         assert.isUndefined(instance.vcs);
         assert.isNull(instance.snapshot.maintenanceCapabilities.update);
-        assert.equal((yield* instance.snapshot.getSnapshot).status, "disabled");
+        const snapshot = yield* instance.snapshot.getSnapshot;
+        assert.equal(snapshot.status, "disabled");
+        assert.equal(snapshot.connectionState, "disconnected");
       }),
     ),
   );

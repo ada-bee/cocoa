@@ -43,7 +43,10 @@ import {
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
 import * as CodexEndpointFactory from "../codexEndpoint/CodexEndpointFactory.ts";
-import type { CodexEndpointCompatibilityMetadata } from "../codexEndpoint/CodexEndpointConnection.ts";
+import type {
+  CodexEndpointCompatibilityMetadata,
+  CodexEndpointCompatibilityError,
+} from "../codexEndpoint/CodexEndpointConnection.ts";
 import { makeCodexExecutionAdapter } from "../codexEndpoint/CodexExecutionAdapter.ts";
 import { makeCodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
@@ -58,6 +61,49 @@ import {
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+
+const protocolCompatibilityMessage = (error: CodexEndpointCompatibilityError): string =>
+  `The Codex endpoint protocol is incompatible: required method '${error.method}' is ${error.reason}. Update Codex on the provider host or adjust the provider configuration.`;
+
+export const codexEndpointLifecyclePresentation = (
+  state: CodexEndpointSupervisor.CodexEndpointSupervisorState,
+): Pick<CodexEndpointProviderDraft, "status" | "message" | "connectionState"> => {
+  switch (state._tag) {
+    case "Connecting":
+      return {
+        status: "warning",
+        connectionState: "connecting",
+        message: `Connecting to the Codex endpoint (attempt ${state.attempt}).`,
+      };
+    case "Retrying":
+      return {
+        status: "error",
+        connectionState: "disconnected",
+        message: `The Codex endpoint connection was interrupted and will retry (attempt ${state.attempt}).`,
+      };
+    case "Blocked":
+      return {
+        status: "error",
+        connectionState: "blocked",
+        message:
+          state.error._tag === "CodexEndpointCompatibilityError"
+            ? protocolCompatibilityMessage(state.error)
+            : "The Codex endpoint connection is blocked by its configuration or authentication. Update the provider settings to retry.",
+      };
+    case "Closed":
+      return {
+        status: "error",
+        connectionState: "disconnected",
+        message: "The Codex endpoint connection is closed.",
+      };
+    case "Ready":
+      return {
+        status: "warning",
+        connectionState: "ready",
+        message: "The Codex endpoint is ready; provider status is being refreshed.",
+      };
+  }
+};
 
 type CodexTextGenerationOperation =
   | "generateCommitMessage"
@@ -377,36 +423,7 @@ export const makeCodexEndpointDriver = (
               state._tag === "Ready"
                 ? (state.compatibility.serverVersion ?? (yield* Ref.get(observedServerVersion)))
                 : yield* Ref.get(observedServerVersion);
-            const presentation = (() => {
-              switch (state._tag) {
-                case "Connecting":
-                  return {
-                    status: "warning" as const,
-                    message: `Connecting to the Codex endpoint (attempt ${state.attempt}).`,
-                  };
-                case "Retrying":
-                  return {
-                    status: "error" as const,
-                    message: `The Codex endpoint connection was interrupted and will retry (attempt ${state.attempt}).`,
-                  };
-                case "Blocked":
-                  return {
-                    status: "error" as const,
-                    message:
-                      "The Codex endpoint connection is blocked by its configuration or authentication. Update the provider settings to retry.",
-                  };
-                case "Closed":
-                  return {
-                    status: "error" as const,
-                    message: "The Codex endpoint connection is closed.",
-                  };
-                case "Ready":
-                  return {
-                    status: "warning" as const,
-                    message: "The Codex endpoint is ready; provider status is being refreshed.",
-                  };
-              }
-            })();
+            const presentation = codexEndpointLifecyclePresentation(state);
             return withVersionAdvisory({
               ...pending,
               enabled: true,
@@ -414,6 +431,7 @@ export const makeCodexEndpointDriver = (
               version: observedVersion,
               status: presentation.status,
               message: presentation.message,
+              connectionState: presentation.connectionState,
             });
           },
         );
