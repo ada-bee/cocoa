@@ -686,7 +686,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
     ),
   );
 
-  it.effect("hydrates while conversation and isolated terminal connectors remain pending", () =>
+  it.effect("hydrates while the shared conversation and terminal connector remains pending", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const instanceScope = yield* Scope.make("sequential");
@@ -730,44 +730,30 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           providerInstanceId: INSTANCE_ID,
         });
         assert.isUndefined(instance.terminal);
-        assert.deepStrictEqual(
-          [yield* Queue.take(connectorStarts), yield* Queue.take(connectorStarts)].sort(),
-          [1, 2],
-        );
+        assert.equal(yield* Queue.take(connectorStarts), 1);
+        assert.equal(connectorCount, 1);
 
         yield* Scope.close(instanceScope, Exit.void);
-        assert.deepStrictEqual(
-          [
-            yield* Queue.take(connectorInterruptions),
-            yield* Queue.take(connectorInterruptions),
-          ].sort(),
-          [1, 2],
-        );
+        assert.equal(yield* Queue.take(connectorInterruptions), 1);
         assert.equal((yield* instance.generationLifecycle!.getCurrent)._tag, "Unavailable");
       }),
     ),
   );
 
-  it.effect("uses an isolated endpoint supervisor for explicit terminal access", () =>
+  it.effect("borrows explicit terminal access from the single shared endpoint supervisor", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const instanceScope = yield* Scope.make();
         const conversationOne = yield* makeTerminationConnection(INSTANCE_ID, 1);
         const conversationTwo = yield* makeTerminationConnection(INSTANCE_ID, 2);
-        const terminalConnection = yield* makeTerminationConnection(INSTANCE_ID, 101);
         const transports: Array<unknown> = [];
-        const startOrder: Array<string> = [];
-        const releaseOrder: Array<string> = [];
+        let startCalls = 0;
+        let releaseCalls = 0;
         const terminalStartConnections: Array<unknown> = [];
         let supervisorCount = 0;
         let conversationCurrent = conversationOne.connection;
         let conversationStopCalls = 0;
         let invalidateConversation:
-          | ((
-              event: CodexEndpointSupervisor.CodexEndpointGenerationInvalidated,
-            ) => Effect.Effect<void>)
-          | undefined;
-        let invalidateTerminal:
           | ((
               event: CodexEndpointSupervisor.CodexEndpointGenerationInvalidated,
             ) => Effect.Effect<void>)
@@ -794,7 +780,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         const driver = makeCodexDriver({
           makeEndpointSupervisor: ((options) =>
             Effect.gen(function* () {
-              const label = supervisorCount++ === 0 ? "conversation" : "terminal";
+              supervisorCount += 1;
               transports.push(options.transport);
               const changes =
                 yield* PubSub.unbounded<CodexEndpointSupervisor.CodexEndpointSupervisorState>();
@@ -802,35 +788,31 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
                 PubSub.shutdown(changes).pipe(
                   Effect.andThen(
                     Effect.sync(() => {
-                      releaseOrder.push(label);
+                      releaseCalls += 1;
                     }),
                   ),
                 ),
               );
-              const currentConnection = () =>
-                label === "conversation" ? conversationCurrent : terminalConnection.connection;
 
               return {
                 start: (startOptions) =>
                   Effect.sync(() => {
-                    startOrder.push(label);
-                    const invalidate = (
+                    startCalls += 1;
+                    invalidateConversation = (
                       event: CodexEndpointSupervisor.CodexEndpointGenerationInvalidated,
                     ) => startOptions.onGenerationInvalidated(event).pipe(Effect.ignore);
-                    if (label === "conversation") invalidateConversation = invalidate;
-                    else invalidateTerminal = invalidate;
                   }),
                 borrow: () => Effect.die("session borrow unused"),
                 borrowConnection: Effect.sync(() => ({
-                  generationId: label === "conversation" ? 1 : 101,
-                  connection: currentConnection(),
+                  generationId: conversationCurrent === conversationOne.connection ? 1 : 2,
+                  connection: conversationCurrent,
                   ensureCurrent: Effect.void,
                 })),
                 borrowRoutedConnection: Effect.die("routed borrow unused"),
                 getState: Effect.sync(() => ({
                   _tag: "Ready" as const,
-                  generationId: label === "conversation" ? 1 : 101,
-                  compatibility: currentConnection().compatibility,
+                  generationId: conversationCurrent === conversationOne.connection ? 1 : 2,
+                  compatibility: conversationCurrent.compatibility,
                 })),
                 subscribeChanges: PubSub.subscribe(changes),
               } satisfies CodexEndpointSupervisor.CodexEndpointSupervisor;
@@ -872,39 +854,32 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           })
           .pipe(Effect.provideService(Scope.Scope, instanceScope));
 
-        assert.equal(supervisorCount, 2);
-        assert.deepStrictEqual(startOrder, ["conversation", "terminal"]);
+        assert.equal(supervisorCount, 1);
+        assert.equal(startCalls, 1);
+        assert.lengthOf(transports, 1);
         assert.strictEqual(transports[0], TERMINAL_ENDPOINT_CONFIG.endpointTransport);
-        assert.strictEqual(transports[1], TERMINAL_ENDPOINT_CONFIG.endpointTransport);
         assert.equal(terminalFactoryInput?.providerInstanceId, INSTANCE_ID);
         assert.equal(terminalFactoryInput?.sandboxMode, "workspaceWrite");
         assert.isDefined(instance.terminal);
 
-        const terminalFailure = new CodexEndpointWebSocketOpenError({
-          url: "ws://127.0.0.1:7777",
-          cause: new Error("terminal transport failed"),
-        });
-        yield* invalidateTerminal!({ generationId: 101, error: terminalFailure });
-        assert.equal(conversationStopCalls, 0);
-        assert.equal((yield* instance.snapshot.getSnapshot).status, "ready");
-        assert.deepStrictEqual(yield* instance.generationLifecycle!.getCurrent, {
-          _tag: "Ready",
-          providerInstanceId: INSTANCE_ID,
-          generationId: 1,
-        });
-
         yield* instance.terminal!.start({} as never, () => Effect.void).pipe(Effect.scoped);
+        assert.deepStrictEqual(terminalStartConnections, [conversationOne.connection]);
+
+        const endpointFailure = new CodexEndpointWebSocketOpenError({
+          url: "ws://127.0.0.1:7777",
+          cause: new Error("shared endpoint transport failed"),
+        });
         conversationCurrent = conversationTwo.connection;
-        yield* invalidateConversation!({ generationId: 1, error: terminalFailure });
+        yield* invalidateConversation!({ generationId: 1, error: endpointFailure });
         yield* instance.terminal!.start({} as never, () => Effect.void).pipe(Effect.scoped);
         assert.equal(conversationStopCalls, 1);
         assert.deepStrictEqual(terminalStartConnections, [
-          terminalConnection.connection,
-          terminalConnection.connection,
+          conversationOne.connection,
+          conversationTwo.connection,
         ]);
 
         yield* Scope.close(instanceScope, Exit.void);
-        assert.deepStrictEqual(releaseOrder, ["terminal", "conversation"]);
+        assert.equal(releaseCalls, 1);
       }),
     ),
   );

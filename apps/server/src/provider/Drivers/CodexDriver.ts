@@ -9,10 +9,10 @@
  *     unavailable service when the remote endpoint does not expose it.
  *
  * Each call to `create()` captures the typed config in closures owned by the
- * returned instance. Endpoint-backed instances own a conversation supervisor
- * whose immutable connection/router generation is replaced after transient
- * termination. When explicitly enabled, terminal work owns a second isolated
- * supervisor; legacy instances retain their isolated local app-server behavior.
+ * returned instance. Endpoint-backed instances own one supervisor shared by
+ * conversations, text generation, workspace, VCS, and terminal work. Its
+ * immutable connection/router generation is replaced after transient
+ * termination; legacy instances retain their isolated local app-server behavior.
  *
  * Resource lifecycle: `create()` runs in a scope handed in by the registry.
  * Closing that scope releases the endpoint transport (or legacy adapter child
@@ -301,32 +301,16 @@ export const makeCodexDriver = (
             endpointTextGeneration,
           );
           let conversationCompatibility: CodexEndpointCompatibilityMetadata | undefined;
-          let terminalCompatibility: CodexEndpointCompatibilityMetadata | undefined;
           const terminalConfig = effectiveConfig.endpointTerminal;
           const terminalSandboxMode =
             terminalConfig.enabled === false ? undefined : terminalConfig.sandboxMode;
-          const terminalSupervisor =
-            terminalSandboxMode === undefined
-              ? undefined
-              : yield* dependencies.makeEndpointSupervisor({
-                  providerInstanceId: instanceId,
-                  transport: config.endpointTransport,
-                  dependencies: {
-                    makeEndpoint: dependencies.makeEndpoint,
-                    makeRouter: dependencies.makeEndpointRouter,
-                  },
-                });
-          const terminalChanges =
-            terminalSupervisor === undefined
-              ? undefined
-              : yield* terminalSupervisor.subscribeChanges;
           const terminal =
-            terminalSupervisor === undefined || terminalSandboxMode === undefined
+            terminalSandboxMode === undefined
               ? undefined
               : yield* dependencies.makeEndpointTerminal({
                   providerInstanceId: instanceId,
                   sandboxMode: terminalSandboxMode,
-                  borrowConnection: terminalSupervisor.borrowConnection,
+                  borrowConnection: supervisor.borrowConnection,
                 });
           const workspace =
             config.workspaceHelper === undefined
@@ -557,30 +541,11 @@ export const makeCodexDriver = (
                 ),
               ),
           });
-          if (terminalSupervisor !== undefined) {
-            // Schedule the isolated terminal connection without making
-            // provider hydration wait for its connector timeout. Its retry
-            // lifecycle remains separate from conversation/provider health.
-            yield* terminalSupervisor.start({
-              // Terminal sessions are permanently bound to their captured
-              // connection generation. Their invalidation is deliberately
-              // independent from conversation session cleanup.
-              onGenerationInvalidated: () => Effect.void,
-            });
-          }
-
           const initialConversationState = yield* supervisor.getState;
           conversationCompatibility =
             initialConversationState._tag === "Ready"
               ? initialConversationState.compatibility
               : undefined;
-          if (terminalSupervisor !== undefined) {
-            const initialTerminalState = yield* terminalSupervisor.getState;
-            terminalCompatibility =
-              initialTerminalState._tag === "Ready"
-                ? initialTerminalState.compatibility
-                : undefined;
-          }
 
           const stampedCheckProvider = checkProvider().pipe(Effect.map(stampIdentity));
           const snapshotSettings = makeProviderSnapshotSettingsSource(
@@ -625,17 +590,6 @@ export const makeCodexDriver = (
             }),
             Effect.forkScoped,
           );
-          if (terminalChanges !== undefined) {
-            yield* Stream.fromSubscription(terminalChanges).pipe(
-              Stream.runForEach((state) =>
-                Effect.sync(() => {
-                  terminalCompatibility = state._tag === "Ready" ? state.compatibility : undefined;
-                }),
-              ),
-              Effect.forkScoped,
-            );
-          }
-
           return {
             instanceId,
             driverKind: DRIVER_KIND,
@@ -655,8 +609,8 @@ export const makeCodexDriver = (
             },
             get terminal() {
               return terminal !== undefined &&
-                terminalCompatibility?.platformFamily === "unix" &&
-                terminalCompatibility.capabilities?.commandExecControl === true
+                conversationCompatibility?.platformFamily === "unix" &&
+                conversationCompatibility.capabilities?.commandExecControl === true
                 ? terminal
                 : undefined;
             },
