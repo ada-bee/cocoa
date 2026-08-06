@@ -49,6 +49,7 @@ import {
   type ProviderTerminalSession,
 } from "../provider/ProviderTerminalAdapter.ts";
 import type { TerminalManager } from "./Manager.ts";
+import { sanitizeTerminalHistoryChunk } from "./TerminalHistorySanitizer.ts";
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
 const DEFAULT_HISTORY_BYTE_LIMIT = 4 * 1024 * 1024;
@@ -79,6 +80,7 @@ interface ProviderSessionState {
   acceptingEvents: boolean;
   pendingEvents: Array<ProviderTerminalEvent>;
   decoder: TextDecoder;
+  pendingHistoryControlSequence: string;
 }
 
 interface ProviderManagerState {
@@ -286,7 +288,11 @@ export const makeProviderTerminalManager = Effect.fn("TerminalManager.makeProvid
     data: string,
   ) {
     if (data.length === 0) return;
-    session.history = capHistory(`${session.history}${data}`, historyLineLimit);
+    const sanitized = sanitizeTerminalHistoryChunk(session.pendingHistoryControlSequence, data);
+    session.pendingHistoryControlSequence = sanitized.pendingControlSequence;
+    if (sanitized.visibleText.length > 0) {
+      session.history = capHistory(`${session.history}${sanitized.visibleText}`, historyLineLimit);
+    }
     const sequence = advance(session);
     yield* publish({
       type: "output",
@@ -310,6 +316,7 @@ export const makeProviderTerminalManager = Effect.fn("TerminalManager.makeProvid
       }
 
       yield* emitOutputLocked(session, session.decoder.decode());
+      session.pendingHistoryControlSequence = "";
       session.acceptingEvents = false;
       session.status = "exited";
       session.exitCode = event.exitCode;
@@ -362,6 +369,7 @@ export const makeProviderTerminalManager = Effect.fn("TerminalManager.makeProvid
         session.exitCode = null;
         session.exitSignal = null;
         session.decoder = new TextDecoder();
+        session.pendingHistoryControlSequence = "";
         advance(session);
         return { providerSession, providerScope };
       }),
@@ -388,6 +396,7 @@ export const makeProviderTerminalManager = Effect.fn("TerminalManager.makeProvid
     session.acceptingEvents = false;
     session.pendingEvents = [];
     session.decoder = new TextDecoder();
+    session.pendingHistoryControlSequence = "";
     session.updatedAt = yield* nowIso;
     const providerScope = yield* Scope.make("sequential");
 
@@ -476,6 +485,7 @@ export const makeProviderTerminalManager = Effect.fn("TerminalManager.makeProvid
       acceptingEvents: false,
       pendingEvents: [],
       decoder: new TextDecoder(),
+      pendingHistoryControlSequence: "",
     } satisfies ProviderSessionState;
   });
 
@@ -640,6 +650,7 @@ export const makeProviderTerminalManager = Effect.fn("TerminalManager.makeProvid
         }
         const session = found.value;
         session.history = "";
+        session.pendingHistoryControlSequence = "";
         yield* publish({
           type: "cleared",
           threadId: session.threadId,

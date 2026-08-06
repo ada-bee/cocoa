@@ -142,6 +142,87 @@ it.effect("routes by durable thread and keeps ordered bounded in-memory history"
   ),
 );
 
+it.effect("sanitizes replay history across chunks while preserving live provider output", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fake = fakeProjectTerminal();
+      const manager = yield* makeProviderTerminalManager({ projectTerminal: fake.service });
+      const eventsRef = yield* Ref.make<ReadonlyArray<TerminalEvent>>([]);
+      yield* manager.subscribe((event) => Ref.update(eventsRef, (events) => [...events, event]));
+      yield* manager.open(openInput);
+
+      const outputChunks = [
+        "prompt ",
+        "\u001b[?2026$",
+        "p\u001b[?2026;2$y\u001b[>q\u001b[?u\u001b[?31u",
+        "\u001b[6n\u001b[1;1R\u001b[>0c\u009b?31u",
+        "\u001bP$q ",
+        "m\u001b\\\u001bP1$r0m\u001b\\",
+        "\u001bP+q544e\u001b\\\u001bP1+r544e=1b\u001b\\",
+        "\u0090$q m\u009c\u00901$r0m\u009c",
+        "\u0090+q544e",
+        "\u009c\u001b]11;rgb:ffff/ffff/ffff\u0007",
+        // These setters share final bytes with query families but change
+        // replayable terminal state and must remain in history.
+        '\u001b[!p\u001b["p\u001b[4 q\u001b[u',
+        "\u001b[32mdone\u001b[0m\n",
+      ] as const;
+      for (const chunk of outputChunks) {
+        yield* fake.emit(0, { type: "output", bytes: new TextEncoder().encode(chunk) });
+      }
+
+      const current = yield* manager.open(openInput);
+      assert.strictEqual(
+        current.history,
+        'prompt \u001b[!p\u001b["p\u001b[4 q\u001b[u\u001b[32mdone\u001b[0m\n',
+      );
+      const liveOutput = (yield* Ref.get(eventsRef))
+        .filter(
+          (event): event is Extract<TerminalEvent, { type: "output" }> => event.type === "output",
+        )
+        .map((event) => event.data)
+        .join("");
+      assert.strictEqual(liveOutput, outputChunks.join(""));
+    }),
+  ),
+);
+
+it.effect("sanitizes the decoder flush before completing a provider session", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fake = fakeProjectTerminal();
+      const manager = yield* makeProviderTerminalManager({ projectTerminal: fake.service });
+      const eventsRef = yield* Ref.make<ReadonlyArray<TerminalEvent>>([]);
+      yield* manager.subscribe((event) => Ref.update(eventsRef, (events) => [...events, event]));
+      yield* manager.open(openInput);
+
+      yield* fake.emit(0, {
+        type: "output",
+        bytes: new TextEncoder().encode("before "),
+      });
+      // An incomplete UTF-8 scalar is buffered by the streaming decoder. Its
+      // replacement character is produced only by the exit-time decoder flush.
+      yield* fake.emit(0, { type: "output", bytes: new Uint8Array([0xc3]) });
+      yield* fake.emit(0, {
+        type: "exited",
+        exitCode: 0,
+        exitSignal: null,
+        reason: "completed",
+      });
+
+      const current = yield* manager.open(openInput);
+      assert.strictEqual(current.history, "before �");
+      const liveOutput = (yield* Ref.get(eventsRef))
+        .filter(
+          (event): event is Extract<TerminalEvent, { type: "output" }> => event.type === "output",
+        )
+        .map((event) => event.data)
+        .join("");
+      assert.strictEqual(liveOutput, "before �");
+    }),
+  ),
+);
+
 it.effect("does not replay disconnected sessions and permits only explicit restart", () =>
   Effect.scoped(
     Effect.gen(function* () {
