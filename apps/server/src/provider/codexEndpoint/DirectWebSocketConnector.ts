@@ -1,5 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import type { CodexDirectWebSocketTransport } from "@t3tools/contracts";
 import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
+import type * as NodeHttp from "node:http";
 
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -63,6 +65,7 @@ export class CodexEndpointWebSocketOpenError extends Schema.TaggedErrorClass<Cod
   {
     url: Schema.String,
     cause: Schema.Defect(),
+    httpStatus: Schema.optionalKey(Schema.Int),
   },
 ) {
   override get message(): string {
@@ -135,6 +138,10 @@ export type CodexDirectWebSocketConnectorError =
 type MessageListener = (data: NodeSocket.NodeWS.RawData, isBinary: boolean) => void;
 type ErrorListener = (error: Error) => void;
 type CloseListener = (code: number, reason: Buffer) => void;
+type UnexpectedResponseListener = (
+  request: NodeHttp.ClientRequest,
+  response: NodeHttp.IncomingMessage,
+) => void;
 
 export interface CodexEndpointWebSocket {
   readonly readyState: number;
@@ -142,10 +149,12 @@ export interface CodexEndpointWebSocket {
   on(event: "error", listener: ErrorListener): this;
   on(event: "close", listener: CloseListener): this;
   on(event: "open", listener: () => void): this;
+  on(event: "unexpected-response", listener: UnexpectedResponseListener): this;
   off(event: "message", listener: MessageListener): this;
   off(event: "error", listener: ErrorListener): this;
   off(event: "close", listener: CloseListener): this;
   off(event: "open", listener: () => void): this;
+  off(event: "unexpected-response", listener: UnexpectedResponseListener): this;
   send(data: string, callback: (error?: Error) => void): void;
   close(code?: number, reason?: string): void;
   terminate(): void;
@@ -254,6 +263,7 @@ const openWebSocket = Effect.fn("CodexEndpoint.openWebSocket")(function* (
         socket.off("open", handleOpen);
         socket.off("error", handleError);
         socket.off("close", handleClose);
+        socket.off("unexpected-response", handleUnexpectedResponse);
       };
       const finish = (
         result: Effect.Effect<CodexEndpointWebSocket, CodexEndpointWebSocketOpenError>,
@@ -270,7 +280,16 @@ const openWebSocket = Effect.fn("CodexEndpoint.openWebSocket")(function* (
         } catch {
           // Preserve the original connection error.
         }
-        finish(Effect.fail(new CodexEndpointWebSocketOpenError({ url, cause })));
+        const statusMatch = /^Unexpected server response: (401|403)(?:\D|$)/u.exec(cause.message);
+        finish(
+          Effect.fail(
+            new CodexEndpointWebSocketOpenError({
+              url,
+              cause,
+              ...(statusMatch === null ? {} : { httpStatus: Number(statusMatch[1]) }),
+            }),
+          ),
+        );
       };
       const handleClose = (code: number, reason: Buffer) =>
         finish(
@@ -285,10 +304,28 @@ const openWebSocket = Effect.fn("CodexEndpoint.openWebSocket")(function* (
             }),
           ),
         );
+      const handleUnexpectedResponse: UnexpectedResponseListener = (_request, response) => {
+        const httpStatus = response.statusCode;
+        response.resume();
+        finish(
+          Effect.fail(
+            new CodexEndpointWebSocketOpenError({
+              url,
+              cause: new Error(
+                httpStatus === undefined
+                  ? "WebSocket upgrade rejected"
+                  : `WebSocket upgrade rejected with HTTP status ${httpStatus}`,
+              ),
+              ...(httpStatus === undefined ? {} : { httpStatus }),
+            }),
+          ),
+        );
+      };
 
       socket.on("open", handleOpen);
       socket.on("error", handleError);
       socket.on("close", handleClose);
+      socket.on("unexpected-response", handleUnexpectedResponse);
       return Effect.sync(() => {
         if (settled) {
           cleanup();

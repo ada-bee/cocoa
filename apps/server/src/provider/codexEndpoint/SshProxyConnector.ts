@@ -3,7 +3,6 @@ import * as NodeStream from "node:stream";
 
 import { CODEX_SSH_PROXY_REMOTE_COMMAND, type CodexSshProxyTransport } from "@t3tools/contracts";
 import * as NodeSink from "@effect/platform-node-shared/NodeSink";
-import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import * as EffectNodeStream from "@effect/platform-node-shared/NodeStream";
 
 import * as Deferred from "effect/Deferred";
@@ -16,11 +15,11 @@ import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import type { CodexEndpointFramedTransport } from "./DirectWebSocketConnector.ts";
 import {
-  type CodexEndpointFramedTransport,
-  type CodexEndpointWebSocket,
-  makeDirectWebSocketConnector,
-} from "./DirectWebSocketConnector.ts";
+  type CodexSshProxyWebSocketHandshakeFailure,
+  makeSshProxyWebSocketFramedTransport,
+} from "./SshProxyWebSocketFraming.ts";
 
 export const SSH_PROXY_WEBSOCKET_URL = "ws://localhost/";
 export const SSH_PROXY_BRIDGE_HIGH_WATER_MARK = 64 * 1_024;
@@ -43,6 +42,7 @@ export class CodexSshProxyHandshakeError extends Schema.TaggedErrorClass<CodexSs
   {
     cause: Schema.Defect(),
     diagnostics: Schema.optionalKey(Schema.String),
+    httpStatus: Schema.optionalKey(Schema.Int),
   },
 ) {
   override get message(): string {
@@ -342,26 +342,14 @@ export const makeSshProxyConnector = Effect.fn("CodexEndpoint.makeSshProxyConnec
     Effect.forkScoped,
   );
 
-  const directTransport = {
-    type: "direct-websocket",
-    url: SSH_PROXY_WEBSOCKET_URL,
-    authentication: { type: "none" },
-  } as const;
   const framed = yield* Effect.raceFirst(
-    makeDirectWebSocketConnector(directTransport, {
-      makeWebSocket: (url, options) =>
-        new NodeSocket.NodeWS.WebSocket(url, {
-          ...options,
-          perMessageDeflate: false,
-          followRedirects: false,
-          createConnection: () => webSocketSide,
-        }) as unknown as CodexEndpointWebSocket,
-    }).pipe(
+    makeSshProxyWebSocketFramedTransport(webSocketSide).pipe(
       Effect.mapError(
-        (cause) =>
+        (cause: CodexSshProxyWebSocketHandshakeFailure) =>
           new CodexSshProxyHandshakeError({
             cause,
             ...diagnosticFields(),
+            ...(cause.httpStatus === undefined ? {} : { httpStatus: cause.httpStatus }),
           }),
       ),
     ),

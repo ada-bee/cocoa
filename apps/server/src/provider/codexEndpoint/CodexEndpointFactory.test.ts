@@ -53,8 +53,17 @@ const makeConstructors = (
                 readonly id?: string | number;
                 readonly method?: string;
               };
-              if (message.method !== "initialize" || message.id === undefined) {
+              if (message.id === undefined) {
                 return Effect.void;
+              }
+              if (message.method !== "initialize") {
+                return Queue.offer(
+                  incoming,
+                  encodeJson({
+                    id: message.id,
+                    error: { code: -32602, message: "Invalid params" },
+                  }),
+                ).pipe(Effect.asVoid);
               }
               return Queue.offer(
                 incoming,

@@ -120,6 +120,7 @@ const parseClientFrame = (
 
 interface ProxyHarnessOptions {
   readonly completeHandshake?: boolean;
+  readonly responseStatus?: number;
 }
 
 const makeProxyHarness = Effect.fn("test.makeProxyHarness")(function* (
@@ -146,6 +147,14 @@ const makeProxyHarness = Effect.fn("test.makeProxyHarness")(function* (
       input = input.subarray(headerEnd + 4);
       Deferred.doneUnsafe(handshakeStarted, Effect.void);
       if (options.completeHandshake === false) return;
+      if (options.responseStatus !== undefined && options.responseStatus !== 101) {
+        Queue.offerUnsafe(
+          stdout,
+          Buffer.from(`HTTP/1.1 ${options.responseStatus} Rejected\r\nContent-Length: 0\r\n\r\n`),
+        );
+        upgraded = true;
+        return;
+      }
       const key = /^sec-websocket-key:\s*(.+)$/imu.exec(handshakeRequest)?.[1]?.trim();
       if (!key) throw new Error("Missing Sec-WebSocket-Key in test handshake");
       const accept = NodeCrypto.createHash("sha1")
@@ -301,6 +310,21 @@ it.effect("surfaces process exit while the WebSocket handshake bridge is active"
       // error after the typed connector failure has been observed.
       yield* Effect.promise(() => new Promise<void>((resolve) => globalThis.setImmediate(resolve)));
     }).pipe(Effect.scoped, Effect.provide(dependencies(harness.spawner)));
+  }),
+);
+
+it.effect("preserves an HTTP authorization rejection from the SSH proxy", () =>
+  Effect.gen(function* () {
+    const harness = yield* makeProxyHarness("", { responseStatus: 403 });
+    const error = yield* makeSshProxyConnector(transport).pipe(
+      Effect.flip,
+      Effect.scoped,
+      Effect.provide(dependencies(harness.spawner)),
+    );
+
+    expect(error._tag).toBe("CodexSshProxyHandshakeError");
+    if (error._tag !== "CodexSshProxyHandshakeError") return;
+    expect(error.httpStatus).toBe(403);
   }),
 );
 

@@ -141,12 +141,37 @@ export interface CodexEndpointSupervisor {
 export function classifyCodexEndpointSupervisorError(
   error: CodexEndpointFactory.CodexEndpointFactoryError,
 ): CodexEndpointSupervisorErrorDisposition {
+  const hasPermanentSshDiagnostic = (diagnostics: string | undefined): boolean =>
+    diagnostics !== undefined &&
+    [
+      /permission denied/iu,
+      /host key verification failed/iu,
+      /remote host identification has changed/iu,
+      /bad configuration option/iu,
+      /bad owner or permissions on .*\/\.ssh\/config/iu,
+      /terminating, [0-9]+ bad configuration options/iu,
+      /line [0-9]+: unsupported option/iu,
+      /no such identity/iu,
+      /identity file .* not accessible/iu,
+    ].some((pattern) => pattern.test(diagnostics));
+
   switch (error._tag) {
     case "CodexEndpointCredentialReadError":
     case "CodexEndpointInvalidCredentialError":
     case "CodexEndpointCredentialSigningError":
     case "CodexEndpointCompatibilityError":
       return "permanent";
+    case "CodexEndpointWebSocketOpenError":
+      return error.httpStatus === 401 || error.httpStatus === 403 ? "permanent" : "transient";
+    case "CodexSshProxyHandshakeError":
+      return error.httpStatus === 401 ||
+        error.httpStatus === 403 ||
+        hasPermanentSshDiagnostic(error.diagnostics)
+        ? "permanent"
+        : "transient";
+    case "CodexSshProxyProcessExitedError":
+    case "CodexSshProxyProcessStatusError":
+      return hasPermanentSshDiagnostic(error.diagnostics) ? "permanent" : "transient";
     case "CodexEndpointInitializationError":
       return error.cause._tag === "CodexAppServerRequestError" &&
         [-32700, -32600, -32601, -32602].includes(error.cause.code)

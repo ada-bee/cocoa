@@ -1,5 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import type { CodexDirectWebSocketTransport } from "@t3tools/contracts";
 import type * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
+import type * as NodeHttp from "node:http";
 import { expect, it } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";
@@ -20,6 +22,10 @@ import {
 type MessageListener = (data: NodeSocket.NodeWS.RawData, isBinary: boolean) => void;
 type ErrorListener = (error: Error) => void;
 type CloseListener = (code: number, reason: Buffer) => void;
+type UnexpectedResponseListener = (
+  request: NodeHttp.ClientRequest,
+  response: NodeHttp.IncomingMessage,
+) => void;
 
 class FakeWebSocket implements CodexEndpointWebSocket {
   public readyState = 0;
@@ -34,14 +40,21 @@ class FakeWebSocket implements CodexEndpointWebSocket {
   private readonly messageListeners = new Set<MessageListener>();
   private readonly errorListeners = new Set<ErrorListener>();
   private readonly closeListeners = new Set<CloseListener>();
+  private readonly unexpectedResponseListeners = new Set<UnexpectedResponseListener>();
 
   on(event: "open", listener: () => void): this;
   on(event: "message", listener: MessageListener): this;
   on(event: "error", listener: ErrorListener): this;
   on(event: "close", listener: CloseListener): this;
+  on(event: "unexpected-response", listener: UnexpectedResponseListener): this;
   on(
-    event: "open" | "message" | "error" | "close",
-    listener: (() => void) | MessageListener | ErrorListener | CloseListener,
+    event: "open" | "message" | "error" | "close" | "unexpected-response",
+    listener:
+      | (() => void)
+      | MessageListener
+      | ErrorListener
+      | CloseListener
+      | UnexpectedResponseListener,
   ): this {
     this.listeners(event).add(listener as never);
     return this;
@@ -51,9 +64,15 @@ class FakeWebSocket implements CodexEndpointWebSocket {
   off(event: "message", listener: MessageListener): this;
   off(event: "error", listener: ErrorListener): this;
   off(event: "close", listener: CloseListener): this;
+  off(event: "unexpected-response", listener: UnexpectedResponseListener): this;
   off(
-    event: "open" | "message" | "error" | "close",
-    listener: (() => void) | MessageListener | ErrorListener | CloseListener,
+    event: "open" | "message" | "error" | "close" | "unexpected-response",
+    listener:
+      | (() => void)
+      | MessageListener
+      | ErrorListener
+      | CloseListener
+      | UnexpectedResponseListener,
   ): this {
     this.listeners(event).delete(listener as never);
     return this;
@@ -98,12 +117,20 @@ class FakeWebSocket implements CodexEndpointWebSocket {
     for (const listener of this.errorListeners) listener(error);
   }
 
+  unexpectedResponse(statusCode: number): void {
+    const request = { destroy: () => {} } as NodeHttp.ClientRequest;
+    const response = { statusCode, resume: () => response } as NodeHttp.IncomingMessage;
+    for (const listener of this.unexpectedResponseListeners) listener(request, response);
+  }
+
   disconnect(code: number, reason: string): void {
     this.readyState = 3;
     for (const listener of this.closeListeners) listener(code, Buffer.from(reason));
   }
 
-  private listeners(event: "open" | "message" | "error" | "close"): Set<never> {
+  private listeners(
+    event: "open" | "message" | "error" | "close" | "unexpected-response",
+  ): Set<never> {
     switch (event) {
       case "open":
         return this.openListeners as Set<never>;
@@ -113,6 +140,8 @@ class FakeWebSocket implements CodexEndpointWebSocket {
         return this.errorListeners as Set<never>;
       case "close":
         return this.closeListeners as Set<never>;
+      case "unexpected-response":
+        return this.unexpectedResponseListeners as Set<never>;
     }
   }
 }
@@ -201,6 +230,24 @@ it.effect("terminates a connecting socket when opening is interrupted", () => {
     yield* Fiber.interrupt(opening);
 
     expect(socket.terminateCount).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+});
+
+it.effect("preserves an HTTP upgrade rejection status", () => {
+  const socket = new FakeWebSocket();
+  const makeWebSocket: CodexEndpointWebSocketFactory = () => {
+    queueMicrotask(() => socket.unexpectedResponse(401));
+    return socket;
+  };
+
+  return Effect.gen(function* () {
+    const error = yield* makeDirectWebSocketConnector(noAuthentication, {
+      makeWebSocket,
+    }).pipe(Effect.flip);
+
+    expect(error._tag).toBe("CodexEndpointWebSocketOpenError");
+    if (error._tag !== "CodexEndpointWebSocketOpenError") return;
+    expect(error.httpStatus).toBe(401);
   }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
 });
 

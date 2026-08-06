@@ -27,6 +27,10 @@ import {
   type CodexEndpointSupervisorState,
   type StartCodexEndpointSupervisorOptions,
 } from "./CodexEndpointSupervisor.ts";
+import {
+  CodexSshProxyHandshakeError,
+  CodexSshProxyProcessExitedError,
+} from "./SshProxyConnector.ts";
 
 const INSTANCE_ID = ProviderInstanceId.make("codex_remote");
 const THREAD_ID = ThreadId.make("thread_remote");
@@ -359,9 +363,36 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
       method: "thread/start",
       reason: "missing",
     });
+    const unauthorized = new CodexEndpointWebSocketOpenError({
+      url: TRANSPORT.url,
+      cause: new Error("upgrade rejected"),
+      httpStatus: 401,
+    });
+    const unavailable = new CodexEndpointWebSocketOpenError({
+      url: TRANSPORT.url,
+      cause: new Error("upgrade rejected"),
+      httpStatus: 503,
+    });
+    const sshForbidden = new CodexSshProxyHandshakeError({
+      cause: new Error("upgrade rejected"),
+      httpStatus: 403,
+    });
+    const sshHostKeyFailure = new CodexSshProxyProcessExitedError({
+      exitCode: 255,
+      diagnostics: "Host key verification failed.",
+    });
+    const sshNetworkFailure = new CodexSshProxyProcessExitedError({
+      exitCode: 255,
+      diagnostics: "connect to host failed: Connection timed out",
+    });
     assert.equal(classifyCodexEndpointSupervisorError(incompatible), "permanent");
     assert.equal(classifyCodexEndpointSupervisorError(missingRequiredMethod), "permanent");
     assert.equal(classifyCodexEndpointSupervisorError(overloaded), "transient");
+    assert.equal(classifyCodexEndpointSupervisorError(unauthorized), "permanent");
+    assert.equal(classifyCodexEndpointSupervisorError(unavailable), "transient");
+    assert.equal(classifyCodexEndpointSupervisorError(sshForbidden), "permanent");
+    assert.equal(classifyCodexEndpointSupervisorError(sshHostKeyFailure), "permanent");
+    assert.equal(classifyCodexEndpointSupervisorError(sshNetworkFailure), "transient");
   });
 
   it.effect("invalidates a terminated exact generation once and closes its scope once", () =>
