@@ -194,6 +194,7 @@ describe("buildHomeThreadGroups", () => {
       environmentId,
       id: ProjectId.make("project-macbook"),
       providerInstanceId: ProviderInstanceId.make("macbook"),
+      title: "cocoa on macbook",
       workspaceRoot: "/work/cocoa",
       repositoryIdentity,
     });
@@ -201,6 +202,7 @@ describe("buildHomeThreadGroups", () => {
       environmentId,
       id: ProjectId.make("project-rigatoni"),
       providerInstanceId: ProviderInstanceId.make("rigatoni"),
+      title: "cocoa on rigatoni",
       workspaceRoot: "/work/cocoa",
       repositoryIdentity,
     });

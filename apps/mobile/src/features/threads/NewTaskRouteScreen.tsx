@@ -1,7 +1,6 @@
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { SymbolView } from "../../components/AppSymbol";
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -11,12 +10,17 @@ import { cn } from "../../lib/cn";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
-import { useProjects, useThreadShells } from "../../state/entities";
+import { useProjects, useServerConfigs, useThreadShells } from "../../state/entities";
 import type { WorkspaceState } from "../../state/workspaceModel";
 import { useWorkspaceState } from "../../state/workspace";
 import { groupProjectsByRepository } from "../../lib/repositoryGroups";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
+import {
+  flattenNewTaskPhysicalProjects,
+  newTaskPhysicalProjectKeyFor,
+  newTaskProviderLabel,
+} from "./newTaskProjectSelection";
 
 type NewTaskRouteParams = {
   readonly incomingShareId?: string | string[];
@@ -80,6 +84,7 @@ function deriveProjectEmptyState(catalogState: WorkspaceState): {
 export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
   const projects = useProjects();
   const threads = useThreadShells();
+  const serverConfigs = useServerConfigs();
   const { state: catalogState } = useWorkspaceState();
   const navigation = useNavigation();
   const isFocused = useIsFocused();
@@ -105,28 +110,16 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
     [projects, threads],
   );
   const items = useMemo(() => {
-    const nextItems: Array<{
-      readonly environmentId: EnvironmentId;
-      readonly id: ProjectId;
-      readonly key: string;
-      readonly title: string;
-      readonly workspaceRoot: string;
-    }> = [];
-    for (const group of repositoryGroups) {
-      const project = group.projects[0]?.project;
-      if (!project) {
-        continue;
-      }
-      nextItems.push({
-        environmentId: project.environmentId,
-        id: project.id,
-        key: group.key,
-        title: project.title,
-        workspaceRoot: project.workspaceRoot,
-      });
-    }
-    return nextItems;
-  }, [repositoryGroups]);
+    return flattenNewTaskPhysicalProjects(repositoryGroups).map(({ key, project }) => ({
+      environmentId: project.environmentId,
+      id: project.id,
+      providerInstanceId: project.providerInstanceId,
+      key,
+      title: project.title,
+      workspaceRoot: project.workspaceRoot,
+      providerLabel: newTaskProviderLabel(serverConfigs, project),
+    }));
+  }, [repositoryGroups, serverConfigs]);
   const projectEmptyState = deriveProjectEmptyState(catalogState);
   const resumedDestinationKeyRef = useRef<string | null>(null);
   const reservedDestinationProject = incomingShare?.destination
@@ -156,6 +149,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
       params: {
         environmentId: item.environmentId,
         projectId: item.id,
+        providerInstanceId: item.providerInstanceId,
         title: item.title,
         incomingShareId: incomingShare?.id,
       },
@@ -174,11 +168,11 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
       resumedDestinationKeyRef.current = null;
       return;
     }
-    const destinationKey = `${incomingShare.id}:${destination.environmentId}:${destination.projectId}`;
-    if (resumedDestinationKeyRef.current === destinationKey) {
+    if (!reservedDestinationProject) {
       return;
     }
-    if (!reservedDestinationProject) {
+    const destinationKey = `${incomingShare.id}:${newTaskPhysicalProjectKeyFor(reservedDestinationProject)}`;
+    if (resumedDestinationKeyRef.current === destinationKey) {
       return;
     }
     resumedDestinationKeyRef.current = destinationKey;
@@ -187,6 +181,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
       params: {
         environmentId: reservedDestinationProject.environmentId,
         projectId: reservedDestinationProject.id,
+        providerInstanceId: reservedDestinationProject.providerInstanceId,
         title: reservedDestinationProject.title,
         incomingShareId: incomingShare.id,
       },
@@ -313,6 +308,9 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                     </View>
                     <View className="flex-1">
                       <Text className="text-base leading-snug font-t3-bold">{item.title}</Text>
+                      <Text className="text-sm leading-snug text-foreground-muted">
+                        {item.providerLabel}
+                      </Text>
                     </View>
                     <SymbolView
                       name="chevron.right"

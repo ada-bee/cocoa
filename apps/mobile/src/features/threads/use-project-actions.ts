@@ -47,6 +47,8 @@ export function useCreateProjectThread() {
       const validationError = validateProjectThreadCreation({
         environmentId: input.project.environmentId,
         projectId: input.project.id,
+        projectProviderInstanceId: input.project.providerInstanceId,
+        modelProviderInstanceId: input.modelSelection.instanceId,
         environmentMode: input.envMode,
         branch: input.branch,
         initialMessageText,

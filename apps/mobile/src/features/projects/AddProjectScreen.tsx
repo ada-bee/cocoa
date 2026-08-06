@@ -608,6 +608,7 @@ function useCreateProject(
           StackActions.replace("NewTaskDraft", {
             environmentId: existing.environmentId,
             projectId: existing.id,
+            providerInstanceId: existing.providerInstanceId,
             title: existing.title,
           }),
         );
@@ -634,6 +635,7 @@ function useCreateProject(
         StackActions.replace("NewTaskDraft", {
           environmentId: environment.environmentId,
           projectId,
+          providerInstanceId,
           title: inferProjectTitleFromPath(workspaceRoot),
         }),
       );

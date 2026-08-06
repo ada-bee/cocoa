@@ -6,6 +6,7 @@ import {
   buildModelMenuActions,
   buildModelOptions,
   groupByProvider,
+  resolveProjectModelSelection,
   resolveSelectableModelSelection,
 } from "./modelOptions";
 
@@ -173,5 +174,79 @@ describe("mobile model options", () => {
     expect(resolveSelectableModelSelection(config, removed)).toBeNull();
     // No config (environment offline) — nothing to validate against.
     expect(resolveSelectableModelSelection(null, disabled)).toBe(disabled);
+  });
+
+  it("restricts choices and stored fallbacks to the selected project's provider endpoint", () => {
+    const macbookProvider = ProviderInstanceId.make("codex-macbook");
+    const linuxProvider = ProviderInstanceId.make("codex-linux");
+    const config = {
+      providers: [
+        {
+          instanceId: macbookProvider,
+          driver: "codex",
+          displayName: "MacBook Air",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            {
+              slug: "gpt-macbook",
+              name: "MacBook model",
+              isCustom: false,
+              isDefault: true,
+              capabilities: null,
+            },
+          ],
+        },
+        {
+          instanceId: linuxProvider,
+          driver: "codex",
+          displayName: "Linux box",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            {
+              slug: "gpt-linux",
+              name: "Linux model",
+              isCustom: false,
+              isDefault: true,
+              capabilities: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+    const mismatchedStoredSelection = {
+      instanceId: linuxProvider,
+      model: "gpt-linux",
+    };
+
+    expect(buildModelOptions(config, mismatchedStoredSelection, macbookProvider)).toMatchObject([
+      {
+        key: "codex-macbook:gpt-macbook",
+        selection: { instanceId: "codex-macbook", model: "gpt-macbook" },
+      },
+    ]);
+    expect(
+      resolveSelectableModelSelection(config, mismatchedStoredSelection, macbookProvider),
+    ).toBeNull();
+    // Project ownership is authoritative even while its environment config is offline.
+    expect(
+      resolveSelectableModelSelection(null, mismatchedStoredSelection, macbookProvider),
+    ).toBeNull();
+    const matchingFallback = {
+      instanceId: macbookProvider,
+      model: "gpt-macbook",
+    };
+    expect(
+      resolveProjectModelSelection(config, macbookProvider, [
+        mismatchedStoredSelection,
+        matchingFallback,
+      ]),
+    ).toBe(matchingFallback);
+    expect(
+      resolveProjectModelSelection(config, macbookProvider, [mismatchedStoredSelection]),
+    ).toBeNull();
   });
 });

@@ -179,6 +179,7 @@ export function HomeRouteScreen() {
               params: {
                 environmentId: String(project.environmentId),
                 projectId: String(project.id),
+                providerInstanceId: String(project.providerInstanceId),
                 title: project.title,
               },
             });

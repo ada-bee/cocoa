@@ -1,6 +1,7 @@
 import type {
   ModelCapabilities,
   ModelSelection,
+  ProviderInstanceId,
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
 import type { MenuAction } from "@react-native-menu/menu";
@@ -70,8 +71,15 @@ function normalizeSelectionOptions(
 export function resolveSelectableModelSelection(
   config: T3ServerConfig | null | undefined,
   selection: ModelSelection | null,
+  requiredProviderInstanceId?: ProviderInstanceId | null,
 ): ModelSelection | null {
-  if (!selection || !config) {
+  if (
+    !selection ||
+    (requiredProviderInstanceId && selection.instanceId !== requiredProviderInstanceId)
+  ) {
+    return null;
+  }
+  if (!config) {
     return selection;
   }
   const provider = config.providers.find(
@@ -85,13 +93,29 @@ export function resolveSelectableModelSelection(
     : null;
 }
 
+export function resolveProjectModelSelection(
+  config: T3ServerConfig | null | undefined,
+  projectProviderInstanceId: ProviderInstanceId,
+  candidates: ReadonlyArray<ModelSelection | null>,
+): ModelSelection | null {
+  for (const candidate of candidates) {
+    const selection = resolveSelectableModelSelection(config, candidate, projectProviderInstanceId);
+    if (selection) return selection;
+  }
+  return null;
+}
+
 export function buildModelOptions(
   config: T3ServerConfig | null | undefined,
   fallbackModelSelection: ModelSelection | null,
+  requiredProviderInstanceId?: ProviderInstanceId | null,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
 
   for (const provider of config?.providers ?? []) {
+    if (requiredProviderInstanceId && provider.instanceId !== requiredProviderInstanceId) {
+      continue;
+    }
     if (!provider.enabled || !provider.installed || provider.auth.status === "unauthenticated") {
       continue;
     }
@@ -120,7 +144,11 @@ export function buildModelOptions(
     }
   }
 
-  if (fallbackModelSelection) {
+  if (
+    fallbackModelSelection &&
+    (!requiredProviderInstanceId ||
+      fallbackModelSelection.instanceId === requiredProviderInstanceId)
+  ) {
     const key = `${fallbackModelSelection.instanceId}:${fallbackModelSelection.model}`;
     const existing = options.get(key);
     if (existing) {

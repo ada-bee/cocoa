@@ -7,7 +7,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useFontFamily } from "../../lib/useFontFamily";
 
-import { EnvironmentId } from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -43,10 +42,11 @@ import {
   type ComposerDraft,
 } from "../../state/use-composer-drafts";
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
-import { buildModelMenuActions, resolveSelectableModelSelection } from "../../lib/modelOptions";
+import { buildModelMenuActions, resolveProjectModelSelection } from "../../lib/modelOptions";
 import { enqueueThreadOutboxMessage, removeThreadOutboxMessage } from "../../state/thread-outbox";
 import { useRemoteConnectionStatus } from "../../state/use-remote-environment-registry";
 import { branchBadgeLabel, useNewTaskFlow } from "./new-task-flow-provider";
+import { newTaskPhysicalProjectKeyFor } from "./newTaskProjectSelection";
 import { useCreateProjectThread } from "./use-project-actions";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
 
@@ -66,6 +66,7 @@ export function NewTaskDraftScreen(props: {
   readonly initialProjectRef?: {
     readonly environmentId?: string;
     readonly projectId?: string;
+    readonly providerInstanceId?: string;
   };
   /** Queued outbox message id when editing an existing pending task. */
   readonly pendingTaskId?: string;
@@ -125,7 +126,9 @@ export function NewTaskDraftScreen(props: {
     projects.some(
       (project) =>
         project.environmentId === props.initialProjectRef?.environmentId &&
-        project.id === props.initialProjectRef?.projectId,
+        project.id === props.initialProjectRef?.projectId &&
+        (!props.initialProjectRef.providerInstanceId ||
+          project.providerInstanceId === props.initialProjectRef.providerInstanceId),
     ),
   );
   const isProjectPickerReturnActive =
@@ -243,24 +246,29 @@ export function NewTaskDraftScreen(props: {
     }
     const initialEnvironmentId = props.initialProjectRef?.environmentId;
     const initialProjectId = props.initialProjectRef?.projectId;
+    const initialProviderInstanceId = props.initialProjectRef?.providerInstanceId;
     if (initialEnvironmentId && initialProjectId) {
       const directProject =
         projects.find(
           (project) =>
-            project.environmentId === initialEnvironmentId && project.id === initialProjectId,
+            project.environmentId === initialEnvironmentId &&
+            project.id === initialProjectId &&
+            (!initialProviderInstanceId ||
+              project.providerInstanceId === initialProviderInstanceId),
         ) ?? null;
 
       if (directProject) {
         // Apply the route's project once. Re-applying on every change would
         // instantly revert environment/project switches made in the picker.
-        const directProjectKey = `${directProject.environmentId}:${directProject.id}`;
+        const directProjectKey = newTaskPhysicalProjectKeyFor(directProject);
         if (appliedInitialProjectKeyRef.current === directProjectKey) {
           return;
         }
         appliedInitialProjectKeyRef.current = directProjectKey;
         if (
           selectedProject?.environmentId === directProject.environmentId &&
-          selectedProject.id === directProject.id
+          selectedProject.id === directProject.id &&
+          selectedProject.providerInstanceId === directProject.providerInstanceId
         ) {
           return;
         }
@@ -303,7 +311,7 @@ export function NewTaskDraftScreen(props: {
       loadedBranchesProjectKeyRef.current = null;
       return;
     }
-    const projectKey = `${selectedProject.environmentId}:${selectedProject.id}`;
+    const projectKey = newTaskPhysicalProjectKeyFor(selectedProject);
     if (loadedBranchesProjectKeyRef.current === projectKey) {
       return;
     }
@@ -317,11 +325,14 @@ export function NewTaskDraftScreen(props: {
     const destinationProject = selectedProject;
     const initialEnvironmentId = props.initialProjectRef?.environmentId;
     const initialProjectId = props.initialProjectRef?.projectId;
+    const initialProviderInstanceId = props.initialProjectRef?.providerInstanceId;
     const selectedProjectMatchesRoute =
       !initialEnvironmentId ||
       !initialProjectId ||
       (destinationProject?.environmentId === initialEnvironmentId &&
-        destinationProject.id === initialProjectId);
+        destinationProject.id === initialProjectId &&
+        (!initialProviderInstanceId ||
+          destinationProject.providerInstanceId === initialProviderInstanceId));
     if (
       !shareId ||
       !draftKey ||
@@ -504,6 +515,7 @@ export function NewTaskDraftScreen(props: {
     props.incomingShareId,
     props.initialProjectRef?.environmentId,
     props.initialProjectRef?.projectId,
+    props.initialProjectRef?.providerInstanceId,
     releaseShareReservation,
     reserveShare,
     selectedProject,
@@ -533,13 +545,13 @@ export function NewTaskDraftScreen(props: {
   const environmentMenuActions = useMemo(
     () =>
       flow.environments.map((environment) => ({
-        id: `environment:${environment.environmentId}`,
+        id: `environment:${environment.key}`,
         title: environment.environmentLabel,
+        subtitle: environment.providerLabel,
         attributes: isIncomingShareTransferPending ? { disabled: true } : undefined,
-        state:
-          flow.selectedEnvironmentId === environment.environmentId ? ("on" as const) : undefined,
+        state: flow.selectedProjectKey === environment.key ? ("on" as const) : undefined,
       })),
-    [flow.environments, flow.selectedEnvironmentId, isIncomingShareTransferPending],
+    [flow.environments, flow.selectedProjectKey, isIncomingShareTransferPending],
   );
 
   const modelMenuActions = useMemo(
@@ -666,9 +678,11 @@ export function NewTaskDraftScreen(props: {
   ]);
 
   const selectedEnvironmentLabel =
-    flow.environments.find(
-      (environment) => environment.environmentId === flow.selectedEnvironmentId,
-    )?.environmentLabel ?? "Environment";
+    flow.environments.find((environment) => environment.key === flow.selectedProjectKey)
+      ?.environmentLabel ?? "Environment";
+  const selectedProviderLabel =
+    flow.environments.find((environment) => environment.key === flow.selectedProjectKey)
+      ?.providerLabel ?? null;
   const currentBranchName =
     flow.availableBranches.find((branch) => branch.current)?.name ??
     flow.availableBranches.find((branch) => branch.isDefault)?.name ??
@@ -697,7 +711,7 @@ export function NewTaskDraftScreen(props: {
     if (isIncomingShareTransferPending || !event.startsWith("environment:")) {
       return;
     }
-    flow.selectEnvironment(EnvironmentId.make(event.slice("environment:".length)));
+    flow.selectEnvironment(event.slice("environment:".length));
   }
 
   function handleOptionsMenuAction(event: string) {
@@ -782,11 +796,11 @@ export function NewTaskDraftScreen(props: {
     // Snapshot read keeps just-typed selector state; the availability gate
     // still applies so a stored selection on a disabled provider falls back
     // to the flow's resolved model.
-    const modelSelection =
-      resolveSelectableModelSelection(
-        selectedEnvironmentServerConfig,
-        draft.modelSelection ?? null,
-      ) ?? flow.selectedModel;
+    const modelSelection = resolveProjectModelSelection(
+      selectedEnvironmentServerConfig,
+      selectedProject.providerInstanceId,
+      [draft.modelSelection ?? null, flow.selectedModel],
+    );
     const workspaceMode = workspaceMutationsSupported
       ? (draft.workspaceSelection?.mode ?? flow.workspaceMode)
       : "local";
@@ -1010,7 +1024,11 @@ export function NewTaskDraftScreen(props: {
           accessibilityLabel="Environment"
           disabled={isIncomingShareTransferPending}
           icon="desktopcomputer"
-          label={selectedEnvironmentLabel}
+          label={
+            selectedProviderLabel
+              ? `${selectedEnvironmentLabel} · ${selectedProviderLabel}`
+              : selectedEnvironmentLabel
+          }
         />
       </ControlPillMenu>
       {workspaceMutationsSupported ? (
