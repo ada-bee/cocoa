@@ -30,6 +30,7 @@ import {
 import * as HttpApiClient from "effect/unstable/httpapi/HttpApiClient";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as EnvironmentAuthRuntime from "../auth/EnvironmentAuthRuntime.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as BootService from "../cloud/bootService.ts";
 import * as CliState from "../cloud/CliState.ts";
@@ -446,7 +447,7 @@ const runCloudCommand = Effect.fn("cloud.cli.run_cloud_command")(function* <A, E
       Layer.provide(ExternalLauncher.layer),
     ),
     RelayClient.layerCloudflared({ baseDir: config.baseDir }),
-    EnvironmentAuth.runtimeLayer,
+    EnvironmentAuthRuntime.runtimeLayer,
     ServerEnvironment.layer,
     bootServiceLayer(config),
     headlessRelayClientTracingLayer,

@@ -11,6 +11,7 @@ import * as References from "effect/References";
 import { Argument, Command, Flag, GlobalFlag } from "effect/unstable/cli";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as EnvironmentAuthRuntime from "../auth/EnvironmentAuthRuntime.ts";
 
 import {
   formatIssuedPairingCredential,
@@ -42,7 +43,7 @@ const runWithEnvironmentAuth = <A, E>(
       return yield* run(environmentAuth);
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(EnvironmentAuth.runtimeLayer).pipe(
+        Layer.mergeAll(EnvironmentAuthRuntime.runtimeLayer).pipe(
           Layer.provide(ServerConfig.layer(config)),
           Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
         ),

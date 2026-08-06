@@ -54,12 +54,8 @@ import * as Stream from "effect/Stream";
 import * as ServerConfig from "../../config.ts";
 import { resolveCocoaGatewayProviderInstanceConfigMap } from "../../cocoa/CocoaGatewayPolicy.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import {
-  BUILT_IN_DRIVERS,
-  COCOA_GATEWAY_DRIVERS,
-  type BuiltInDriversEnv,
-  type CocoaGatewayDriversEnv,
-} from "../builtInDrivers.ts";
+import { BUILT_IN_DRIVERS, type BuiltInDriversEnv } from "../builtInDrivers.ts";
+import { CocoaProviderInstanceRegistryHydrationLive } from "./CocoaProviderInstanceRegistryHydration.ts";
 import type { AnyProviderDriver } from "../ProviderDriver.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import { ProviderInstanceRegistryMutator } from "../Services/ProviderInstanceRegistryMutator.ts";
@@ -204,12 +200,7 @@ const makeProviderInstanceRegistryHydrationLive = <R>(
     R | ServerConfig.ServerConfig | ServerSettingsService
   >;
 
-/** Endpoint-only registry hydration used by the Cocoa gateway profile. */
-export const CocoaProviderInstanceRegistryHydrationLive =
-  makeProviderInstanceRegistryHydrationLive<CocoaGatewayDriversEnv>(
-    "cocoa-gateway",
-    COCOA_GATEWAY_DRIVERS,
-  );
+export { CocoaProviderInstanceRegistryHydrationLive };
 
 /** Upstream-compatible registry hydration for the legacy runtime profile. */
 export const LegacyProviderInstanceRegistryHydrationLive =

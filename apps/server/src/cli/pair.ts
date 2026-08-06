@@ -39,6 +39,7 @@ import {
 } from "effect/unstable/http";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as EnvironmentAuthRuntime from "../auth/EnvironmentAuthRuntime.ts";
 import * as ServerConfig from "../config.ts";
 import { resolveBaseDir } from "../os-jank.ts";
 import {
@@ -447,7 +448,7 @@ const mintPairingLink = Effect.fn("pair.mintPairingLink")(function* (input: {
     });
   }).pipe(
     Effect.provide(
-      EnvironmentAuth.runtimeLayer.pipe(
+      EnvironmentAuthRuntime.runtimeLayer.pipe(
         Layer.provide(ServerConfig.layer(input.config)),
         Layer.provide(Layer.succeed(References.MinimumLogLevel, input.config.logLevel)),
       ),

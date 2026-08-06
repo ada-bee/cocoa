@@ -33,10 +33,7 @@ import { cocoaClientV1WebSocketRouteLayer } from "./clientApi/v1/Route.ts";
 import { fixPath } from "./os-jank.ts";
 import { websocketRpcRouteLayer } from "./ws.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
-import {
-  CocoaExternalLauncherLayerLive,
-  CocoaUnavailableDiagnosticsLayerLive,
-} from "./cocoa/CocoaGatewayRuntimeStubs.ts";
+import { CocoaRuntimeDependenciesLive } from "./cocoa/CocoaGatewayRuntime.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { ProviderCheckpointOperationRepositoryLive } from "./persistence/Layers/ProviderCheckpointOperations.ts";
 import { ProjectionCheckpointRepositoryLive } from "./persistence/Layers/ProjectionCheckpoints.ts";
@@ -61,10 +58,7 @@ import * as BitbucketApi from "./sourceControl/BitbucketApi.ts";
 import * as GitHubCli from "./sourceControl/GitHubCli.ts";
 import * as GitLabCli from "./sourceControl/GitLabCli.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
-import {
-  CocoaProviderInstanceRegistryHydrationLive,
-  LegacyProviderInstanceRegistryHydrationLive,
-} from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
+import { LegacyProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
@@ -75,10 +69,7 @@ import * as ProcessRunner from "./processRunner.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
-import {
-  CoreOrchestrationReactorLive,
-  OrchestrationReactorLive,
-} from "./orchestration/Layers/OrchestrationReactor.ts";
+import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor.ts";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus.ts";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
@@ -365,18 +356,9 @@ const ProjectRepositoryLayerLive = ProjectRepository.layer.pipe(
   Layer.provide(OrchestrationLayerLive),
 );
 
-const CocoaProjectRepositoryLayerLive = ProjectRepository.layer.pipe(
-  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
-  Layer.provide(OrchestrationLayerLive),
-);
-
 const LegacyReactorLayerLive = makeReactorLayer(
   LegacyOrchestrationReactorLive,
   ProjectRepositoryLayerLive,
-);
-const CocoaReactorLayerLive = makeReactorLayer(
-  CoreOrchestrationReactorLive,
-  CocoaProjectRepositoryLayerLive,
 );
 
 const RepositoryReadLayerLive = RepositoryReadService.layer.pipe(
@@ -419,16 +401,7 @@ const ProjectTerminalLayerLive = ProjectTerminal.layer.pipe(
   Layer.provide(OrchestrationLayerLive),
 );
 
-const CocoaProjectTerminalLayerLive = ProjectTerminal.layer.pipe(
-  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
-  Layer.provide(OrchestrationLayerLive),
-);
-
 const TerminalLayerLive = TerminalManager.layer.pipe(Layer.provide(ProjectTerminalLayerLive));
-
-const CocoaTerminalLayerLive = TerminalManager.layer.pipe(
-  Layer.provide(CocoaProjectTerminalLayerLive),
-);
 
 const PreviewLayerLive = Layer.empty.pipe(
   Layer.provideMerge(PreviewManager.layer),
@@ -444,17 +417,8 @@ const ProjectWorkspaceLayerLive = ProjectWorkspace.layer.pipe(
   Layer.provide(OrchestrationLayerLive),
 );
 
-const CocoaProjectWorkspaceLayerLive = ProjectWorkspace.layer.pipe(
-  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
-  Layer.provide(OrchestrationLayerLive),
-);
-
 const ProviderFilesystemBrowseLayerLive = ProviderFilesystemBrowse.layer.pipe(
   Layer.provide(LegacyProviderInstanceRegistryHydrationLive),
-);
-
-const CocoaProviderFilesystemBrowseLayerLive = ProviderFilesystemBrowse.layer.pipe(
-  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
 );
 
 const WorkspaceAccessLayerLive = Layer.mergeAll(
@@ -463,20 +427,10 @@ const WorkspaceAccessLayerLive = Layer.mergeAll(
   ProviderFilesystemBrowseLayerLive,
 );
 
-const CocoaWorkspaceAccessLayerLive = Layer.mergeAll(
-  CocoaProjectWorkspaceLayerLive,
-  CocoaProviderFilesystemBrowseLayerLive,
-);
-
 const ProjectFaviconResolverLayerLive = ProjectFaviconResolver.layer.pipe(
   Layer.provide(WorkspacePaths.layer),
   Layer.provide(T3ProjectFileLoader.layer),
 );
-
-// The default favicon resolver is deliberately gateway-safe: it returns no
-// provider-workspace match. The local discovery dependencies above remain a
-// legacy-only composition detail.
-const CocoaProjectFaviconResolverLayerLive = ProjectFaviconResolver.layer;
 
 const AuthLayerLive = EnvironmentAuth.layer.pipe(
   Layer.provideMerge(PersistenceLayerLive),
@@ -542,76 +496,6 @@ const LegacyRuntimeCoreDependenciesLive = LegacyReactorLayerLive.pipe(
   Layer.provideMerge(ServerSecretStore.layer),
 );
 
-/**
- * Remote-only Cocoa runtime graph.
- *
- * Keep this list explicit. In particular, none of the legacy local workspace,
- * Git/VCS process, PTY, port-scanner, hosted relay, or local Codex process
- * layers belong here. Project-scoped operations are resolved through the
- * provider-bound facades and the explicit endpoint registry.
- */
-const CocoaRepositoryReadLayerLive = RepositoryReadService.layer.pipe(
-  Layer.provide(CocoaProjectRepositoryLayerLive),
-);
-
-const CocoaRepositoryStatusLayerLive = RepositoryStatusBroadcaster.layer.pipe(
-  Layer.provide(CocoaRepositoryReadLayerLive),
-);
-
-const CocoaCheckpointingLayerLive = CheckpointDiffQuery.layer.pipe(
-  Layer.provide(CocoaProjectRepositoryLayerLive),
-  Layer.provide(OrchestrationLayerLive),
-  Layer.provide(
-    ProviderCheckpointOperationRepositoryLive.pipe(Layer.provide(PersistenceLayerLive)),
-  ),
-);
-
-const CocoaTextGenerationLayerLive = TextGeneration.layer.pipe(
-  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
-);
-
-const CocoaProjectSetupScriptRunnerLayerLive = ProjectSetupScriptRunner.layer.pipe(
-  Layer.provide(CocoaTerminalLayerLive),
-  Layer.provide(OrchestrationLayerLive),
-);
-
-const CocoaBackgroundLayerLive = BackgroundPolicy.layer.pipe(
-  Layer.provide(Layer.effect(HostPowerMonitor.HostPowerMonitor, HostPowerMonitor.make())),
-  Layer.provide(ServerSettingsLayerLive),
-);
-
-const CocoaServerEnvironmentLayerLive = ServerEnvironment.cocoaGatewayLayer;
-
-const CocoaRuntimeBaseDependenciesLive = CocoaReactorLayerLive.pipe(
-  Layer.provideMerge(ServerSettingsLayerLive),
-  Layer.provideMerge(CocoaCheckpointingLayerLive),
-  Layer.provideMerge(ProviderRuntimeLayerLive),
-  Layer.provideMerge(PersistenceLayerLive),
-  Layer.provideMerge(Keybindings.layer),
-  Layer.provideMerge(ProviderRegistryLive),
-  Layer.provideMerge(CocoaProviderInstanceRegistryHydrationLive),
-  Layer.provideMerge(ProviderEventLoggers.layer),
-  Layer.provideMerge(CocoaWorkspaceAccessLayerLive),
-  Layer.provideMerge(CocoaProjectRepositoryLayerLive),
-  Layer.provideMerge(CocoaRepositoryReadLayerLive),
-  Layer.provideMerge(CocoaRepositoryStatusLayerLive),
-  Layer.provideMerge(CocoaProjectTerminalLayerLive),
-  Layer.provideMerge(CocoaTerminalLayerLive),
-  Layer.provideMerge(CocoaProjectSetupScriptRunnerLayerLive),
-  Layer.provideMerge(PreviewManager.layer),
-);
-
-const CocoaRuntimeCoreDependenciesLive = CocoaRuntimeBaseDependenciesLive.pipe(
-  Layer.provideMerge(CocoaProjectFaviconResolverLayerLive),
-  Layer.provideMerge(CocoaTextGenerationLayerLive),
-  Layer.provideMerge(CocoaServerEnvironmentLayerLive),
-  Layer.provideMerge(AuthLayerLive),
-  Layer.provideMerge(ServerSecretStore.layer),
-  Layer.provideMerge(CocoaBackgroundLayerLive),
-  Layer.provideMerge(CocoaExternalLauncherLayerLive),
-  Layer.provideMerge(CocoaUnavailableDiagnosticsLayerLive),
-);
-
 const AnalyticsLayerLive = Layer.unwrap(
   ServerConfig.ServerConfig.pipe(
     Effect.map((config) =>
@@ -638,15 +522,6 @@ const LegacyRuntimeDependenciesLive = LegacyRuntimeCoreDependenciesLive.pipe(
 
 const LegacyRuntimeDependenciesWithVcsLive = LegacyRuntimeDependenciesLive.pipe(
   Layer.provideMerge(VcsProcess.layer),
-);
-
-const CocoaRuntimeDependenciesLive = CocoaRuntimeCoreDependenciesLive.pipe(
-  Layer.provideMerge(TraceDiagnostics.layer),
-  Layer.provideMerge(AnalyticsLayerLive),
-  Layer.provideMerge(ServerLifecycleEvents.layer),
-  Layer.provide(NetService.layer),
-  Layer.provide(ProviderEventLoggers.layer),
-  Layer.provide(ServerSettingsLayerLive),
 );
 
 type RuntimeDependenciesLayer = Layer.Layer<
