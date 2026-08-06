@@ -8,7 +8,10 @@ FROM node:${NODE_VERSION}-bookworm-slim AS build
 ENV PNPM_HOME=/pnpm
 ENV PATH=/pnpm:${PATH}
 
-RUN corepack enable \
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && corepack enable \
   && corepack prepare pnpm@11.10.0 --activate
 
 WORKDIR /src

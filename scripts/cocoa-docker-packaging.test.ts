@@ -10,6 +10,7 @@ describe("Cocoa Docker packaging policy", () => {
     const dockerfile = readRootFile("Dockerfile");
 
     expect(dockerfile).toContain("FROM node:${NODE_VERSION}-bookworm-slim AS build");
+    expect(dockerfile).toContain("apt-get install -y --no-install-recommends ca-certificates");
     expect(dockerfile).toContain("corepack prepare pnpm@11.10.0 --activate");
     expect(dockerfile).toContain("--ignore-scripts");
     expect(dockerfile).toContain("--filter '@cocoa/gateway-runtime...'");
