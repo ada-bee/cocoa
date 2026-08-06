@@ -32,7 +32,6 @@ export interface CocoaGatewayArchitectureClassification {
     | "gateway-persistence"
     | "gateway-provider-event-log"
     | "gateway-unavailable-stub"
-    | "provider-endpoint-ssh-transport"
     | "provider-endpoint-credential-storage"
     | "provider-host-readonly-helper"
     | "provider-host-terminal"

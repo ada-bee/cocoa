@@ -1036,13 +1036,21 @@ it.live(
               [MACBOOK]: {
                 driver: "codex",
                 config: {
-                  endpointTransport: { type: "ssh-proxy", host: "192.168.20.99" },
+                  endpointTransport: {
+                    type: "direct-websocket",
+                    url: "wss://macaroni.test:4500",
+                    authentication: { type: "none" },
+                  },
                 },
               },
               [LINUX]: {
                 driver: "codex",
                 config: {
-                  endpointTransport: { type: "ssh-proxy", host: "rigatoni-alfredo" },
+                  endpointTransport: {
+                    type: "direct-websocket",
+                    url: "wss://rigatoni-alfredo.test:4500",
+                    authentication: { type: "none" },
+                  },
                 },
               },
             },

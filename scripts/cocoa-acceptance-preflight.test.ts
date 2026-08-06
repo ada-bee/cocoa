@@ -13,6 +13,7 @@ import {
 } from "./cocoa-acceptance-preflight.ts";
 
 const FIXED_NOW = new Date("2026-08-06T16:00:00.000Z");
+const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 
 const settings = (providers: Record<string, { readonly enabled?: boolean }> = {}) =>
   JSON.stringify({
@@ -63,7 +64,7 @@ const dependencies = (
   fetch: (async (input: string | URL | Request) =>
     String(input).endsWith("/healthz") ? response(health) : response(readiness())) as typeof fetch,
   readTextFile: async () => settings({ macbook: {}, linux: {} }),
-  statFile: async () => ({ regularFile: true, mode: 0o600 }),
+  statFile: async () => ({ regularFile: true, mode: 0o600, byteLength: 64 }),
   now: () => FIXED_NOW,
   ...overrides,
 });
@@ -84,7 +85,7 @@ describe("Cocoa deployment acceptance preflight", () => {
     );
 
     expect(evidence).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       timestamp: "2026-08-06T16:00:00.000Z",
       gateway: {
         baseUrl: "http://gateway.test:7331/",
@@ -196,13 +197,12 @@ describe("Cocoa deployment acceptance preflight", () => {
     expect(evidence.checks.providers.status).toBe("skipped");
   });
 
-  it("checks secret metadata without reading secret contents", async () => {
+  it("checks endpoint secret metadata without reading secret contents", async () => {
     const statCalls: Array<string> = [];
     let settingsReads = 0;
     const evidence = await runCocoaAcceptancePreflight(
       options({
-        sshIdentity: "/secrets/id_ed25519",
-        sshKnownHosts: "/secrets/known_hosts",
+        endpointSecrets: ["/secrets/macaroni.key", "/secrets/rigatoni.key"],
       }),
       dependencies({
         readTextFile: async () => {
@@ -211,26 +211,39 @@ describe("Cocoa deployment acceptance preflight", () => {
         },
         statFile: async (path) => {
           statCalls.push(path);
-          return path.endsWith("id_ed25519")
-            ? { regularFile: true, mode: 0o644 }
-            : { regularFile: false, mode: 0o444 };
+          return path.endsWith("macaroni.key")
+            ? { regularFile: true, mode: 0o644, byteLength: 64 }
+            : { regularFile: false, mode: 0o600, byteLength: 16 };
         },
       }),
     );
 
     expect(settingsReads).toBe(1);
-    expect(statCalls).toEqual(["/secrets/id_ed25519", "/secrets/known_hosts"]);
+    expect(statCalls).toEqual(["/secrets/macaroni.key", "/secrets/rigatoni.key"]);
     expect(evidence.checks.secrets).toMatchObject({
       status: "fail",
       files: [
-        { kind: "identity", status: "fail", regularFile: true, mode: "0644" },
-        { kind: "known-hosts", status: "fail", regularFile: false, mode: "0444" },
+        {
+          kind: "endpoint-auth",
+          status: "fail",
+          regularFile: true,
+          mode: "0644",
+          byteLength: 64,
+        },
+        {
+          kind: "endpoint-auth",
+          status: "fail",
+          regularFile: false,
+          mode: "0600",
+          byteLength: 16,
+        },
       ],
     });
     expect(evidence.failures).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ code: "secret.identity_readable_by_others" }),
+        expect.objectContaining({ code: "secret.readable_by_others" }),
         expect.objectContaining({ code: "secret.not_regular_file" }),
+        expect.objectContaining({ code: "secret.too_short" }),
       ]),
     );
   });
@@ -247,12 +260,17 @@ describe("Cocoa deployment acceptance preflight", () => {
       "linux",
       "--timeout-ms",
       "2500",
+      "--endpoint-secret",
+      "/secrets/macaroni.key",
+      "--endpoint-secret",
+      "/secrets/linux.key",
     ]);
     expect(parsed).toEqual({
       gatewayBaseUrl: "https://cocoa.example.test/base",
       settingsFile: "/config/cocoa.json",
       providerIds: ["macbook", "linux"],
       timeoutMs: 2_500,
+      endpointSecrets: ["/secrets/macaroni.key", "/secrets/linux.key"],
     });
     expect(() => parseCocoaAcceptancePreflightOptions(["--timeout-ms", "0"])).toThrow(
       /1 through 120000/,
@@ -265,7 +283,7 @@ describe("Cocoa deployment acceptance preflight", () => {
   it("explicitly attests the baked build and loaded provider configuration identities", async () => {
     const settingsText = settings({ macbook: {}, linux: {} });
     const expectedSettings = computeCocoaSettingsIdentity(
-      Schema.decodeUnknownSync(ServerSettings)(JSON.parse(settingsText)),
+      decodeServerSettings(JSON.parse(settingsText)),
     );
     const evidence = await runCocoaAcceptancePreflight(
       options({ expectedBuildIdentity: "git:test-build", verifySettingsIdentity: true }),

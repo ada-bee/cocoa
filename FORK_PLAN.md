@@ -14,7 +14,7 @@ Raspberry Pi: Cocoa gateway + web app + SQLite
               |
               | authenticated Codex app-server protocol
               v
-independent Codex hosts: standalone daemon + repositories + tools + credentials
+independent Codex hosts: managed app-server + repositories + tools + credentials
 ```
 
 The administrator owns connectivity between every component. Cocoa listens on a
@@ -22,10 +22,11 @@ normal network port and connects to configured provider endpoints. It does not
 provide tunnels, relays, endpoint discovery, hosted identity, or fleet
 management.
 
-The initial provider hosts are a macOS arm64 laptop at `192.168.20.99` and an
-x86_64 Linux development host at `192.168.20.61`. Both run Codex's experimental
-standalone daemon in remote-control mode. Cocoa must integrate with that daemon;
-it must not replace its lifecycle manager or start a second daemon.
+The initial provider hosts are a macOS arm64 laptop at `192.168.20.99`, a
+Windows development host at `192.168.20.60`, and its x86_64 Ubuntu VM at
+`192.168.20.61`. Each runs Codex's experimental app-server in remote-control
+mode under its native service manager. Cocoa connects to those services; it
+does not own their lifecycle or start a second provider process.
 
 There is no Cocoa production data to migrate during the initial fork. Contract,
 event, and projection changes may therefore be direct, required cutovers without
@@ -58,10 +59,9 @@ The gateway must not require:
 - local Git, shell, PTY, or filesystem access for a project
 - permission to spawn or supervise a provider process
 
-The gateway does hold the credentials needed to reach a configured endpoint,
-such as an SSH identity or a WebSocket capability token. A transport helper such
-as `ssh` is not a provider process: Cocoa may own that connection process, but it
-must never start, stop, update, discover, or supervise the remote Codex daemon.
+The gateway does hold the credentials needed to authenticate to a configured
+WebSocket endpoint. It must never start, stop, update, discover, or supervise the
+remote Codex daemon.
 
 ### Provider host
 
@@ -118,9 +118,8 @@ adapters; commands, events, and client projections should remain provider-normal
 
 ## Provider configuration
 
-A provider is a durable, administrator-configured endpoint. The first deployed
-transport connects over SSH to `codex app-server proxy`, which forwards the
-protocol to the already-running standalone daemon's Unix control socket:
+A provider is a durable, administrator-configured WebSocket endpoint backed by
+an independently supervised Codex app-server daemon:
 
 ```yaml
 server:
@@ -130,30 +129,56 @@ database:
   path: /data/state.sqlite
 
 providers:
-  - id: codex-macbook-air
+  - id: codex-macaroni
     type: codex
     transport:
-      type: ssh-proxy
-      host: 192.168.20.99
-      user: ada-bee
-  - id: codex-linux-mv
+      type: direct-websocket
+      url: ws://192.168.20.99:4500
+      allowInsecureTransport: true
+      authentication:
+        type: signed-bearer-token
+        credential:
+          source: file
+          path: /run/secrets/codex_macaroni_ws_shared_secret
+        issuer: cocoa-gateway
+        audience: codex-macaroni
+  - id: codex-rigatoni
     type: codex
     transport:
-      type: ssh-proxy
-      host: 192.168.20.61
-      user: ada-bee
+      type: direct-websocket
+      url: ws://192.168.20.60:4500
+      allowInsecureTransport: true
+      authentication:
+        type: signed-bearer-token
+        credential:
+          source: file
+          path: /run/secrets/codex_rigatoni_ws_shared_secret
+        issuer: cocoa-gateway
+        audience: codex-rigatoni
+  - id: codex-rigatoni-alfredo
+    type: codex
+    transport:
+      type: direct-websocket
+      url: ws://192.168.20.61:4500
+      allowInsecureTransport: true
+      authentication:
+        type: signed-bearer-token
+        credential:
+          source: file
+          path: /run/secrets/codex_rigatoni_alfredo_ws_shared_secret
+        issuer: cocoa-gateway
+        audience: codex-rigatoni-alfredo
 ```
 
-Direct WebSocket is a second transport for explicitly exposed daemons. Codex
-0.146.0 supports `capability-token` and `signed-bearer-token` authentication for
+Codex 0.146.0 supports `capability-token` and `signed-bearer-token` authentication for
 non-loopback WebSocket listeners; administrator-owned TLS termination supplies
 WSS when needed. Authentication modes must be modeled explicitly rather than as
-a generic bearer token.
+a generic bearer token. Plaintext non-loopback `ws://` requires explicit token
+authentication and `allowInsecureTransport: true`; anonymous remote plaintext is
+invalid.
 
 There should be no provider `binaryPath`, `homePath`, daemon launch arguments,
-process discovery, or daemon spawn mode in gateway configuration. The SSH
-transport runs one fixed proxy command and may expose ordinary SSH connection
-options; those settings configure the protocol connection, not the daemon.
+process discovery, or daemon spawn mode in gateway configuration.
 
 `ProjectId` remains the durable aggregate identity. A project's provider-owned
 location and active uniqueness key changes from a local path to the tuple:
@@ -171,15 +196,8 @@ Introduce one long-lived `CodexEndpoint` per configured provider instance. Do
 not deduplicate instances by URL or host initially: authentication, connection-
 scoped command IDs, health, and protocol capabilities belong to the instance.
 
-Put transport below the endpoint. Both initial transports produce the same
-WebSocket message stream:
-
-- `ssh-proxy` opens a non-interactive SSH connection and runs the fixed remote
-  `codex app-server proxy` command. The proxy carries a raw WebSocket HTTP
-  upgrade and WebSocket frames over its stdio; it is not a JSONL transport and
-  cannot be passed directly to the existing child-process JSON-RPC client.
-- `websocket` connects directly to an administrator-exposed authenticated
-  `ws://` or `wss://` listener.
+The transport connects directly to an administrator-exposed authenticated
+`ws://` or `wss://` listener.
 
 The endpoint owns:
 
@@ -393,8 +411,7 @@ on the gateway.
 ### Phase 2: Shared remote Codex endpoint
 
 - Extract native JSON-RPC handling from process management.
-- Implement the framed transport abstraction with SSH proxy first and direct
-  authenticated WebSocket second.
+- Implement the direct authenticated WebSocket framed transport.
 - Implement one scoped `CodexEndpoint` per provider instance, with one global set
   of native handlers and bounded thread/request multiplexing.
 - Route provider health, account/model probes, and existing Codex session traffic
@@ -405,8 +422,8 @@ on the gateway.
 - Surface endpoint health and protocol mismatch through normalized gateway state.
 
 Exit condition: a gateway with no Codex binary can create and resume a basic turn
-on a separately managed standalone Codex daemon through `app-server proxy`, and
-two fake endpoints prove correct routing for the same workspace path.
+on separately managed standalone Codex daemons over authenticated WebSockets,
+and two fake endpoints prove correct routing for the same workspace path.
 
 ### Phase 3: Remote workspace browsing
 
@@ -547,9 +564,9 @@ The initial fork direction is complete when all of the following work together:
   container with no Codex binary, Git binary, Codex account credentials, or
   workspace mount. It contains only the configured endpoint transport and its
   connection credentials.
-- The gateway connects through SSH proxy to the independently managed standalone
-  Codex daemons on the macOS and Linux provider hosts; neither daemon is restarted
-  or reconfigured by Cocoa.
+- The gateway connects directly over authenticated WebSockets to independently
+  managed standalone Codex daemons on the macOS, Windows, and Linux provider
+  hosts; no daemon lifecycle is owned by Cocoa.
 - An iPhone connects to the gateway, lists remote directories, creates and resumes
   a thread, streams activity, answers approvals, and inspects a remote diff.
 - A turn continues while the phone is disconnected.

@@ -12,7 +12,6 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
@@ -157,7 +156,6 @@ const defaultDependencies: CodexEndpointDriverDependencies = {
 
 export type CodexEndpointDriverEnv =
   | BackgroundPolicy.BackgroundPolicy
-  | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
   | ProviderEventLoggers

@@ -9,7 +9,7 @@
  */
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, PortSchema, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /**
  * Version used by the first Cocoa compatibility fixtures. This is diagnostic
@@ -17,15 +17,7 @@ import { NonNegativeInt, PortSchema, PositiveInt, TrimmedNonEmptyString } from "
  */
 export const CODEX_APP_SERVER_TESTED_VERSION = "0.146.0";
 
-/** Fixed remote command used by the SSH transport implementation. */
-export const CODEX_SSH_PROXY_REMOTE_COMMAND = ["codex", "app-server", "proxy"] as const;
-
 const MAX_ENDPOINT_URL_CHARS = 2048;
-const MAX_HOST_CHARS = 253;
-const MAX_USER_CHARS = 64;
-const MAX_SSH_TIMEOUT_SECONDS = 300;
-const MAX_SSH_KEEPALIVE_SECONDS = 3600;
-const MAX_SSH_KEEPALIVE_COUNT = 20;
 const MAX_PROVIDER_EXECUTABLE_PATH_CHARS = 4096;
 
 const isAbsoluteNormalizedPosixPath = (path: string): boolean => {
@@ -116,63 +108,29 @@ export const CodexDirectWebSocketTransport = Schema.Struct({
   type: Schema.Literal("direct-websocket"),
   url: WebSocketUrl,
   authentication: CodexEndpointAuthentication,
+  allowInsecureTransport: Schema.optionalKey(Schema.Literal(true)),
 }).check(
   Schema.makeFilter((transport) => {
     const parsed = parseWebSocketUrl(transport.url);
-    if (!parsed || transport.authentication.type === "none" || parsed.protocol === "wss:") {
-      return true;
+    if (!parsed) return true;
+    const isLoopback = isLoopbackWebSocketHost(parsed.hostname);
+    if (parsed.protocol === "wss:" || isLoopback) {
+      return (
+        transport.allowInsecureTransport === undefined ||
+        "allowInsecureTransport may only acknowledge a non-loopback ws:// endpoint."
+      );
     }
-    return (
-      isLoopbackWebSocketHost(parsed.hostname) ||
-      "Token-authenticated non-loopback Codex endpoints must use wss://."
-    );
+    if (transport.authentication.type === "none") {
+      return "Non-loopback ws:// Codex endpoints must use explicit authentication.";
+    }
+    if (transport.allowInsecureTransport !== true) {
+      return "Token-authenticated non-loopback ws:// Codex endpoints require allowInsecureTransport: true.";
+    }
+    return true;
   }),
 );
 export type CodexDirectWebSocketTransport = typeof CodexDirectWebSocketTransport.Type;
 
-const SshHost = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(MAX_HOST_CHARS),
-  Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/),
-);
-const SshUser = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(MAX_USER_CHARS),
-  Schema.isPattern(/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/),
-);
-
-/**
- * Structured SSH options that can be rendered as individual argv entries.
- * Deliberately excludes arbitrary `-o` values and remote commands.
- */
-export const CodexSshProxyOptions = Schema.Struct({
-  identityFile: Schema.optional(AbsoluteCredentialPath),
-  connectTimeoutSeconds: Schema.optional(
-    PositiveInt.check(Schema.isLessThanOrEqualTo(MAX_SSH_TIMEOUT_SECONDS)),
-  ),
-  serverAliveIntervalSeconds: Schema.optional(
-    PositiveInt.check(Schema.isLessThanOrEqualTo(MAX_SSH_KEEPALIVE_SECONDS)),
-  ),
-  serverAliveCountMax: Schema.optional(
-    NonNegativeInt.check(Schema.isLessThanOrEqualTo(MAX_SSH_KEEPALIVE_COUNT)),
-  ),
-  strictHostKeyChecking: Schema.optional(Schema.Literals(["yes", "accept-new"])),
-});
-export type CodexSshProxyOptions = typeof CodexSshProxyOptions.Type;
-
-/**
- * Connect through `ssh [options] host codex app-server proxy`. The remote
- * command is fixed by the transport implementation and is not configurable.
- */
-export const CodexSshProxyTransport = Schema.Struct({
-  type: Schema.Literal("ssh-proxy"),
-  host: SshHost,
-  user: Schema.optional(SshUser),
-  port: Schema.optional(PortSchema),
-  options: Schema.optional(CodexSshProxyOptions),
-});
-export type CodexSshProxyTransport = typeof CodexSshProxyTransport.Type;
-
-export const CodexEndpointTransport = Schema.Union([
-  CodexDirectWebSocketTransport,
-  CodexSshProxyTransport,
-]);
-export type CodexEndpointTransport = typeof CodexEndpointTransport.Type;
+/** Cocoa reaches externally managed Codex daemons only through WebSocket endpoints. */
+export const CodexEndpointTransport = CodexDirectWebSocketTransport;
+export type CodexEndpointTransport = CodexDirectWebSocketTransport;

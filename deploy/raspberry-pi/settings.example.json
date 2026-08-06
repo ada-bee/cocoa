@@ -1,20 +1,22 @@
 {
   "providerInstances": {
-    "codex_macbook_air": {
+    "codex_macaroni": {
       "driver": "codex",
-      "displayName": "MacBook Air",
+      "displayName": "MacBook Air (macaroni)",
       "enabled": true,
       "config": {
         "endpointTransport": {
-          "type": "ssh-proxy",
-          "host": "192.168.20.99",
-          "user": "ada-bee",
-          "options": {
-            "identityFile": "/run/secrets/cocoa_ssh_identity",
-            "connectTimeoutSeconds": 15,
-            "serverAliveIntervalSeconds": 30,
-            "serverAliveCountMax": 3,
-            "strictHostKeyChecking": "yes"
+          "type": "direct-websocket",
+          "url": "ws://192.168.20.99:4500",
+          "allowInsecureTransport": true,
+          "authentication": {
+            "type": "signed-bearer-token",
+            "credential": {
+              "source": "file",
+              "path": "/run/secrets/codex_macaroni_ws_shared_secret"
+            },
+            "issuer": "cocoa-gateway",
+            "audience": "codex-macaroni"
           }
         },
         "workspaceHelper": {
@@ -33,21 +35,44 @@
         }
       }
     },
-    "codex_linux_rigatoni_alfredo": {
+    "codex_rigatoni": {
       "driver": "codex",
-      "displayName": "Linux dev box (rigatoni-alfredo)",
+      "displayName": "Windows dev host (rigatoni)",
       "enabled": true,
       "config": {
         "endpointTransport": {
-          "type": "ssh-proxy",
-          "host": "192.168.20.61",
-          "user": "ada-bee",
-          "options": {
-            "identityFile": "/run/secrets/cocoa_ssh_identity",
-            "connectTimeoutSeconds": 15,
-            "serverAliveIntervalSeconds": 30,
-            "serverAliveCountMax": 3,
-            "strictHostKeyChecking": "yes"
+          "type": "direct-websocket",
+          "url": "ws://192.168.20.60:4500",
+          "allowInsecureTransport": true,
+          "authentication": {
+            "type": "signed-bearer-token",
+            "credential": {
+              "source": "file",
+              "path": "/run/secrets/codex_rigatoni_ws_shared_secret"
+            },
+            "issuer": "cocoa-gateway",
+            "audience": "codex-rigatoni"
+          }
+        }
+      }
+    },
+    "codex_rigatoni_alfredo": {
+      "driver": "codex",
+      "displayName": "Ubuntu dev VM (rigatoni-alfredo)",
+      "enabled": true,
+      "config": {
+        "endpointTransport": {
+          "type": "direct-websocket",
+          "url": "ws://192.168.20.61:4500",
+          "allowInsecureTransport": true,
+          "authentication": {
+            "type": "signed-bearer-token",
+            "credential": {
+              "source": "file",
+              "path": "/run/secrets/codex_rigatoni_alfredo_ws_shared_secret"
+            },
+            "issuer": "cocoa-gateway",
+            "audience": "codex-rigatoni-alfredo"
           }
         },
         "workspaceHelper": {
@@ -68,7 +93,7 @@
     }
   },
   "textGenerationModelSelection": {
-    "instanceId": "codex_macbook_air",
+    "instanceId": "codex_macaroni",
     "model": "gpt-5.4"
   }
 }

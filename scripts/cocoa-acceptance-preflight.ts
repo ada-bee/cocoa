@@ -12,11 +12,12 @@ import {
   normalizeCocoaBuildIdentity,
 } from "@t3tools/shared/cocoaDeploymentIdentity";
 
-export const COCOA_ACCEPTANCE_PREFLIGHT_SCHEMA_VERSION = 1 as const;
+export const COCOA_ACCEPTANCE_PREFLIGHT_SCHEMA_VERSION = 2 as const;
 export const DEFAULT_COCOA_ACCEPTANCE_GATEWAY = "http://127.0.0.1:7331/";
 export const DEFAULT_COCOA_ACCEPTANCE_SETTINGS = "deploy/raspberry-pi/settings.example.json";
 export const DEFAULT_COCOA_ACCEPTANCE_TIMEOUT_MS = 5_000;
 export const COCOA_ACCEPTANCE_MAX_RESPONSE_BYTES = 1_048_576;
+export const COCOA_ENDPOINT_SECRET_MINIMUM_BYTES = 48;
 
 export type PreflightCheckStatus = "pass" | "fail" | "skipped";
 
@@ -25,8 +26,7 @@ export interface CocoaAcceptancePreflightOptions {
   readonly settingsFile: string;
   readonly providerIds?: ReadonlyArray<string>;
   readonly timeoutMs: number;
-  readonly sshIdentity?: string;
-  readonly sshKnownHosts?: string;
+  readonly endpointSecrets?: ReadonlyArray<string>;
   readonly expectedBuildIdentity?: string;
   readonly verifySettingsIdentity?: boolean;
 }
@@ -42,7 +42,8 @@ export interface CocoaAcceptancePreflightFailure {
     | "secret.not_found"
     | "secret.stat_failed"
     | "secret.not_regular_file"
-    | "secret.identity_readable_by_others"
+    | "secret.readable_by_others"
+    | "secret.too_short"
     | "http.timeout"
     | "http.request_failed"
     | "http.unexpected_status"
@@ -85,11 +86,12 @@ interface DeploymentIdentityEvidence {
 }
 
 interface SecretEvidence {
-  readonly kind: "identity" | "known-hosts";
+  readonly kind: "endpoint-auth";
   readonly path: string;
   readonly status: PreflightCheckStatus;
   readonly regularFile: boolean | null;
   readonly mode: string | null;
+  readonly byteLength: number | null;
 }
 
 export interface CocoaAcceptancePreflightEvidence {
@@ -139,6 +141,7 @@ export interface CocoaAcceptancePreflightEvidence {
 export interface CocoaAcceptanceFileMetadata {
   readonly regularFile: boolean;
   readonly mode: number;
+  readonly byteLength: number;
 }
 
 export interface CocoaAcceptancePreflightDependencies {
@@ -156,7 +159,7 @@ const defaultDependencies: CocoaAcceptancePreflightDependencies = {
   readTextFile: (path) => NodeFS.promises.readFile(path, "utf8"),
   statFile: async (path) => {
     const stat = await NodeFS.promises.stat(path);
-    return { regularFile: stat.isFile(), mode: stat.mode };
+    return { regularFile: stat.isFile(), mode: stat.mode, byteLength: stat.size };
   },
   now: () => new Date(),
 };
@@ -303,7 +306,6 @@ const httpFailure = (
 };
 
 const validateSecret = async (
-  kind: SecretEvidence["kind"],
   path: string,
   dependencies: CocoaAcceptancePreflightDependencies,
 ): Promise<{
@@ -324,23 +326,34 @@ const validateSecret = async (
         ),
       );
     }
-    if (kind === "identity" && (metadata.mode & 0o044) !== 0) {
+    if ((metadata.mode & 0o044) !== 0) {
       failures.push(
         failure(
-          "secret.identity_readable_by_others",
+          "secret.readable_by_others",
           "secrets",
-          "The SSH identity must not be group- or world-readable.",
+          "Endpoint authentication secrets must not be group- or world-readable.",
+          path,
+        ),
+      );
+    }
+    if (metadata.byteLength < COCOA_ENDPOINT_SECRET_MINIMUM_BYTES) {
+      failures.push(
+        failure(
+          "secret.too_short",
+          "secrets",
+          `Endpoint authentication secrets must be at least ${COCOA_ENDPOINT_SECRET_MINIMUM_BYTES} bytes.`,
           path,
         ),
       );
     }
     return {
       evidence: {
-        kind,
+        kind: "endpoint-auth",
         path,
         status: failures.length === 0 ? "pass" : "fail",
         regularFile: metadata.regularFile,
         mode,
+        byteLength: metadata.byteLength,
       },
       failures,
     };
@@ -348,11 +361,12 @@ const validateSecret = async (
     const missing = isRecord(error) && error.code === "ENOENT";
     return {
       evidence: {
-        kind,
+        kind: "endpoint-auth",
         path,
         status: "fail",
         regularFile: null,
         mode: null,
+        byteLength: null,
       },
       failures: [
         failure(
@@ -537,15 +551,8 @@ export const runCocoaAcceptancePreflight = async (
   }
 
   const secretResults: Array<Awaited<ReturnType<typeof validateSecret>>> = [];
-  if (options.sshIdentity !== undefined) {
-    secretResults.push(
-      await validateSecret("identity", NodePath.resolve(options.sshIdentity), dependencies),
-    );
-  }
-  if (options.sshKnownHosts !== undefined) {
-    secretResults.push(
-      await validateSecret("known-hosts", NodePath.resolve(options.sshKnownHosts), dependencies),
-    );
+  for (const endpointSecret of options.endpointSecrets ?? []) {
+    secretResults.push(await validateSecret(NodePath.resolve(endpointSecret), dependencies));
   }
   for (const result of secretResults) failures.push(...result.failures);
 
@@ -842,8 +849,7 @@ export const parseCocoaAcceptancePreflightOptions = (
   let gatewayBaseUrl = DEFAULT_COCOA_ACCEPTANCE_GATEWAY;
   let settingsFile = DEFAULT_COCOA_ACCEPTANCE_SETTINGS;
   let timeoutMs = DEFAULT_COCOA_ACCEPTANCE_TIMEOUT_MS;
-  let sshIdentity: string | undefined;
-  let sshKnownHosts: string | undefined;
+  const endpointSecrets: Array<string> = [];
   let expectedBuildIdentity: string | undefined;
   let verifySettingsIdentity = false;
   const providerIds: Array<string> = [];
@@ -861,10 +867,8 @@ export const parseCocoaAcceptancePreflightOptions = (
       if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) {
         cliFail("--timeout-ms must be an integer from 1 through 120000");
       }
-    } else if (arg === "--ssh-identity") {
-      sshIdentity = args[++index] ?? cliFail("--ssh-identity requires a value");
-    } else if (arg === "--ssh-known-hosts") {
-      sshKnownHosts = args[++index] ?? cliFail("--ssh-known-hosts requires a value");
+    } else if (arg === "--endpoint-secret") {
+      endpointSecrets.push(args[++index] ?? cliFail("--endpoint-secret requires a value"));
     } else if (arg === "--expected-build-identity") {
       const value = args[++index] ?? cliFail("--expected-build-identity requires a value");
       expectedBuildIdentity = normalizeCocoaBuildIdentity(value);
@@ -880,8 +884,7 @@ export const parseCocoaAcceptancePreflightOptions = (
           "  --settings FILE                     Settings file used for deployment.",
           "  --provider ID                       Expected ready provider; repeatable.",
           "  --timeout-ms MS                     Per-request timeout (1-120000).",
-          "  --ssh-identity FILE                 Check SSH identity file metadata.",
-          "  --ssh-known-hosts FILE              Check known-hosts file metadata.",
+          "  --endpoint-secret FILE              Check endpoint auth secret metadata; repeatable.",
           "  --expected-build-identity ID        Require the baked Cocoa build identity.",
           "  --verify-settings-identity          Match the gateway's loaded provider configuration to --settings.",
           "  --help                              Show this help.",
@@ -897,8 +900,7 @@ export const parseCocoaAcceptancePreflightOptions = (
     settingsFile,
     ...(providerIds.length === 0 ? {} : { providerIds }),
     timeoutMs,
-    ...(sshIdentity === undefined ? {} : { sshIdentity }),
-    ...(sshKnownHosts === undefined ? {} : { sshKnownHosts }),
+    ...(endpointSecrets.length === 0 ? {} : { endpointSecrets }),
     ...(expectedBuildIdentity === undefined ? {} : { expectedBuildIdentity }),
     ...(verifySettingsIdentity ? { verifySettingsIdentity: true } : {}),
   };

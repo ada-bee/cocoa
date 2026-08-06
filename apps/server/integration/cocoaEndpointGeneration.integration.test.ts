@@ -1,15 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
-
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import {
   CodexSettings,
-  CommandId,
-  DEFAULT_PROVIDER_INTERACTION_MODE,
-  MessageId,
-  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -22,6 +15,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -29,7 +23,6 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import type * as CodexRpc from "effect-codex-app-server/rpc";
@@ -63,10 +56,12 @@ import {
   makeCodexDriver,
   type CodexDriverDependencies,
 } from "../src/provider/Drivers/CodexDriver.ts";
-import type { ProviderServiceShape } from "../src/provider/Services/ProviderService.ts";
+import {
+  makeCodexEndpointDriver,
+  type CodexEndpointDriverDependencies,
+} from "../src/provider/Drivers/CodexEndpointDriver.ts";
 import { ServerSettingsService } from "../src/serverSettings.ts";
 import type { TextGeneration } from "../src/textGeneration/TextGeneration.ts";
-import { makeOrchestrationIntegrationHarness } from "./OrchestrationEngineHarness.integration.ts";
 
 type NotificationHandler = (
   params: unknown,
@@ -74,22 +69,16 @@ type NotificationHandler = (
 type RequestHandler = (params: unknown) => Effect.Effect<unknown, CodexErrors.CodexAppServerError>;
 
 const INSTANCE_ID = ProviderInstanceId.make("linux_dev_box");
-const SSH_DRIVER_INSTANCE_ID = ProviderInstanceId.make("codex");
-const SSH_PROJECT_ID = ProjectId.make("project-ssh-boundary");
-const SSH_THREAD_ID = ThreadId.make("thread-ssh-boundary");
+const DIRECT_INSTANCE_ID = ProviderInstanceId.make("codex_direct");
+const DIRECT_THREAD_ID = ThreadId.make("thread-direct-boundary");
 const THREAD_ID = ThreadId.make("thread-endpoint-generation");
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+const decodeUnknownJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
 const ENDPOINT_CONFIG = decodeCodexSettings({
   endpointTransport: {
     type: "direct-websocket",
     url: "ws://127.0.0.1:7777",
     authentication: { type: "none" },
-  },
-});
-const SSH_ENDPOINT_CONFIG = decodeCodexSettings({
-  endpointTransport: {
-    type: "ssh-proxy",
-    host: "fake-codex-host",
   },
 });
 const testCrypto = Crypto.make({
@@ -309,200 +298,244 @@ const providerDraft = (version: string) =>
     },
   });
 
-interface FakeSshFixture {
-  readonly directory: string;
-  readonly executablePath: string;
-  readonly transcriptPath: string;
+interface FakeDirectEndpoint {
+  readonly url: string;
+  readonly messages: ReadonlyArray<Record<string, unknown>>;
+  readonly authorization: string | undefined;
 }
 
-const makeFakeSshFixture = (): FakeSshFixture => {
-  const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "cocoa-fake-ssh-"));
-  const executablePath = NodePath.join(directory, "ssh");
-  const transcriptPath = NodePath.join(directory, "transcript.ndjson");
-  const source = `#!/usr/bin/env bun
-import { createHash } from "node:crypto";
-import { appendFileSync } from "node:fs";
+const makeFakeDirectEndpoint = Effect.fn("acceptance.makeFakeDirectEndpoint")(function* () {
+  const messages: Array<Record<string, unknown>> = [];
+  let authorization: string | undefined;
+  const server = new NodeSocket.NodeWS.WebSocketServer({ host: "127.0.0.1", port: 0 });
+  yield* Effect.addFinalizer(() =>
+    Effect.promise<void>(
+      () =>
+        new Promise((resolve) => {
+          for (const client of server.clients) client.terminate();
+          server.close(() => resolve());
+        }),
+    ),
+  );
 
-const transcriptPath = ${JSON.stringify(transcriptPath)};
-const record = (entry) => appendFileSync(transcriptPath, JSON.stringify(entry) + "\\n");
-record({ type: "argv", args: process.argv.slice(2) });
+  server.on("connection", (socket, request) => {
+    authorization = request.headers.authorization;
+    socket.on("message", (data, isBinary) => {
+      if (isBinary) return;
+      const message = JSON.parse(data.toString()) as Record<string, unknown> & {
+        readonly id?: string | number;
+        readonly method?: string;
+        readonly params?: Record<string, unknown>;
+      };
+      messages.push(message);
+      const send = (value: unknown) => socket.send(JSON.stringify(value));
+      if (message.method === "initialize" && message.id !== undefined) {
+        send({
+          id: message.id,
+          result: {
+            codexHome: "/remote/.codex",
+            platformFamily: "unix",
+            platformOs: "linux",
+            userAgent: "codex_cli_rs/0.146.0 fake-direct-boundary",
+          },
+        });
+        return;
+      }
+      if (
+        message.method === "thread/start" &&
+        message.id !== undefined &&
+        typeof message.params?.cwd === "string"
+      ) {
+        const cwd = String(message.params?.cwd ?? "/remote/workspace");
+        send({
+          id: message.id,
+          result: {
+            cwd,
+            model: "gpt-5.6-sol",
+            modelProvider: "openai",
+            approvalPolicy: "on-request",
+            approvalsReviewer: "user",
+            sandbox: { type: "workspaceWrite" },
+            thread: {
+              cliVersion: "0.146.0",
+              cwd,
+              ephemeral: false,
+              id: "native-direct-thread",
+              createdAt: 1_775_606_400,
+              modelProvider: "openai",
+              preview: "",
+              sessionId: "native-direct-session",
+              source: "cli",
+              turns: [],
+              status: { type: "idle" },
+              updatedAt: 1_775_606_400,
+            },
+          },
+        });
+        return;
+      }
+      if (
+        message.method === "turn/start" &&
+        message.id !== undefined &&
+        typeof message.params?.threadId === "string"
+      ) {
+        const turn = { id: "native-direct-turn", items: [], status: "inProgress" };
+        send({
+          method: "turn/started",
+          params: { threadId: "native-direct-thread", turn },
+        });
+        const item = {
+          type: "agentMessage",
+          id: "native-direct-message",
+          text: "Direct WebSocket boundary complete.",
+          phase: "final_answer",
+        };
+        send({
+          method: "item/completed",
+          params: {
+            threadId: "native-direct-thread",
+            turnId: "native-direct-turn",
+            item,
+          },
+        });
+        send({
+          method: "turn/completed",
+          params: {
+            threadId: "native-direct-thread",
+            turn: { ...turn, items: [item], status: "completed" },
+          },
+        });
+        send({ id: message.id, result: { turn } });
+        return;
+      }
+      if (message.id !== undefined) {
+        send({ id: message.id, error: { code: -32602, message: "invalid params" } });
+      }
+    });
+  });
 
-let input = Buffer.alloc(0);
-let upgraded = false;
-
-const sendFrame = (payload, opcode = 1) => {
-  const body = Buffer.from(payload);
-  const prefix = body.length < 126
-    ? Buffer.from([0x80 | opcode, body.length])
-    : Buffer.from([0x80 | opcode, 126, body.length >>> 8, body.length & 0xff]);
-  process.stdout.write(Buffer.concat([prefix, body]));
-};
-const sendJson = (payload) => sendFrame(JSON.stringify(payload));
-
-const parseFrame = () => {
-  if (input.length < 2) return undefined;
-  const opcode = input[0] & 0x0f;
-  let length = input[1] & 0x7f;
-  let offset = 2;
-  if (length === 126) {
-    if (input.length < 4) return undefined;
-    length = input.readUInt16BE(2);
-    offset = 4;
-  } else if (length === 127) {
-    throw new Error("Unexpected 64-bit WebSocket frame in fake SSH peer");
+  yield* Effect.tryPromise(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      }),
+  );
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    return yield* Effect.die(new Error("Fake direct endpoint did not bind a TCP port."));
   }
-  const masked = (input[1] & 0x80) !== 0;
-  const maskOffset = offset;
-  if (masked) offset += 4;
-  if (input.length < offset + length) return undefined;
-  const payload = Buffer.from(input.subarray(offset, offset + length));
-  if (masked) {
-    const mask = input.subarray(maskOffset, maskOffset + 4);
-    for (let index = 0; index < payload.length; index += 1) {
-      payload[index] ^= mask[index % 4];
-    }
-  }
-  input = input.subarray(offset + length);
-  return { opcode, payload };
-};
+  return {
+    url: `ws://127.0.0.1:${address.port}`,
+    messages,
+    get authorization() {
+      return authorization;
+    },
+  } satisfies FakeDirectEndpoint;
+});
 
-const respond = (message) => {
-  record({ type: "message", message });
-  if (message.method === "initialize" && message.id !== undefined) {
-    sendJson({
-      id: message.id,
-      result: {
-        codexHome: "/remote/.codex",
+it.live("routes a signed-bearer turn through the direct WebSocket boundary", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const endpoint = yield* makeFakeDirectEndpoint();
+      const fileSystem = yield* FileSystem.FileSystem;
+      const secretDirectory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "cocoa-direct-endpoint-",
+      });
+      const secretPath = `${secretDirectory}/shared-secret`;
+      yield* fileSystem.writeFileString(
+        secretPath,
+        "0123456789abcdef0123456789abcdef0123456789abcdef",
+      );
+      const config = decodeCodexSettings({
+        endpointTransport: {
+          type: "direct-websocket",
+          url: endpoint.url,
+          authentication: {
+            type: "signed-bearer-token",
+            credential: { source: "file", path: secretPath },
+            issuer: "cocoa-gateway",
+            audience: "codex-direct",
+          },
+        },
+      });
+      const textGeneration = {
+        generateCommitMessage: () => Effect.die("unused"),
+        generatePrContent: () => Effect.die("unused"),
+        generateBranchName: () => Effect.die("unused"),
+        generateThreadTitle: () => Effect.die("unused"),
+      } as TextGeneration["Service"];
+      let observedCompatibility:
+        | CodexEndpointConnection.CodexEndpointCompatibilityMetadata
+        | undefined;
+      const dependencies: Partial<CodexEndpointDriverDependencies> = {
+        makeEndpointTextGeneration: (() =>
+          Effect.succeed(
+            textGeneration,
+          )) as CodexEndpointDriverDependencies["makeEndpointTextGeneration"],
+        checkEndpointProviderStatus: ((_config, connection) =>
+          Effect.sync(() => {
+            observedCompatibility = connection.compatibility;
+            return providerDraft(connection.compatibility.serverVersion ?? "unknown");
+          })) as CodexEndpointDriverDependencies["checkEndpointProviderStatus"],
+      };
+      const owner = yield* Scope.make("sequential");
+      const instance = yield* makeCodexEndpointDriver(dependencies)
+        .create({
+          instanceId: DIRECT_INSTANCE_ID,
+          displayName: "Direct Codex",
+          accentColor: undefined,
+          environment: [],
+          enabled: true,
+          config,
+        })
+        .pipe(Effect.provideService(Scope.Scope, owner));
+      yield* awaitGeneration(instance.generationLifecycle!, (state) => state._tag === "Ready").pipe(
+        Effect.timeout("3 seconds"),
+      );
+
+      const completed = yield* instance.adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* instance.adapter.startSession({
+        threadId: DIRECT_THREAD_ID,
+        provider: ProviderDriverKind.make("codex"),
+        cwd: "/remote/workspace",
+        runtimeMode: "approval-required",
+        modelSelection: { instanceId: DIRECT_INSTANCE_ID, model: "gpt-5.6-sol" },
+      });
+      yield* instance.adapter.sendTurn({
+        threadId: DIRECT_THREAD_ID,
+        input: "Cross the direct WebSocket boundary.",
+        attachments: [],
+      });
+      expect(Option.isSome(yield* Fiber.join(completed))).toBe(true);
+
+      expect(observedCompatibility).toMatchObject({
+        userAgent: "codex_cli_rs/0.146.0 fake-direct-boundary",
+        serverVersion: "0.146.0",
         platformFamily: "unix",
         platformOs: "linux",
-        userAgent: "codex_cli_rs/0.146.0 fake-ssh-boundary",
-      },
-    });
-    return;
-  }
-  if (message.method === "thread/start" && typeof message.params?.cwd === "string") {
-    sendJson({
-      id: message.id,
-      result: {
-        cwd: message.params.cwd,
-        model: "gpt-5.6-sol",
-        modelProvider: "openai",
-        approvalPolicy: "on-request",
-        approvalsReviewer: "user",
-        sandbox: { type: "workspaceWrite" },
-        thread: {
-          cliVersion: "0.146.0",
-          cwd: message.params.cwd,
-          ephemeral: false,
-          id: "native-ssh-thread",
-          createdAt: 1_775_606_400,
-          modelProvider: "openai",
-          preview: "",
-          sessionId: "native-ssh-session",
-          source: "cli",
-          turns: [],
-          status: { type: "idle" },
-          updatedAt: 1_775_606_400,
-        },
-      },
-    });
-    return;
-  }
-  if (message.method === "turn/start" && typeof message.params?.threadId === "string") {
-    const turn = {
-      id: "native-ssh-turn",
-      items: [],
-      status: "inProgress",
-    };
-    sendJson({
-      method: "turn/started",
-      params: { threadId: "native-ssh-thread", turn },
-    });
-    sendJson({
-      method: "item/completed",
-      params: {
-        threadId: "native-ssh-thread",
-        turnId: "native-ssh-turn",
-        item: {
-          type: "agentMessage",
-          id: "native-ssh-message",
-          text: "SSH boundary complete.",
-          phase: "final_answer",
-        },
-      },
-    });
-    sendJson({
-      method: "turn/completed",
-      params: {
-        threadId: "native-ssh-thread",
-        turn: {
-          ...turn,
-          items: [{
-            type: "agentMessage",
-            id: "native-ssh-message",
-            text: "SSH boundary complete.",
-            phase: "final_answer",
-          }],
-          status: "completed",
-        },
-      },
-    });
-    sendJson({ id: message.id, result: { turn } });
-    return;
-  }
-  if (message.id !== undefined) {
-    sendJson({
-      id: message.id,
-      error: { code: -32602, message: "invalid params" },
-    });
-  }
-};
-
-const consume = () => {
-  if (!upgraded) {
-    const headerEnd = input.indexOf("\\r\\n\\r\\n");
-    if (headerEnd < 0) return;
-    const request = input.subarray(0, headerEnd + 4).toString();
-    input = input.subarray(headerEnd + 4);
-    const key = /^sec-websocket-key:\\s*(.+)$/imu.exec(request)?.[1]?.trim();
-    if (key === undefined) throw new Error("Missing Sec-WebSocket-Key");
-    const accept = createHash("sha1")
-      .update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
-      .digest("base64");
-    record({ type: "upgrade", request });
-    process.stdout.write(
-      "HTTP/1.1 101 Switching Protocols\\r\\n" +
-      "Upgrade: websocket\\r\\n" +
-      "Connection: Upgrade\\r\\n" +
-      "Sec-WebSocket-Accept: " + accept + "\\r\\n\\r\\n",
-    );
-    upgraded = true;
-  }
-
-  while (input.length > 0) {
-    const frame = parseFrame();
-    if (frame === undefined) return;
-    if (frame.opcode === 1) respond(JSON.parse(frame.payload.toString()));
-    if (frame.opcode === 8) sendFrame("", 8);
-    if (frame.opcode === 9) sendFrame(frame.payload, 10);
-  }
-};
-
-process.stdin.on("data", (chunk) => {
-  input = Buffer.concat([input, Buffer.from(chunk)]);
-  consume();
-});
-`;
-  NodeFS.writeFileSync(executablePath, source, { mode: 0o755 });
-  return { directory, executablePath, transcriptPath };
-};
-
-const readFakeSshTranscript = (path: string): ReadonlyArray<Record<string, unknown>> =>
-  NodeFS.readFileSync(path, "utf8")
-    .trim()
-    .split("\n")
-    .filter((line) => line.length > 0)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
+      });
+      const bearer = endpoint.authorization?.replace(/^Bearer /u, "");
+      expect(bearer).toBeDefined();
+      const claims = yield* decodeUnknownJson(
+        Buffer.from(bearer!.split(".")[1]!, "base64url").toString("utf8"),
+      );
+      expect(claims).toMatchObject({ iss: "cocoa-gateway", aud: "codex-direct" });
+      expect(endpoint.messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ method: "initialize" }),
+          expect.objectContaining({ method: "thread/start" }),
+          expect.objectContaining({ method: "turn/start" }),
+        ]),
+      );
+      yield* Scope.close(owner, Exit.void);
+    }),
+  ).pipe(Effect.provide(DriverTestLayer)),
+);
 
 const terminationError = (label: string) =>
   new CodexEndpointConnection.CodexEndpointTerminationError({
@@ -580,286 +613,6 @@ const awaitNextGeneration = Effect.fn("acceptance.awaitNextGeneration")(function
     yield* Stream.fromSubscription(changes).pipe(Stream.filter(predicate), Stream.runHead),
   );
 });
-
-it.live("routes an orchestrated turn through a spawned SSH WebSocket proxy", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const fixture = yield* Effect.acquireRelease(
-        Effect.sync(makeFakeSshFixture),
-        ({ directory }) =>
-          Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
-      );
-      const liveSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      let capturedCommand: ChildProcess.StandardCommand | undefined;
-      const fakeSshSpawner = ChildProcessSpawner.make((command) => {
-        if (!ChildProcess.isStandardCommand(command)) {
-          return Effect.die(new Error("Expected the SSH connector to spawn one command."));
-        }
-        capturedCommand = command;
-        return liveSpawner.spawn(
-          ChildProcess.make(fixture.executablePath, command.args, command.options),
-        );
-      });
-      const owner = yield* Scope.make("sequential");
-      const nativeTurnCompleted = yield* Deferred.make<void>();
-      const nativeEventLogger = {
-        filePath: "in-memory://ssh-boundary",
-        write: (event: unknown) =>
-          typeof event === "object" &&
-          event !== null &&
-          "method" in event &&
-          event.method === "turn/completed"
-            ? Deferred.succeed(nativeTurnCompleted, undefined).pipe(Effect.asVoid)
-            : Effect.void,
-        close: () => Effect.void,
-      };
-      let observedCompatibility:
-        | CodexEndpointConnection.CodexEndpointCompatibilityMetadata
-        | undefined;
-      const textGeneration = {
-        generateCommitMessage: () => Effect.die("unused"),
-        generatePrContent: () => Effect.die("unused"),
-        generateBranchName: () => Effect.die("unused"),
-        generateThreadTitle: () => Effect.die("unused"),
-      } as TextGeneration["Service"];
-      const dependencies: Partial<CodexDriverDependencies> = {
-        makeEndpointTextGeneration: (() =>
-          Effect.succeed(textGeneration)) as CodexDriverDependencies["makeEndpointTextGeneration"],
-        checkEndpointProviderStatus: ((_config, connection) =>
-          Effect.sync(() => {
-            observedCompatibility = connection.compatibility;
-            return providerDraft(connection.compatibility.serverVersion ?? "unknown");
-          })) as CodexDriverDependencies["checkEndpointProviderStatus"],
-        resolveHomeLayout: (() =>
-          Effect.die("local home lookup")) as CodexDriverDependencies["resolveHomeLayout"],
-        materializeShadowHome: (() =>
-          Effect.die(
-            "local home materialization",
-          )) as CodexDriverDependencies["materializeShadowHome"],
-        makeLocalTextGeneration: (() =>
-          Effect.die(
-            "local text generation",
-          )) as CodexDriverDependencies["makeLocalTextGeneration"],
-        checkLocalProviderStatus: (() =>
-          Effect.die(
-            "local provider probe",
-          )) as CodexDriverDependencies["checkLocalProviderStatus"],
-      };
-
-      const instance = yield* makeCodexDriver(dependencies)
-        .create({
-          instanceId: SSH_DRIVER_INSTANCE_ID,
-          displayName: "Linux dev box",
-          accentColor: undefined,
-          environment: [],
-          enabled: true,
-          config: SSH_ENDPOINT_CONFIG,
-        })
-        .pipe(
-          Effect.provideService(Scope.Scope, owner),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, fakeSshSpawner),
-          Effect.provideService(ProviderEventLoggers, {
-            native: nativeEventLogger,
-            canonical: undefined,
-          }),
-        );
-
-      const state = yield* awaitGeneration(
-        instance.generationLifecycle!,
-        (generation) => generation._tag === "Ready",
-      ).pipe(Effect.timeout("3 seconds"));
-      expect(state).toMatchObject({
-        _tag: "Ready",
-        providerInstanceId: SSH_DRIVER_INSTANCE_ID,
-        generationId: 1,
-      });
-      expect(observedCompatibility).toMatchObject({
-        userAgent: "codex_cli_rs/0.146.0 fake-ssh-boundary",
-        serverVersion: "0.146.0",
-        codexHome: "/remote/.codex",
-        platformFamily: "unix",
-        platformOs: "linux",
-        versionRelation: "baseline",
-        capabilities: {
-          conversation: true,
-          conversationRead: true,
-          checkedConversationRollback: true,
-          commandExec: true,
-          commandExecControl: true,
-        },
-      });
-      expect(instance.adapter.capabilities).toMatchObject({
-        conversationRead: "ordered-turn-ids-v1",
-        checkedConversationRollback: "ordered-turn-ids-v1",
-        conversationReconciliation: "ordered-turn-state-v1",
-      });
-      expect(capturedCommand?.command).toBe("ssh");
-      expect(capturedCommand?.args).toEqual([
-        "-T",
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ControlMaster=no",
-        "-o",
-        "ControlPath=none",
-        "-o",
-        "ControlPersist=no",
-        "--",
-        "fake-codex-host",
-        "codex",
-        "app-server",
-        "proxy",
-      ]);
-
-      const providerService: ProviderServiceShape = {
-        startSession: (_threadId, input) => instance.adapter.startSession(input),
-        recoverSession: () => Effect.die("unused recovery"),
-        sendTurn: (input) => instance.adapter.sendTurn(input),
-        interruptTurn: (input) => instance.adapter.interruptTurn(input.threadId, input.turnId),
-        respondToRequest: (input) =>
-          instance.adapter.respondToRequest(input.threadId, input.requestId, input.decision),
-        respondToUserInput: (input) =>
-          instance.adapter.respondToUserInput(input.threadId, input.requestId, input.answers),
-        stopSession: (input) => instance.adapter.stopSession(input.threadId),
-        listSessions: instance.adapter.listSessions,
-        getCapabilities: () => Effect.succeed(instance.adapter.capabilities),
-        getInstanceInfo: () =>
-          Effect.succeed({
-            instanceId: SSH_DRIVER_INSTANCE_ID,
-            driverKind: ProviderDriverKind.make("codex"),
-            displayName: "Fake SSH Codex",
-            enabled: true,
-            gatewayMcpMode: "unavailable" as const,
-            continuationIdentity: instance.continuationIdentity,
-          }),
-        rollbackConversation: () => Effect.die("unused rollback"),
-        inspectConversation: () => Effect.die("unused inspection"),
-        readAuthoritativeConversation: () => Effect.die("unused authoritative read"),
-        rollbackConversationChecked: () => Effect.die("unused checked rollback"),
-        streamEvents: instance.adapter.streamEvents,
-      };
-      const orchestration = yield* Effect.acquireRelease(
-        makeOrchestrationIntegrationHarness({
-          provider: ProviderDriverKind.make("codex"),
-          providerService,
-        }).pipe(Effect.timeout("5 seconds")),
-        (harness) => harness.dispose,
-      );
-      const createdAt = "2026-08-06T00:00:00.000Z";
-      yield* orchestration.engine.dispatch({
-        type: "project.create",
-        commandId: CommandId.make("cmd-project-ssh-boundary"),
-        projectId: SSH_PROJECT_ID,
-        providerInstanceId: SSH_DRIVER_INSTANCE_ID,
-        title: "SSH boundary project",
-        workspaceRoot: orchestration.workspaceDir,
-        defaultModelSelection: {
-          instanceId: SSH_DRIVER_INSTANCE_ID,
-          model: "gpt-5.6-sol",
-        },
-        createdAt,
-      });
-      yield* orchestration.engine.dispatch({
-        type: "thread.create",
-        commandId: CommandId.make("cmd-thread-ssh-boundary"),
-        threadId: SSH_THREAD_ID,
-        projectId: SSH_PROJECT_ID,
-        title: "SSH boundary thread",
-        modelSelection: {
-          instanceId: SSH_DRIVER_INSTANCE_ID,
-          model: "gpt-5.6-sol",
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        branch: null,
-        worktreePath: orchestration.workspaceDir,
-        createdAt,
-      });
-      yield* orchestration.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-ssh-boundary"),
-        threadId: SSH_THREAD_ID,
-        message: {
-          messageId: MessageId.make("message-ssh-boundary"),
-          role: "user",
-          text: "Cross the SSH boundary.",
-          attachments: [],
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt,
-      });
-      yield* Deferred.await(nativeTurnCompleted).pipe(Effect.timeout("2 seconds"));
-      yield* Effect.yieldNow;
-      yield* orchestration.drainProviderWork.pipe(Effect.timeout("5 seconds"));
-      const snapshot = yield* orchestration.snapshotQuery.getSnapshot();
-      const projected = snapshot.threads.find((thread) => thread.id === SSH_THREAD_ID);
-      if (projected === undefined) {
-        throw new Error("SSH boundary thread was not projected.");
-      }
-      expect(projected.session).toMatchObject({
-        providerName: "codex",
-        status: "ready",
-      });
-      expect(projected.latestTurn).toMatchObject({
-        turnId: "native-ssh-turn",
-        state: "completed",
-      });
-
-      const transcript = readFakeSshTranscript(fixture.transcriptPath);
-      expect(transcript[0]).toEqual({
-        type: "argv",
-        args: capturedCommand?.args,
-      });
-      const messages = transcript
-        .filter((entry) => entry.type === "message")
-        .map((entry) => entry.message as { readonly method?: string });
-      expect(messages[0]).toMatchObject({
-        id: 1,
-        method: "initialize",
-        params: {
-          clientInfo: { name: "cocoa_gateway", title: "Cocoa Gateway" },
-          capabilities: { experimentalApi: true },
-        },
-      });
-      expect(messages[1]).toEqual({ method: "initialized" });
-      expect(
-        messages
-          .slice(2, 12)
-          .map(({ method }) => method)
-          .sort(),
-      ).toEqual(
-        [
-          "thread/start",
-          "thread/resume",
-          "turn/start",
-          "turn/interrupt",
-          "thread/read",
-          "thread/rollback",
-          "command/exec",
-          "command/exec/write",
-          "command/exec/resize",
-          "command/exec/terminate",
-        ].sort(),
-      );
-      expect(messages.slice(12)).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ method: "thread/start" }),
-          expect.objectContaining({
-            method: "turn/start",
-            params: expect.objectContaining({
-              threadId: "native-ssh-thread",
-              input: expect.arrayContaining([
-                expect.objectContaining({ text: "Cross the SSH boundary." }),
-              ]),
-            }),
-          }),
-        ]),
-      );
-      yield* Scope.close(owner, Exit.void);
-    }),
-  ).pipe(Effect.provide(DriverTestLayer)),
-);
 
 it.layer(DriverTestLayer)("CodexDriver real supervisor boundary", (it) => {
   it.effect("replaces a generation and gates optional capabilities to the new probe", () =>

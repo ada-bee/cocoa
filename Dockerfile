@@ -49,7 +49,6 @@ RUN test -n "${COCOA_BUILD_IDENTITY}" \
   && apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
-    openssh-client \
     tini \
   && rm -rf /var/lib/apt/lists/* \
   && groupadd --gid 10001 cocoa \
@@ -59,7 +58,7 @@ RUN test -n "${COCOA_BUILD_IDENTITY}" \
     --home-dir /home/cocoa \
     --shell /usr/sbin/nologin \
     cocoa \
-  && install -d -m 0700 -o cocoa -g cocoa /home/cocoa /home/cocoa/.ssh \
+  && install -d -m 0700 -o cocoa -g cocoa /home/cocoa \
   && install -d -m 0750 -o cocoa -g cocoa \
     /data \
     /data/caches \

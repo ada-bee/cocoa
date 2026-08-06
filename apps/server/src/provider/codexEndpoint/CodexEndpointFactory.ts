@@ -1,7 +1,6 @@
 import {
   type CodexDirectWebSocketTransport,
   type CodexEndpointTransport,
-  type CodexSshProxyTransport,
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 
@@ -9,14 +8,12 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Scope from "effect/Scope";
-import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as CodexEndpointConnection from "./CodexEndpointConnection.ts";
 import {
   type CodexDirectWebSocketConnectorError,
   makeDirectWebSocketConnector,
 } from "./DirectWebSocketConnector.ts";
-import { type CodexSshProxyConnectorError, makeSshProxyConnector } from "./SshProxyConnector.ts";
 
 export interface MakeCodexEndpointOptions {
   readonly providerInstanceId: ProviderInstanceId;
@@ -31,32 +28,20 @@ export interface CodexEndpointConnectorConstructors {
     CodexDirectWebSocketConnectorError,
     FileSystem.FileSystem | Scope.Scope
   >;
-  readonly sshProxy: (
-    transport: CodexSshProxyTransport,
-  ) => Effect.Effect<
-    CodexEndpointConnection.CodexEndpointFramedTransport,
-    CodexSshProxyConnectorError,
-    ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Scope.Scope
-  >;
 }
 
 export type CodexEndpointFactoryError =
   | CodexDirectWebSocketConnectorError
-  | CodexSshProxyConnectorError
   | CodexEndpointConnection.CodexEndpointConnectionError;
 
 export const defaultConnectorConstructors: CodexEndpointConnectorConstructors = {
   directWebSocket: makeDirectWebSocketConnector,
-  sshProxy: makeSshProxyConnector,
 };
 
 const acquireFramedTransport = (
   transport: CodexEndpointTransport,
   constructors: CodexEndpointConnectorConstructors,
-) =>
-  transport.type === "direct-websocket"
-    ? constructors.directWebSocket(transport)
-    : constructors.sshProxy(transport);
+) => constructors.directWebSocket(transport);
 
 export const make = Effect.fn("CodexEndpointFactory.make")(function* (
   options: MakeCodexEndpointOptions,
@@ -64,7 +49,7 @@ export const make = Effect.fn("CodexEndpointFactory.make")(function* (
 ): Effect.fn.Return<
   CodexEndpointConnection.CodexEndpointConnection["Service"],
   CodexEndpointFactoryError,
-  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Scope.Scope
+  FileSystem.FileSystem | Scope.Scope
 > {
   const parentScope = yield* Effect.scope;
 

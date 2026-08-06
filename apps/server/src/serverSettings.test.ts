@@ -47,14 +47,20 @@ const cocoaSettingsJson = JSON.stringify({
       config: {
         endpointTransport: {
           type: "direct-websocket",
-          url: "ws://192.168.20.99:4500",
+          url: "wss://macaroni.test:4500",
           authentication: { type: "none" },
         },
       },
     },
     linux_dev_box: {
       driver: "codex",
-      config: { endpointTransport: { type: "ssh-proxy", host: "rigatoni-alfredo" } },
+      config: {
+        endpointTransport: {
+          type: "direct-websocket",
+          url: "wss://rigatoni-alfredo.test:4500",
+          authentication: { type: "none" },
+        },
+      },
     },
   },
   textGenerationModelSelection: { instanceId: "macbook_air", model: "gpt-5.4" },

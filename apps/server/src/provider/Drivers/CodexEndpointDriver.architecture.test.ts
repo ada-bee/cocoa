@@ -52,31 +52,13 @@ describe("Cocoa Codex endpoint driver architecture", () => {
     }
   });
 
-  it("admits the process service only as the structured SSH endpoint requirement", () => {
+  it("imports no process service in the direct WebSocket endpoint graph", () => {
     const processImports = audit().imports.filter(
       ({ specifier }) =>
         specifier === "effect/unstable/process" ||
         specifier === "effect/unstable/process/ChildProcessSpawner",
     );
-    expect(processImports).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ sourcePath: "provider/codexEndpoint/CodexEndpointFactory.ts" }),
-        expect.objectContaining({
-          sourcePath: "provider/codexEndpoint/CodexEndpointSupervisor.ts",
-        }),
-        expect.objectContaining({ sourcePath: "provider/codexEndpoint/SshProxyConnector.ts" }),
-      ]),
-    );
-    expect(
-      processImports.every(({ sourcePath }) =>
-        [
-          "provider/Drivers/CodexEndpointDriver.ts",
-          "provider/codexEndpoint/CodexEndpointFactory.ts",
-          "provider/codexEndpoint/CodexEndpointSupervisor.ts",
-          "provider/codexEndpoint/SshProxyConnector.ts",
-        ].includes(sourcePath),
-      ),
-    ).toBe(true);
+    expect(processImports).toEqual([]);
   });
 
   it("contains no gateway-local project Git, workspace, or PTY implementation", () => {

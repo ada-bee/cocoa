@@ -71,9 +71,8 @@ export const COCOA_GATEWAY_RUNTIME_IMPORT_MANIFEST: ReadonlyArray<{
  * Exact host-primitive evidence inside the Cocoa executable closure.
  *
  * Filesystem callsites are limited to gateway-owned state/assets/uploads or
- * endpoint transport credentials. The only process service is the configured
- * SSH proxy transport; Cocoa never starts a provider, project command, Git, or
- * PTY process on the gateway.
+ * endpoint transport credentials. Cocoa imports no process service and never
+ * starts a provider, project command, Git, or PTY process on the gateway.
  */
 export const COCOA_GATEWAY_TRANSITIVE_CALLSITE_MANIFEST = [
   {
@@ -178,7 +177,6 @@ export const COCOA_GATEWAY_TRANSITIVE_CALLSITE_MANIFEST = [
     "provider/codexEndpoint/CodexEndpointFactory.ts",
     "provider/codexEndpoint/CodexEndpointSupervisor.ts",
     "provider/codexEndpoint/DirectWebSocketConnector.ts",
-    "provider/codexEndpoint/SshProxyConnector.ts",
     "provider/Drivers/CodexEndpointDriver.ts",
   ].map(
     (sourcePath) =>
@@ -187,22 +185,7 @@ export const COCOA_GATEWAY_TRANSITIVE_CALLSITE_MANIFEST = [
         specifier: "effect/FileSystem",
         capability: "local-project-filesystem",
         classification: "provider-endpoint-credential-storage",
-        rationale: "Reads administrator-configured endpoint TLS or SSH credential material.",
-      }) as const,
-  ),
-  ...[
-    "provider/codexEndpoint/CodexEndpointFactory.ts",
-    "provider/codexEndpoint/CodexEndpointSupervisor.ts",
-    "provider/codexEndpoint/SshProxyConnector.ts",
-    "provider/Drivers/CodexEndpointDriver.ts",
-  ].map(
-    (sourcePath) =>
-      ({
-        sourcePath,
-        specifier: "effect/unstable/process",
-        capability: "local-shell-or-pty",
-        classification: "provider-endpoint-ssh-transport",
-        rationale: "The SSH proxy transport launches only the configured system SSH client.",
+        rationale: "Reads administrator-configured endpoint authentication material.",
       }) as const,
   ),
   {

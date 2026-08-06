@@ -3,7 +3,6 @@ import * as Schema from "effect/Schema";
 
 import {
   CODEX_APP_SERVER_TESTED_VERSION,
-  CODEX_SSH_PROXY_REMOTE_COMMAND,
   CodexEndpointTransport,
   CodexGitExecutablePath,
 } from "./codexEndpoint.ts";
@@ -85,7 +84,7 @@ describe("CodexEndpointTransport", () => {
     ).not.toThrow();
   });
 
-  it("rejects token authentication over a non-loopback plaintext websocket", () => {
+  it("requires an explicit acknowledgement for authenticated non-loopback plaintext", () => {
     expect(() =>
       decodeTransport({
         type: "direct-websocket",
@@ -95,17 +94,58 @@ describe("CodexEndpointTransport", () => {
           credential: { source: "file", path: "/run/secrets/codex-token" },
         },
       }),
-    ).toThrow(/must use wss/);
+    ).toThrow(/allowInsecureTransport/);
+
+    expect(
+      decodeTransport({
+        type: "direct-websocket",
+        url: "ws://192.168.20.99:4500",
+        allowInsecureTransport: true,
+        authentication: {
+          type: "signed-bearer-token",
+          credential: { source: "file", path: "/run/secrets/codex-token" },
+          issuer: "cocoa-gateway",
+          audience: "codex-macaroni",
+        },
+      }),
+    ).toMatchObject({
+      allowInsecureTransport: true,
+      authentication: { type: "signed-bearer-token" },
+    });
   });
 
-  it("allows an explicit unauthenticated non-loopback plaintext endpoint", () => {
+  it("rejects unauthenticated non-loopback plaintext even with an acknowledgement", () => {
     expect(() =>
       decodeTransport({
         type: "direct-websocket",
         url: "ws://192.168.20.99:4500",
+        allowInsecureTransport: true,
         authentication: { type: "none" },
       }),
-    ).not.toThrow();
+    ).toThrow(/explicit authentication/);
+  });
+
+  it.each(["wss://codex.example.test", "ws://127.0.0.1:4500"])(
+    "rejects a redundant insecure-transport acknowledgement for %s",
+    (url) => {
+      expect(() =>
+        decodeTransport({
+          type: "direct-websocket",
+          url,
+          allowInsecureTransport: true,
+          authentication: { type: "none" },
+        }),
+      ).toThrow(/may only acknowledge/);
+    },
+  );
+
+  it("rejects the removed SSH proxy transport", () => {
+    expect(() =>
+      decodeTransport({
+        type: "ssh-proxy",
+        host: "rigatoni-alfredo",
+      }),
+    ).toThrow();
   });
 
   it.each([
@@ -123,45 +163,6 @@ describe("CodexEndpointTransport", () => {
       }),
     ).toThrow();
   });
-
-  it("decodes an SSH proxy with only structured argv-safe options", () => {
-    expect(CODEX_SSH_PROXY_REMOTE_COMMAND).toEqual(["codex", "app-server", "proxy"]);
-    expect(
-      decodeTransport({
-        type: "ssh-proxy",
-        host: " rigatoni-alfredo ",
-        user: " ada ",
-        port: 22,
-        options: {
-          identityFile: "/run/secrets/codex-ssh-key",
-          connectTimeoutSeconds: 15,
-          serverAliveIntervalSeconds: 30,
-          serverAliveCountMax: 3,
-          strictHostKeyChecking: "accept-new",
-        },
-        command: "unsafe command is discarded and never modeled",
-      }),
-    ).toEqual({
-      type: "ssh-proxy",
-      host: "rigatoni-alfredo",
-      user: "ada",
-      port: 22,
-      options: {
-        identityFile: "/run/secrets/codex-ssh-key",
-        connectTimeoutSeconds: 15,
-        serverAliveIntervalSeconds: 30,
-        serverAliveCountMax: 3,
-        strictHostKeyChecking: "accept-new",
-      },
-    });
-  });
-
-  it.each(["-oProxyCommand=evil", "host name", "ada@host"])(
-    "rejects unsafe SSH host %s",
-    (host) => {
-      expect(() => decodeTransport({ type: "ssh-proxy", host })).toThrow();
-    },
-  );
 
   it("requires absolute credential paths", () => {
     expect(() =>
@@ -223,15 +224,15 @@ describe("CodexSettings endpoint transition", () => {
   it("decodes endpoint transport alongside the legacy fields", () => {
     const decoded = decodeCodexSettings({
       endpointTransport: {
-        type: "ssh-proxy",
-        host: "192.168.20.61",
-        user: "ada",
+        type: "direct-websocket",
+        url: "wss://codex.example.test",
+        authentication: { type: "none" },
       },
     });
     expect(decoded.endpointTransport).toEqual({
-      type: "ssh-proxy",
-      host: "192.168.20.61",
-      user: "ada",
+      type: "direct-websocket",
+      url: "wss://codex.example.test",
+      authentication: { type: "none" },
     });
     expect(decoded.binaryPath).toBe("codex");
   });
@@ -241,18 +242,18 @@ describe("CodexSettings endpoint transition", () => {
       providers: {
         codex: {
           endpointTransport: {
-            type: "ssh-proxy",
-            host: " rigatoni-alfredo ",
-            user: " ada ",
+            type: "direct-websocket",
+            url: " wss://codex.example.test ",
+            authentication: { type: "none" },
           },
         },
       },
     });
 
     expect(decoded.providers?.codex?.endpointTransport).toEqual({
-      type: "ssh-proxy",
-      host: "rigatoni-alfredo",
-      user: "ada",
+      type: "direct-websocket",
+      url: "wss://codex.example.test",
+      authentication: { type: "none" },
     });
   });
 

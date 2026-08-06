@@ -6,7 +6,8 @@ set -eu
 exec bun ../../scripts/cocoa-acceptance-preflight.ts \
   --gateway "${COCOA_GATEWAY_URL:-http://127.0.0.1:7331/}" \
   --settings ./settings.example.json \
-  --ssh-identity ./secrets/id_ed25519 \
-  --ssh-known-hosts ./secrets/known_hosts \
+  --endpoint-secret ./secrets/codex_macaroni_ws_shared_secret \
+  --endpoint-secret ./secrets/codex_rigatoni_ws_shared_secret \
+  --endpoint-secret ./secrets/codex_rigatoni_alfredo_ws_shared_secret \
   --expected-build-identity "$COCOA_EXPECTED_BUILD_IDENTITY" \
   --verify-settings-identity

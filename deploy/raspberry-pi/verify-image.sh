@@ -76,7 +76,7 @@ if grep -E '(^|/)node_modules/(\.pnpm/)?(@anthropic-ai[+/]|@clerk[+/]|@opencode-
   exit 1
 fi
 
-if grep -E '(^|/)(auth\.json|credentials\.json|cocoa_ssh_identity|id_(rsa|ed25519)(\.pub)?|known_hosts)$' \
+if grep -E '(^|/)(auth\.json|credentials\.json|cocoa_ssh_identity|id_(rsa|ed25519)(\.pub)?|known_hosts|codex_(macaroni|rigatoni|rigatoni_alfredo)_ws_shared_secret)$' \
   "$scratch/image-files.txt"; then
   echo 'runtime credential material found in gateway image' >&2
   exit 1

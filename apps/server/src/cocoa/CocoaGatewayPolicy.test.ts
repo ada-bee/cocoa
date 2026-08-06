@@ -20,7 +20,7 @@ const validSettings = () =>
         config: {
           endpointTransport: {
             type: "direct-websocket",
-            url: "ws://192.168.20.99:4500",
+            url: "wss://macaroni.test:4500",
             authentication: { type: "none" },
           },
         },
@@ -29,8 +29,9 @@ const validSettings = () =>
         driver: "codex",
         config: {
           endpointTransport: {
-            type: "ssh-proxy",
-            host: "rigatoni-alfredo",
+            type: "direct-websocket",
+            url: "wss://rigatoni-alfredo.test:4500",
+            authentication: { type: "none" },
           },
         },
       },
@@ -56,7 +57,7 @@ describe("Cocoa gateway provider policy", () => {
         const settings = decodeSettings(raspberryPiSettings);
         const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(settings);
 
-        expect(resolved[ProviderInstanceId.make("codex_macbook_air")]?.config).toMatchObject({
+        expect(resolved[ProviderInstanceId.make("codex_macaroni")]?.config).toMatchObject({
           endpointGitExecutablePath: "/usr/bin/git",
           checkpointHelper: {
             type: "cocoa-checkpoint-helper-v1",
@@ -64,9 +65,18 @@ describe("Cocoa gateway provider policy", () => {
             expectedProtocol: 1,
           },
         });
-        expect(
-          resolved[ProviderInstanceId.make("codex_linux_rigatoni_alfredo")]?.config,
-        ).toMatchObject({
+        expect(resolved[ProviderInstanceId.make("codex_rigatoni")]?.config).toMatchObject({
+          endpointTransport: {
+            type: "direct-websocket",
+            url: "ws://192.168.20.60:4500",
+            allowInsecureTransport: true,
+            authentication: {
+              type: "signed-bearer-token",
+              audience: "codex-rigatoni",
+            },
+          },
+        });
+        expect(resolved[ProviderInstanceId.make("codex_rigatoni_alfredo")]?.config).toMatchObject({
           endpointGitExecutablePath: "/usr/bin/git",
           checkpointHelper: {
             type: "cocoa-checkpoint-helper-v1",
@@ -159,7 +169,7 @@ describe("Cocoa gateway provider policy", () => {
     );
   });
 
-  it.effect("allows explicit SSH and WebSocket endpoint credential file references", () => {
+  it.effect("allows independent WebSocket endpoint credential file references", () => {
     const settings = validSettings();
     const macbook = settings.providerInstances[ProviderInstanceId.make("macbook_air")]!;
     const linux = settings.providerInstances[ProviderInstanceId.make("linux_dev_box")]!;
@@ -184,9 +194,14 @@ describe("Cocoa gateway provider policy", () => {
           ...linux,
           config: {
             endpointTransport: {
-              type: "ssh-proxy" as const,
-              host: "rigatoni-alfredo",
-              options: { identityFile: "/run/secrets/cocoa-ssh-identity" },
+              type: "direct-websocket" as const,
+              url: "wss://rigatoni-alfredo.test:4500",
+              authentication: {
+                type: "signed-bearer-token" as const,
+                credential: { source: "file" as const, path: "/run/secrets/linux-token" },
+                issuer: "cocoa-gateway",
+                audience: "codex-linux",
+              },
             },
           },
         },
@@ -205,7 +220,10 @@ describe("Cocoa gateway provider policy", () => {
       });
       expect(resolved[ProviderInstanceId.make("linux_dev_box")]?.config).toMatchObject({
         endpointTransport: {
-          options: { identityFile: "/run/secrets/cocoa-ssh-identity" },
+          authentication: {
+            type: "signed-bearer-token",
+            credential: { source: "file", path: "/run/secrets/linux-token" },
+          },
         },
       });
     });

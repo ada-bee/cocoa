@@ -148,7 +148,7 @@ class FakeWebSocket implements CodexEndpointWebSocket {
 
 const noAuthentication = {
   type: "direct-websocket",
-  url: "ws://192.168.20.99:4500",
+  url: "ws://127.0.0.1:4500",
   authentication: { type: "none" },
 } satisfies CodexDirectWebSocketTransport;
 
@@ -329,6 +329,58 @@ it.effect("mints a fresh signed bearer token for every connector call", () => {
     expect(
       decodeJson(Buffer.from(secondToken.split(".")[1]!, "base64url").toString("utf8")),
     ).toEqual({ iss: "cocoa", aud: "codex", exp: 1_700_000_061 });
+  }).pipe(Effect.provide(fileSystem));
+});
+
+it.effect("keeps endpoint credentials and audiences isolated", () => {
+  const macaroni = makeHarness();
+  const alfredo = makeHarness();
+  const macaroniSecret = "macaroni-0123456789abcdef0123456789abcdef";
+  const alfredoSecret = "alfredo--0123456789abcdef0123456789abcdef";
+  const reads: string[] = [];
+  const fileSystem = FileSystem.layerNoop({
+    readFileString: (path) => {
+      reads.push(path);
+      return Effect.succeed(path.endsWith("macaroni") ? macaroniSecret : alfredoSecret);
+    },
+  });
+  const transport = (host: string, audience: string) =>
+    ({
+      type: "direct-websocket",
+      url: `ws://${host}:4500`,
+      allowInsecureTransport: true,
+      authentication: {
+        type: "signed-bearer-token",
+        credential: { source: "file", path: `/run/secrets/${host}` },
+        issuer: "cocoa-gateway",
+        audience,
+      },
+    }) satisfies CodexDirectWebSocketTransport;
+
+  return Effect.gen(function* () {
+    yield* makeDirectWebSocketConnector(transport("macaroni", "codex-macaroni"), {
+      makeWebSocket: macaroni.makeWebSocket,
+      nowEpochSeconds: () => 1_700_000_000,
+    }).pipe(Effect.scoped);
+    yield* makeDirectWebSocketConnector(transport("rigatoni-alfredo", "codex-rigatoni-alfredo"), {
+      makeWebSocket: alfredo.makeWebSocket,
+      nowEpochSeconds: () => 1_700_000_000,
+    }).pipe(Effect.scoped);
+
+    const macaroniToken = String(macaroni.capturedOptions?.headers?.Authorization).slice(7);
+    const alfredoToken = String(alfredo.capturedOptions?.headers?.Authorization).slice(7);
+    expect(reads).toEqual(["/run/secrets/macaroni", "/run/secrets/rigatoni-alfredo"]);
+    expect(macaroniToken).not.toBe(alfredoToken);
+    expect(
+      decodeJson(Buffer.from(macaroniToken.split(".")[1]!, "base64url").toString("utf8")),
+    ).toEqual({ iss: "cocoa-gateway", aud: "codex-macaroni", exp: 1_700_000_060 });
+    expect(
+      decodeJson(Buffer.from(alfredoToken.split(".")[1]!, "base64url").toString("utf8")),
+    ).toEqual({
+      iss: "cocoa-gateway",
+      aud: "codex-rigatoni-alfredo",
+      exp: 1_700_000_060,
+    });
   }).pipe(Effect.provide(fileSystem));
 });
 
