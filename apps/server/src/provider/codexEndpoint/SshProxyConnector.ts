@@ -115,6 +115,12 @@ export function buildSshProxyArgs(transport: CodexSshProxyTransport): ReadonlyAr
     "-T",
     "-o",
     "BatchMode=yes",
+    "-o",
+    "ControlMaster=no",
+    "-o",
+    "ControlPath=none",
+    "-o",
+    "ControlPersist=no",
     ...(transport.port === undefined ? [] : ["-p", String(transport.port)]),
     ...(options?.identityFile === undefined ? [] : ["-i", options.identityFile]),
     ...(options?.connectTimeoutSeconds === undefined
