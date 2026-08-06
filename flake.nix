@@ -52,6 +52,17 @@
 
       composeText = builtins.readFile ./deploy/raspberry-pi/compose.yaml;
       gatewayPackageText = builtins.readFile ./nix/cocoa-gateway.nix;
+      gatewayRuntimeManifest =
+        builtins.fromJSON (builtins.readFile ./packages/cocoa-gateway-runtime/package.json);
+      gatewayRuntimeDependencies = builtins.attrNames gatewayRuntimeManifest.dependencies;
+      expectedGatewayRuntimeDependencies = [
+        "@effect/platform-bun"
+        "@effect/platform-node"
+        "@effect/platform-node-shared"
+        "@effect/sql-sqlite-bun"
+        "effect"
+        "ws-rfc6455"
+      ];
       settings = builtins.fromJSON (builtins.readFile ./deploy/raspberry-pi/settings.example.json);
       imageConfig = cocoaGatewayImage.passthru.ociConfig;
       targetArchitecture = cocoaGatewayImage.passthru.targetArchitecture;
@@ -95,9 +106,28 @@
           assertion =
             lib.hasInfix "build:cocoa-bundle" gatewayPackageText
             && lib.hasInfix "dist/cocoa-bin.mjs" gatewayPackageText
+            && lib.hasInfix "--filter @cocoa/gateway-runtime" gatewayPackageText
+            && !(lib.hasInfix "rebuild node-pty" gatewayPackageText)
+            && !(lib.hasInfix ''--filter t3 \
+      --prod'' gatewayPackageText)
             && !(lib.hasInfix "build:bundle" gatewayPackageText)
             && !(lib.hasInfix "dist/bin.mjs" gatewayPackageText);
-          message = "gateway package must build and execute only the dedicated Cocoa entrypoint";
+          message = "gateway package must build the dedicated Cocoa entrypoint and deploy only its minimal runtime workspace";
+        }
+        {
+          assertion = gatewayRuntimeDependencies == expectedGatewayRuntimeDependencies;
+          message = "Cocoa runtime manifest must exactly match the external imports of the production bundle";
+        }
+        {
+          assertion = builtins.all (dependency: !(builtins.elem dependency gatewayRuntimeDependencies)) [
+            "@anthropic-ai/claude-agent-sdk"
+            "@clerk/backend"
+            "@opencode-ai/sdk"
+            "@t3tools/tailscale"
+            "node-pty"
+            "t3code-relay"
+          ];
+          message = "Cocoa runtime manifest contains a local-provider, hosted, or tunnel dependency";
         }
         {
           assertion = lib.hasInfix ''T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false"'' composeText;
@@ -220,8 +250,13 @@
               tar -tf "$layer"
             done > image-files.txt
 
-        if grep -E '/(codex|git|python[0-9.]*|cocoa-workspace-helper)$' image-files.txt; then
+        if grep -E '/(codex|git|node(js)?|python[0-9.]*|cocoa-workspace-helper)$' image-files.txt; then
           echo "forbidden provider-host executable found in gateway image" >&2
+          exit 1
+        fi
+
+        if grep -E '(^|/)node_modules/(\.pnpm/)?(@anthropic-ai[+/]|@clerk[+/]|@opencode-ai[+/]|@t3tools[+/]tailscale|node-pty(@|/)|t3code-relay(@|/))' image-files.txt; then
+          echo "forbidden local-provider, hosted, or tunnel package found in gateway image" >&2
           exit 1
         fi
 

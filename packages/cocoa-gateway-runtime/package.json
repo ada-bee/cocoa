@@ -1,0 +1,14 @@
+{
+  "name": "@cocoa/gateway-runtime",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "@effect/platform-node": "catalog:",
+    "@effect/platform-node-shared": "catalog:",
+    "@effect/sql-sqlite-bun": "catalog:",
+    "effect": "catalog:",
+    "ws-rfc6455": "npm:ws@8.21.0"
+  }
+}

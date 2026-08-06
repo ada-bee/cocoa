@@ -5,8 +5,6 @@
   pnpmConfigHook,
   pnpm_11,
   nodejs_24,
-  python3,
-  pkg-config,
   makeBinaryWrapper,
   bun,
   src,
@@ -23,28 +21,28 @@ stdenv.mkDerivation (finalAttrs: {
     pnpmWorkspaces = [
       "t3..."
       "@t3tools/web..."
+      "@cocoa/gateway-runtime..."
     ];
-    hash = "sha256-WKpf49J8AMga9pPmUkiXYXQzG67BgLsF9b30lOU52AI=";
+    hash = "sha256-mbVBWvIhaKQgQ4oGkXUTMzaP6G3gFnIJxcZJCEZn6qs=";
   };
 
   pnpmWorkspaces = [
     "t3..."
     "@t3tools/web..."
+    "@cocoa/gateway-runtime..."
   ];
 
   nativeBuildInputs = [
     makeBinaryWrapper
     nodejs_24
-    pkg-config
     pnpmConfigHook
     pnpm_11
-    python3
   ];
 
   buildPhase = ''
     runHook preBuild
 
-    pnpm --filter t3 rebuild node-pty esbuild
+    pnpm --filter t3 rebuild esbuild
     pnpm --filter @t3tools/web build
     pnpm --filter t3 build:cocoa-bundle
 
@@ -57,13 +55,17 @@ stdenv.mkDerivation (finalAttrs: {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p "$out/libexec"
+    mkdir -p "$out/libexec/cocoa-gateway"
     pnpm --config.inject-workspace-packages=true \
-      --filter t3 \
+      --filter @cocoa/gateway-runtime \
       --prod \
       deploy \
       --offline \
       "$out/libexec/cocoa-gateway"
+
+    mkdir -p "$out/libexec/cocoa-gateway/dist"
+    cp apps/server/dist/*.mjs "$out/libexec/cocoa-gateway/dist/"
+    cp -R apps/server/dist/client "$out/libexec/cocoa-gateway/dist/client"
 
     makeBinaryWrapper ${lib.getExe bun} "$out/bin/cocoa-gateway" \
       --add-flags "$out/libexec/cocoa-gateway/dist/cocoa-bin.mjs" \
@@ -82,8 +84,26 @@ stdenv.mkDerivation (finalAttrs: {
     test -x "$out/bin/cocoa-gateway"
     test -f "$out/libexec/cocoa-gateway/dist/cocoa-bin.mjs"
     test -f "$out/libexec/cocoa-gateway/dist/client/index.html"
+    for dependency in \
+      @effect/platform-bun \
+      @effect/platform-node \
+      @effect/platform-node-shared \
+      @effect/sql-sqlite-bun \
+      effect \
+      ws-rfc6455; do
+      test -f "$out/libexec/cocoa-gateway/node_modules/$dependency/package.json"
+    done
+    test ! -e "$out/libexec/cocoa-gateway/node_modules/node-pty"
+    test ! -e "$out/libexec/cocoa-gateway/node_modules/@anthropic-ai"
+    test ! -e "$out/libexec/cocoa-gateway/node_modules/@opencode-ai"
+    test ! -e "$out/libexec/cocoa-gateway/node_modules/@clerk"
+    test ! -e "$out/libexec/cocoa-gateway/node_modules/@t3tools/tailscale"
     help="$($out/bin/cocoa-gateway --help)"
     printf '%s\n' "$help" | grep -q 'Run the self-hosted Cocoa gateway.'
+    printf '%s\n' "$help" | grep -q -- '--host string'
+    printf '%s\n' "$help" | grep -q -- '--base-dir string'
+    printf '%s\n' "$help" | grep -q '^  start '
+    printf '%s\n' "$help" | grep -q '^  serve '
     if printf '%s\n' "$help" | grep -Eq '(^|[[:space:]])(connect|service|__service-preflight)([[:space:]]|$)'; then
       echo "Cocoa gateway help exposes a legacy hosted or service command" >&2
       exit 1
