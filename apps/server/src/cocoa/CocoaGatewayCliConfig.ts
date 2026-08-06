@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 import { Flag } from "effect/unstable/cli";
 
 import * as ServerConfig from "../config.ts";
+import { normalizeCocoaBuildIdentity } from "../health/CocoaDeploymentIdentity.ts";
 
 const portFlag = Flag.integer("port").pipe(
   Flag.withSchema(PortSchema),
@@ -61,6 +62,7 @@ export interface CocoaGatewayCliFlags {
 }
 
 const CocoaGatewayEnvConfig = Config.all({
+  buildIdentity: Config.string("COCOA_BUILD_IDENTITY").pipe(Config.option),
   logLevel: Config.logLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   port: Config.port("T3CODE_PORT").pipe(Config.option),
   host: Config.string("T3CODE_HOST").pipe(Config.option),
@@ -146,6 +148,7 @@ export const resolveCocoaGatewayConfig = (
       otlpServiceName: "cocoa-gateway",
       mode: "web",
       runtimeProfile: "cocoa-gateway",
+      buildIdentity: normalizeCocoaBuildIdentity(Option.getOrUndefined(env.buildIdentity)),
       port,
       host: Option.getOrUndefined(first(flags.host, env.host)),
       cwd: baseDir,

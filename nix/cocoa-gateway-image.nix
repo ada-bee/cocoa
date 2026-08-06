@@ -17,6 +17,7 @@ let
     tini
   ];
   runtimePackageNames = map lib.getName runtimePackages;
+  imageTag = lib.replaceStrings [ ":" "/" "+" ] [ "-" "-" "-" ] cocoaGateway.buildIdentity;
   userFiles = runCommand "cocoa-gateway-user-files" { } ''
     mkdir -p "$out/etc"
     cat > "$out/etc/passwd" <<'EOF'
@@ -48,6 +49,7 @@ let
       "T3CODE_NO_BROWSER=true"
     ];
     ExposedPorts."7331/tcp" = { };
+    Labels."xyz.brbc.cocoa.build-identity" = cocoaGateway.buildIdentity;
     Volumes = {
       "/data" = { };
       "/tmp" = { };
@@ -68,7 +70,7 @@ let
 in
 dockerTools.buildLayeredImage {
   name = "cocoa-gateway";
-  tag = "latest";
+  tag = imageTag;
   # Keep the target explicit so a future flake refactor cannot silently emit a
   # host-architecture image under the Raspberry Pi package name.
   architecture = "arm64";
@@ -90,6 +92,7 @@ dockerTools.buildLayeredImage {
 
   passthru = {
     inherit ociConfig runtimePackageNames;
+    buildIdentity = cocoaGateway.buildIdentity;
     targetArchitecture = "arm64";
     providerHostHelperIncluded = false;
   };

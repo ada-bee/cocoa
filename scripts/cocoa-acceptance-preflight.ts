@@ -7,6 +7,10 @@ import * as NodeURL from "node:url";
 
 import { ProviderInstanceId, ServerSettings } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import {
+  computeCocoaSettingsIdentity,
+  normalizeCocoaBuildIdentity,
+} from "@t3tools/shared/cocoaDeploymentIdentity";
 
 export const COCOA_ACCEPTANCE_PREFLIGHT_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_COCOA_ACCEPTANCE_GATEWAY = "http://127.0.0.1:7331/";
@@ -23,6 +27,8 @@ export interface CocoaAcceptancePreflightOptions {
   readonly timeoutMs: number;
   readonly sshIdentity?: string;
   readonly sshKnownHosts?: string;
+  readonly expectedBuildIdentity?: string;
+  readonly verifySettingsIdentity?: boolean;
 }
 
 export interface CocoaAcceptancePreflightFailure {
@@ -44,6 +50,8 @@ export interface CocoaAcceptancePreflightFailure {
     | "http.malformed_json"
     | "health.invalid_body"
     | "health.not_ok"
+    | "identity.build_mismatch"
+    | "identity.settings_mismatch"
     | "readiness.invalid_body"
     | "readiness.not_ready"
     | "readiness.check_not_ready"
@@ -51,7 +59,7 @@ export interface CocoaAcceptancePreflightFailure {
     | "providers.duplicate"
     | "providers.not_ready"
     | "cli.invalid_arguments";
-  readonly check: "settings" | "secrets" | "healthz" | "readyz" | "providers";
+  readonly check: "settings" | "secrets" | "healthz" | "readyz" | "providers" | "identity";
   readonly target?: string;
   readonly message: string;
 }
@@ -66,6 +74,14 @@ interface HttpCheckEvidence {
   readonly url: string;
   readonly httpStatus: number | null;
   readonly reportedStatus: string | null;
+}
+
+interface DeploymentIdentityEvidence {
+  readonly status: PreflightCheckStatus;
+  readonly expectedBuild: string | null;
+  readonly reportedBuild: string | null;
+  readonly expectedSettings: string | null;
+  readonly reportedSettings: string | null;
 }
 
 interface SecretEvidence {
@@ -114,6 +130,7 @@ export interface CocoaAcceptancePreflightEvidence {
       readonly expectedCount: number;
       readonly reportedCount: number;
     };
+    readonly identity: DeploymentIdentityEvidence;
   };
   readonly success: boolean;
   readonly failures: ReadonlyArray<CocoaAcceptancePreflightFailure>;
@@ -351,6 +368,10 @@ const validateSecret = async (
 
 interface ReadinessBody {
   readonly status: string;
+  readonly identity: {
+    readonly build: string;
+    readonly settings: string;
+  };
   readonly checks: {
     readonly startup: string;
     readonly database: string;
@@ -361,7 +382,14 @@ interface ReadinessBody {
 }
 
 const parseReadinessBody = (value: unknown): ReadinessBody | null => {
-  if (!isRecord(value) || typeof value.status !== "string" || !isRecord(value.checks)) {
+  if (
+    !isRecord(value) ||
+    typeof value.status !== "string" ||
+    !isRecord(value.identity) ||
+    typeof value.identity.build !== "string" ||
+    typeof value.identity.settings !== "string" ||
+    !isRecord(value.checks)
+  ) {
     return null;
   }
   const checks = value.checks;
@@ -388,6 +416,10 @@ const parseReadinessBody = (value: unknown): ReadinessBody | null => {
   }
   return {
     status: value.status,
+    identity: {
+      build: value.identity.build,
+      settings: value.identity.settings,
+    },
     checks: {
       startup: checks.startup,
       database: checks.database,
@@ -410,6 +442,7 @@ export const runCocoaAcceptancePreflight = async (
 
   let settingsStatus: PreflightCheckStatus = "pass";
   let enabledProviderIds: ReadonlyArray<string> = [];
+  let expectedSettingsIdentity: string | null = null;
   try {
     const settingsText = await dependencies.readTextFile(settingsFile);
     let settingsUnknown: unknown;
@@ -429,6 +462,9 @@ export const runCocoaAcceptancePreflight = async (
     if (settingsStatus === "pass") {
       try {
         const settings = decodeServerSettings(settingsUnknown);
+        if (options.verifySettingsIdentity) {
+          expectedSettingsIdentity = computeCocoaSettingsIdentity(settings);
+        }
         enabledProviderIds = Object.entries(settings.providerInstances)
           .filter(([, provider]) => provider.enabled !== false)
           .map(([instanceId]) => instanceId)
@@ -517,6 +553,7 @@ export const runCocoaAcceptancePreflight = async (
   let healthStatus: PreflightCheckStatus = "pass";
   let healthHttpStatus: number | null = null;
   let healthReportedStatus: string | null = null;
+  let healthReportedBuild: string | null = null;
   if (healthResult.kind === "failure") {
     healthStatus = "fail";
     healthHttpStatus = healthResult.status;
@@ -534,13 +571,19 @@ export const runCocoaAcceptancePreflight = async (
         ),
       );
     }
-    if (!isRecord(healthResult.body) || typeof healthResult.body.status !== "string") {
+    if (
+      !isRecord(healthResult.body) ||
+      typeof healthResult.body.status !== "string" ||
+      !isRecord(healthResult.body.identity) ||
+      typeof healthResult.body.identity.build !== "string"
+    ) {
       healthStatus = "fail";
       failures.push(
         failure("health.invalid_body", "healthz", "The liveness body is malformed.", healthzUrl),
       );
     } else {
       healthReportedStatus = healthResult.body.status;
+      healthReportedBuild = healthResult.body.identity.build;
       if (healthResult.body.status !== "ok") {
         healthStatus = "fail";
         failures.push(
@@ -559,6 +602,8 @@ export const runCocoaAcceptancePreflight = async (
   let readinessStatus: PreflightCheckStatus = "pass";
   let readinessHttpStatus: number | null = null;
   let readinessReportedStatus: string | null = null;
+  let readinessReportedBuild: string | null = null;
+  let readinessReportedSettings: string | null = null;
   let readinessChecks: CocoaAcceptancePreflightEvidence["checks"]["readyz"]["checks"] = {
     startup: null,
     database: null,
@@ -593,6 +638,8 @@ export const runCocoaAcceptancePreflight = async (
     } else {
       validReadinessBody = true;
       readinessReportedStatus = parsed.status;
+      readinessReportedBuild = parsed.identity.build;
+      readinessReportedSettings = parsed.identity.settings;
       readinessChecks = parsed.checks;
       reportedProviders = [...parsed.providers].sort((left, right) =>
         left.instanceId === right.instanceId
@@ -675,6 +722,51 @@ export const runCocoaAcceptancePreflight = async (
     }
   }
 
+  let identityStatus: PreflightCheckStatus = "pass";
+  if (
+    healthReportedBuild !== null &&
+    readinessReportedBuild !== null &&
+    healthReportedBuild !== readinessReportedBuild
+  ) {
+    identityStatus = "fail";
+    failures.push(
+      failure(
+        "identity.build_mismatch",
+        "identity",
+        "The liveness and readiness endpoints report different Cocoa build identities.",
+      ),
+    );
+  }
+  if (
+    options.expectedBuildIdentity !== undefined &&
+    (healthReportedBuild !== options.expectedBuildIdentity ||
+      readinessReportedBuild !== options.expectedBuildIdentity)
+  ) {
+    identityStatus = "fail";
+    failures.push(
+      failure(
+        "identity.build_mismatch",
+        "identity",
+        "The gateway does not report the explicitly expected Cocoa build identity.",
+        options.expectedBuildIdentity,
+      ),
+    );
+  }
+  if (
+    options.verifySettingsIdentity &&
+    (expectedSettingsIdentity === null || readinessReportedSettings !== expectedSettingsIdentity)
+  ) {
+    identityStatus = "fail";
+    failures.push(
+      failure(
+        "identity.settings_mismatch",
+        "identity",
+        "The gateway's loaded Cocoa provider configuration does not match the supplied settings file.",
+        expectedSettingsIdentity ?? undefined,
+      ),
+    );
+  }
+
   const secretEvidence = secretResults.map((result) => result.evidence);
   const evidenceWithoutSuccess = {
     schemaVersion: COCOA_ACCEPTANCE_PREFLIGHT_SCHEMA_VERSION,
@@ -723,6 +815,13 @@ export const runCocoaAcceptancePreflight = async (
         expectedCount: expectedProviderIds.length,
         reportedCount: reportedProviders.length,
       },
+      identity: {
+        status: identityStatus,
+        expectedBuild: options.expectedBuildIdentity ?? null,
+        reportedBuild: readinessReportedBuild ?? healthReportedBuild,
+        expectedSettings: expectedSettingsIdentity,
+        reportedSettings: readinessReportedSettings,
+      },
     },
     failures,
   } satisfies Omit<CocoaAcceptancePreflightEvidence, "success">;
@@ -745,6 +844,8 @@ export const parseCocoaAcceptancePreflightOptions = (
   let timeoutMs = DEFAULT_COCOA_ACCEPTANCE_TIMEOUT_MS;
   let sshIdentity: string | undefined;
   let sshKnownHosts: string | undefined;
+  let expectedBuildIdentity: string | undefined;
+  let verifySettingsIdentity = false;
   const providerIds: Array<string> = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -764,9 +865,28 @@ export const parseCocoaAcceptancePreflightOptions = (
       sshIdentity = args[++index] ?? cliFail("--ssh-identity requires a value");
     } else if (arg === "--ssh-known-hosts") {
       sshKnownHosts = args[++index] ?? cliFail("--ssh-known-hosts requires a value");
+    } else if (arg === "--expected-build-identity") {
+      const value = args[++index] ?? cliFail("--expected-build-identity requires a value");
+      expectedBuildIdentity = normalizeCocoaBuildIdentity(value);
+    } else if (arg === "--verify-settings-identity") {
+      verifySettingsIdentity = true;
     } else if (arg === "--help") {
       process.stdout.write(
-        "Usage: bun scripts/cocoa-acceptance-preflight.ts [--gateway URL] [--settings FILE] [--provider ID ...] [--timeout-ms MS] [--ssh-identity FILE] [--ssh-known-hosts FILE]\n",
+        [
+          "Usage: bun scripts/cocoa-acceptance-preflight.ts [options]",
+          "",
+          "Options:",
+          "  --gateway URL                       Gateway base URL.",
+          "  --settings FILE                     Settings file used for deployment.",
+          "  --provider ID                       Expected ready provider; repeatable.",
+          "  --timeout-ms MS                     Per-request timeout (1-120000).",
+          "  --ssh-identity FILE                 Check SSH identity file metadata.",
+          "  --ssh-known-hosts FILE              Check known-hosts file metadata.",
+          "  --expected-build-identity ID        Require the baked Cocoa build identity.",
+          "  --verify-settings-identity          Match the gateway's loaded provider configuration to --settings.",
+          "  --help                              Show this help.",
+          "",
+        ].join("\n"),
       );
       process.exit(0);
     } else cliFail(`unknown argument: ${arg}`);
@@ -779,6 +899,8 @@ export const parseCocoaAcceptancePreflightOptions = (
     timeoutMs,
     ...(sshIdentity === undefined ? {} : { sshIdentity }),
     ...(sshKnownHosts === undefined ? {} : { sshKnownHosts }),
+    ...(expectedBuildIdentity === undefined ? {} : { expectedBuildIdentity }),
+    ...(verifySettingsIdentity ? { verifySettingsIdentity: true } : {}),
   };
 };
 
@@ -823,6 +945,13 @@ const cliFailureEvidence = (message: string): CocoaAcceptancePreflightEvidence =
         checks: { startup: null, database: null, webIndex: null, providers: null },
       },
       providers: { status: "skipped", expectedCount: 0, reportedCount: 0 },
+      identity: {
+        status: "skipped",
+        expectedBuild: null,
+        reportedBuild: null,
+        expectedSettings: null,
+        reportedSettings: null,
+      },
     },
     success: false,
     failures: [failure("cli.invalid_arguments", "settings", message)],

@@ -1,6 +1,9 @@
 // @effect-diagnostics globalDate:off -- This standalone CLI test injects a fixed JavaScript clock.
 
 import { describe, expect, it } from "@effect/vitest";
+import { ServerSettings } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+import { computeCocoaSettingsIdentity } from "@t3tools/shared/cocoaDeploymentIdentity";
 
 import {
   type CocoaAcceptancePreflightDependencies,
@@ -21,7 +24,7 @@ const settings = (providers: Record<string, { readonly enabled?: boolean }> = {}
     ),
   });
 
-const health = { status: "ok" };
+const health = { status: "ok", identity: { build: "git:test-build" } };
 const readiness = (
   status: "ready" | "degraded" = "ready",
   providers: ReadonlyArray<{ readonly instanceId: string; readonly state: string }> = [
@@ -30,6 +33,7 @@ const readiness = (
   ],
 ) => ({
   status,
+  identity: { build: "git:test-build", settings: `sha256:${"a".repeat(64)}` },
   checks: {
     startup: "ready",
     database: "ready",
@@ -256,5 +260,58 @@ describe("Cocoa deployment acceptance preflight", () => {
     expect(() => parseCocoaAcceptancePreflightOptions(["--gateway", "ssh://gateway.test"])).toThrow(
       /http/,
     );
+  });
+
+  it("explicitly attests the baked build and loaded provider configuration identities", async () => {
+    const settingsText = settings({ macbook: {}, linux: {} });
+    const expectedSettings = computeCocoaSettingsIdentity(
+      Schema.decodeUnknownSync(ServerSettings)(JSON.parse(settingsText)),
+    );
+    const evidence = await runCocoaAcceptancePreflight(
+      options({ expectedBuildIdentity: "git:test-build", verifySettingsIdentity: true }),
+      dependencies({
+        readTextFile: async () => settingsText,
+        fetch: (async (input: string | URL | Request) =>
+          String(input).endsWith("/healthz")
+            ? response(health)
+            : response({
+                ...readiness(),
+                identity: { build: "git:test-build", settings: expectedSettings },
+              })) as typeof fetch,
+      }),
+    );
+
+    expect(evidence.checks.identity).toEqual({
+      status: "pass",
+      expectedBuild: "git:test-build",
+      reportedBuild: "git:test-build",
+      expectedSettings,
+      reportedSettings: expectedSettings,
+    });
+    expect(evidence.success).toBe(true);
+  });
+
+  it("rejects a different running build or loaded provider configuration", async () => {
+    const evidence = await runCocoaAcceptancePreflight(
+      options({ expectedBuildIdentity: "git:expected", verifySettingsIdentity: true }),
+      dependencies(),
+    );
+
+    expect(evidence.checks.identity.status).toBe("fail");
+    expect(evidence.failures.map(({ code }) => code)).toEqual(
+      expect.arrayContaining(["identity.build_mismatch", "identity.settings_mismatch"]),
+    );
+  });
+
+  it("generates help flags for deployment attestation", () => {
+    const parsed = parseCocoaAcceptancePreflightOptions([
+      "--expected-build-identity",
+      "git:abc123",
+      "--verify-settings-identity",
+    ]);
+    expect(parsed).toMatchObject({
+      expectedBuildIdentity: "git:abc123",
+      verifySettingsIdentity: true,
+    });
   });
 });

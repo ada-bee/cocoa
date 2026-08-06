@@ -6,20 +6,21 @@ import * as HttpRouter from "effect/unstable/http/HttpRouter";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
 import { GatewayHealth, type GatewayReadinessReport } from "./GatewayHealth.ts";
-import { gatewayHealthRouteLayer } from "../http.ts";
+import { gatewayHealthRouteLayer, gatewayLivenessRouteLayer } from "../http.ts";
+import * as ServerConfig from "../config.ts";
+
+const testConfigLayer = Layer.succeed(ServerConfig.ServerConfig, {
+  buildIdentity: "git:test-build",
+} as ServerConfig.ServerConfig["Service"]);
+
+const healthLayer = (getReadiness: Effect.Effect<GatewayReadinessReport>) =>
+  Layer.mergeAll(testConfigLayer, Layer.succeed(GatewayHealth, GatewayHealth.of({ getReadiness })));
 
 const request = (report: GatewayReadinessReport, pathname: string) =>
   Effect.acquireUseRelease(
     Effect.sync(() =>
       HttpRouter.toWebHandler(
-        gatewayHealthRouteLayer.pipe(
-          Layer.provide(
-            Layer.succeed(
-              GatewayHealth,
-              GatewayHealth.of({ getReadiness: Effect.succeed(report) }),
-            ),
-          ),
-        ),
+        gatewayHealthRouteLayer.pipe(Layer.provide(healthLayer(Effect.succeed(report)))),
         { disableLogger: true },
       ),
     ),
@@ -29,6 +30,7 @@ const request = (report: GatewayReadinessReport, pathname: string) =>
 
 const report = (status: GatewayReadinessReport["status"]): GatewayReadinessReport => ({
   status,
+  identity: { build: "git:test-build", settings: `sha256:${"a".repeat(64)}` },
   checks: {
     startup: status === "unready" ? "failed" : "ready",
     database: "ready",
@@ -43,14 +45,9 @@ describe("gateway health HTTP routes", () => {
   it.effect("serves process liveness without evaluating readiness", () =>
     Effect.acquireUseRelease(
       Effect.sync(() =>
-        HttpRouter.toWebHandler(
-          gatewayHealthRouteLayer.pipe(
-            Layer.provide(
-              Layer.succeed(GatewayHealth, GatewayHealth.of({ getReadiness: Effect.never })),
-            ),
-          ),
-          { disableLogger: true },
-        ),
+        HttpRouter.toWebHandler(gatewayLivenessRouteLayer.pipe(Layer.provide(testConfigLayer)), {
+          disableLogger: true,
+        }),
       ),
       ({ handler }) =>
         Effect.gen(function* () {
@@ -58,7 +55,10 @@ describe("gateway health HTTP routes", () => {
             handler(new Request("http://localhost/healthz")),
           );
           assert.strictEqual(response.status, 200);
-          assert.deepEqual(yield* Effect.promise(() => response.json()), { status: "ok" });
+          assert.deepEqual(yield* Effect.promise(() => response.json()), {
+            status: "ok",
+            identity: { build: "git:test-build" },
+          });
           assert.strictEqual(response.headers.get("cache-control"), "no-store");
         }),
       ({ dispose }) => Effect.promise(dispose),
@@ -99,12 +99,7 @@ describe("gateway health HTTP routes", () => {
           Layer.mergeAll(
             commandRoute,
             gatewayHealthRouteLayer.pipe(
-              Layer.provide(
-                Layer.succeed(
-                  GatewayHealth,
-                  GatewayHealth.of({ getReadiness: Effect.succeed(report("ready")) }),
-                ),
-              ),
+              Layer.provide(healthLayer(Effect.succeed(report("ready")))),
             ),
           ),
           { disableLogger: true },

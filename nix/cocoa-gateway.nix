@@ -8,6 +8,7 @@
   makeBinaryWrapper,
   bun,
   src,
+  buildIdentity ? "development",
 }:
 stdenv.mkDerivation (finalAttrs: {
   pname = "cocoa-gateway";
@@ -69,6 +70,7 @@ stdenv.mkDerivation (finalAttrs: {
 
     makeBinaryWrapper ${lib.getExe bun} "$out/bin/cocoa-gateway" \
       --add-flags "$out/libexec/cocoa-gateway/dist/cocoa-bin.mjs" \
+      --set COCOA_BUILD_IDENTITY ${lib.escapeShellArg buildIdentity} \
       --set-default T3CODE_RUNTIME_PROFILE cocoa-gateway \
       --set-default T3CODE_HOST 0.0.0.0 \
       --set-default T3CODE_PORT 7331 \
@@ -111,6 +113,7 @@ stdenv.mkDerivation (finalAttrs: {
   '';
 
   passthru = {
+    inherit buildIdentity;
     runtime = bun;
     runtimeProfile = "cocoa-gateway";
   };

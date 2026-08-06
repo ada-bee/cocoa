@@ -27,6 +27,7 @@ import {
 import * as ServerEnvironment from "./environment/ServerEnvironmentService.ts";
 import { browserApiCorsAllowedHeaders, browserApiCorsAllowedMethods } from "./httpCors.ts";
 import * as GatewayHealth from "./health/GatewayHealth.ts";
+import { normalizeCocoaBuildIdentity } from "./health/CocoaDeploymentIdentity.ts";
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "localhost"]);
 const DESKTOP_RENDERER_ORIGINS = ["t3code://app", "t3code-dev://app"];
@@ -72,14 +73,22 @@ const PROVIDER_WORKSPACE_PREVIEW_HEADERS = {
   "X-Frame-Options": "SAMEORIGIN",
 } as const;
 
-/** Process liveness is intentionally dependency-free and available during startup. */
-export const gatewayLivenessRouteLayer = HttpRouter.add(
-  "GET",
-  "/healthz",
-  HttpServerResponse.jsonUnsafe(
-    { status: "ok" },
-    { status: 200, headers: HEALTH_RESPONSE_HEADERS },
-  ),
+/** Process liveness never evaluates mutable readiness sources and remains available during startup. */
+export const gatewayLivenessRouteLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    return HttpRouter.add(
+      "GET",
+      "/healthz",
+      HttpServerResponse.jsonUnsafe(
+        {
+          status: "ok",
+          identity: { build: normalizeCocoaBuildIdentity(config.buildIdentity) },
+        },
+        { status: 200, headers: HEALTH_RESPONSE_HEADERS },
+      ),
+    );
+  }),
 );
 
 export const gatewayReadinessRouteLayer = Layer.unwrap(

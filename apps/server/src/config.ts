@@ -71,6 +71,8 @@ export class ServerConfig extends Context.Service<
     readonly otlpServiceName: string;
     readonly mode: RuntimeMode;
     readonly runtimeProfile?: RuntimeProfile;
+    /** Public build identifier baked into Cocoa deployment artifacts. */
+    readonly buildIdentity?: string;
     readonly port: number;
     readonly host: string | undefined;
     readonly cwd: string;

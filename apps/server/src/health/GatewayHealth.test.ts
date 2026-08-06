@@ -34,6 +34,8 @@ const provider = (
   });
 
 const sources = (overrides: Partial<GatewayHealthSources> = {}) => ({
+  buildIdentity: "git:test-build",
+  settingsIdentity: Effect.succeed(`sha256:${"a".repeat(64)}`),
   startupState: Effect.succeed("ready" as const),
   databaseReady: Effect.succeed(true),
   webIndexReady: Effect.succeed(true),
@@ -47,6 +49,10 @@ describe("GatewayHealth", () => {
       const report = yield* evaluateGatewayReadiness(sources());
 
       assert.strictEqual(report.status, "ready");
+      assert.deepEqual(report.identity, {
+        build: "git:test-build",
+        settings: `sha256:${"a".repeat(64)}`,
+      });
       assert.deepEqual(report.checks, {
         startup: "ready",
         database: "ready",

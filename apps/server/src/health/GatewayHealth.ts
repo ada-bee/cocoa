@@ -9,7 +9,12 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ServerRuntimeStartup from "../serverRuntimeStartup.ts";
+import {
+  computeCocoaSettingsIdentity,
+  normalizeCocoaBuildIdentity,
+} from "./CocoaDeploymentIdentity.ts";
 
 export const MAX_REPORTED_PROVIDERS = 32;
 
@@ -23,6 +28,10 @@ export interface GatewayProviderHealth {
 
 export interface GatewayReadinessReport {
   readonly status: "ready" | "degraded" | "unready";
+  readonly identity: {
+    readonly build: string;
+    readonly settings: string;
+  };
   readonly checks: {
     readonly startup: GatewayStartupState;
     readonly database: "ready" | "failed";
@@ -34,6 +43,8 @@ export interface GatewayReadinessReport {
 }
 
 export interface GatewayHealthSources<DatabaseR = never, WebIndexR = never, ProvidersR = never> {
+  readonly buildIdentity: string;
+  readonly settingsIdentity: Effect.Effect<string>;
   readonly startupState: Effect.Effect<GatewayStartupState>;
   readonly databaseReady: Effect.Effect<boolean, never, DatabaseR>;
   readonly webIndexReady: Effect.Effect<boolean, never, WebIndexR>;
@@ -62,15 +73,17 @@ export const evaluateGatewayReadiness = Effect.fn("GatewayHealth.evaluateReadine
   WebIndexR,
   ProvidersR,
 >(sources: GatewayHealthSources<DatabaseR, WebIndexR, ProvidersR>) {
-  const [startupState, databaseReady, webIndexReady, providerSnapshots] = yield* Effect.all(
-    [
-      sources.startupState,
-      sources.databaseReady,
-      sources.webIndexReady,
-      sources.providerSnapshots,
-    ] as const,
-    { concurrency: "unbounded" },
-  );
+  const [settingsIdentity, startupState, databaseReady, webIndexReady, providerSnapshots] =
+    yield* Effect.all(
+      [
+        sources.settingsIdentity,
+        sources.startupState,
+        sources.databaseReady,
+        sources.webIndexReady,
+        sources.providerSnapshots,
+      ] as const,
+      { concurrency: "unbounded" },
+    );
 
   const providers = providerSnapshots.slice(0, MAX_REPORTED_PROVIDERS).map(summarizeProvider);
   const providersDegraded = providerSnapshots.some(
@@ -80,6 +93,10 @@ export const evaluateGatewayReadiness = Effect.fn("GatewayHealth.evaluateReadine
 
   return {
     status: !coreReady ? "unready" : providersDegraded ? "degraded" : "ready",
+    identity: {
+      build: sources.buildIdentity,
+      settings: settingsIdentity,
+    },
     checks: {
       startup: startupState,
       database: databaseReady ? "ready" : "failed",
@@ -127,6 +144,7 @@ export class GatewayHealth extends Context.Service<
 
 const make = Effect.gen(function* () {
   const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
+  const settings = yield* ServerSettings.ServerSettingsService;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const sql = yield* SqlClient.SqlClient;
   const config = yield* ServerConfig.ServerConfig;
@@ -138,6 +156,11 @@ const make = Effect.gen(function* () {
 
   return GatewayHealth.of({
     getReadiness: evaluateGatewayReadiness({
+      buildIdentity: normalizeCocoaBuildIdentity(config.buildIdentity),
+      settingsIdentity: settings.getSettings.pipe(
+        Effect.map(computeCocoaSettingsIdentity),
+        Effect.orElseSucceed(() => "unavailable"),
+      ),
       startupState,
       databaseReady: probeGatewayDatabase.pipe(
         Effect.provideService(SqlClient.SqlClient, sql),

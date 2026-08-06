@@ -9,6 +9,7 @@
       system = "aarch64-linux";
       pkgs = import nixpkgs { inherit system; };
       lib = pkgs.lib;
+      cocoaBuildIdentity = "git:${self.rev or (self.dirtyRev or "unversioned")}";
 
       source = lib.cleanSourceWith {
         src = self;
@@ -31,7 +32,10 @@
           !excluded && (type != "symlink" || builtins.pathExists path);
       };
 
-      cocoaGateway = pkgs.callPackage ./nix/cocoa-gateway.nix { src = source; };
+      cocoaGateway = pkgs.callPackage ./nix/cocoa-gateway.nix {
+        src = source;
+        buildIdentity = cocoaBuildIdentity;
+      };
       cocoaGatewayImage = pkgs.callPackage ./nix/cocoa-gateway-image.nix {
         inherit cocoaGateway;
       };
@@ -91,6 +95,10 @@
           message = "gateway image must expose port 7331";
         }
         {
+          assertion = imageConfig.Labels."xyz.brbc.cocoa.build-identity" == cocoaBuildIdentity;
+          message = "gateway image must attest the source-derived Cocoa build identity";
+        }
+        {
           assertion = builtins.elem "T3CODE_RUNTIME_PROFILE=cocoa-gateway" imageConfig.Env;
           message = "gateway image must select the cocoa-gateway runtime profile";
         }
@@ -132,6 +140,14 @@
         {
           assertion = lib.hasInfix ''T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false"'' composeText;
           message = "gateway compose deployment must disable local cwd project bootstrap";
+        }
+        {
+          assertion =
+            lib.hasInfix
+              ("$" + "{COCOA_GATEWAY_IMAGE_REPOSITORY:-cocoa-gateway}@$" + "{COCOA_GATEWAY_IMAGE_DIGEST:?")
+              composeText
+            && !(lib.hasInfix "cocoa-gateway:latest" composeText);
+          message = "gateway compose deployment must require an operator-supplied immutable image digest";
         }
         {
           assertion =
