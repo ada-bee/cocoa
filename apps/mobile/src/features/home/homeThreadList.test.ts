@@ -180,6 +180,49 @@ describe("buildHomeThreadGroups", () => {
     expect(groups[0]?.newThreadTarget?.id).toBe(canonicalRemote.id);
   });
 
+  it("preserves same-path projects owned by different provider instances", () => {
+    const environmentId = EnvironmentId.make("cocoa-gateway");
+    const repositoryIdentity = {
+      canonicalKey: "github.com/brbc/cocoa",
+      locator: {
+        source: "git-remote" as const,
+        remoteName: "origin",
+        remoteUrl: "git@github.com:brbc/cocoa.git",
+      },
+    };
+    const macbook = makeProject({
+      environmentId,
+      id: ProjectId.make("project-macbook"),
+      providerInstanceId: ProviderInstanceId.make("macbook"),
+      workspaceRoot: "/work/cocoa",
+      repositoryIdentity,
+    });
+    const rigatoni = makeProject({
+      environmentId,
+      id: ProjectId.make("project-rigatoni"),
+      providerInstanceId: ProviderInstanceId.make("rigatoni"),
+      workspaceRoot: "/work/cocoa",
+      repositoryIdentity,
+    });
+
+    const scopes = buildHomeProjectScopes({
+      projects: [macbook, rigatoni],
+      environmentId: null,
+      projectGroupingMode: "repository",
+    });
+
+    expect(scopes).toHaveLength(1);
+    expect(
+      scopes[0]?.projects.map((project) => ({
+        id: project.id,
+        providerInstanceId: project.providerInstanceId,
+      })),
+    ).toEqual([
+      { id: macbook.id, providerInstanceId: macbook.providerInstanceId },
+      { id: rigatoni.id, providerInstanceId: rigatoni.providerInstanceId },
+    ]);
+  });
+
   it("keeps repository identity from an older duplicate when the freshness winner lacks it", () => {
     const localEnvironmentId = EnvironmentId.make("environment-local");
     const remoteEnvironmentId = EnvironmentId.make("environment-remote");

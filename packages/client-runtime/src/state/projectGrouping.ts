@@ -60,30 +60,38 @@ function deriveRepositoryRelativeProjectPath(
   return normalizedProjectPath.slice(rootPrefix.length).replaceAll("\\", "/");
 }
 
-export function derivePhysicalProjectKeyFromPath(environmentId: string, cwd: string): string {
-  return `${environmentId}:${normalizeProjectPathForComparison(cwd)}`;
+export function derivePhysicalProjectKeyFromPath(
+  environmentId: string,
+  providerInstanceId: string,
+  cwd: string,
+): string {
+  return `${environmentId}:${providerInstanceId}:${normalizeProjectPathForComparison(cwd)}`;
 }
 
 export function derivePhysicalProjectKey(
-  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
+  project: Pick<EnvironmentProject, "environmentId" | "providerInstanceId" | "workspaceRoot">,
 ): string {
-  return derivePhysicalProjectKeyFromPath(project.environmentId, project.workspaceRoot);
+  return derivePhysicalProjectKeyFromPath(
+    project.environmentId,
+    project.providerInstanceId,
+    project.workspaceRoot,
+  );
 }
 
 export function deriveProjectGroupingOverrideKey(
-  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
+  project: Pick<EnvironmentProject, "environmentId" | "providerInstanceId" | "workspaceRoot">,
 ): string {
   return derivePhysicalProjectKey(project);
 }
 
 export function getProjectOrderKey(
-  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
+  project: Pick<EnvironmentProject, "environmentId" | "providerInstanceId" | "workspaceRoot">,
 ): string {
   return derivePhysicalProjectKey(project);
 }
 
 export function resolveProjectGroupingMode(
-  project: Pick<EnvironmentProject, "environmentId" | "workspaceRoot">,
+  project: Pick<EnvironmentProject, "environmentId" | "providerInstanceId" | "workspaceRoot">,
   settings: ProjectGroupingSettings,
 ): SidebarProjectGroupingMode {
   return (
@@ -118,7 +126,7 @@ function deriveRepositoryScopedKey(
 export function deriveLogicalProjectKey(
   project: Pick<
     EnvironmentProject,
-    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity"
+    "environmentId" | "id" | "providerInstanceId" | "workspaceRoot" | "repositoryIdentity"
   >,
   options?: {
     readonly groupingMode?: SidebarProjectGroupingMode;
@@ -139,7 +147,7 @@ export function deriveLogicalProjectKey(
 export function deriveLogicalProjectKeyFromSettings(
   project: Pick<
     EnvironmentProject,
-    "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity"
+    "environmentId" | "id" | "providerInstanceId" | "workspaceRoot" | "repositoryIdentity"
   >,
   settings: ProjectGroupingSettings,
 ): string {
@@ -151,7 +159,10 @@ export function deriveLogicalProjectKeyFromSettings(
 export function deriveLogicalProjectKeyFromRef(
   projectRef: ScopedProjectRef,
   project:
-    | Pick<EnvironmentProject, "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity">
+    | Pick<
+        EnvironmentProject,
+        "environmentId" | "id" | "providerInstanceId" | "workspaceRoot" | "repositoryIdentity"
+      >
     | null
     | undefined,
   options?: {

@@ -183,6 +183,41 @@ describe("environment grouping", () => {
     ]);
   });
 
+  it("preserves provider-bound projects with the same environment and workspace path", () => {
+    const macbook = makeProject({
+      id: ProjectId.make("project-macbook"),
+      providerInstanceId: ProviderInstanceId.make("macbook"),
+      repositoryIdentity,
+    });
+    const rigatoni = makeProject({
+      id: ProjectId.make("project-rigatoni"),
+      providerInstanceId: ProviderInstanceId.make("rigatoni"),
+      repositoryIdentity,
+    });
+
+    const snapshots = buildSidebarProjectSnapshots({
+      projects: [macbook, rigatoni],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => "Cocoa gateway",
+    });
+
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.groupedProjectCount).toBe(2);
+    expect(
+      snapshots[0]?.memberProjects.map((project) => ({
+        id: project.id,
+        providerInstanceId: project.providerInstanceId,
+      })),
+    ).toEqual([
+      { id: macbook.id, providerInstanceId: macbook.providerInstanceId },
+      { id: rigatoni.id, providerInstanceId: rigatoni.providerInstanceId },
+    ]);
+    expect(snapshots[0]?.memberProjects[0]?.physicalProjectKey).not.toBe(
+      snapshots[0]?.memberProjects[1]?.physicalProjectKey,
+    );
+  });
+
   it("prefers the fresher project row when duplicate stale rows are ordered first", () => {
     const staleDuplicate = makeProject({
       id: ProjectId.make("project-stale"),
