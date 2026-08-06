@@ -14,7 +14,10 @@ import {
   TurnId,
 } from "../../baseSchemas.ts";
 import { ProviderInstanceId } from "../../providerInstance.ts";
-import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS, UploadChatAttachments } from "../../orchestration.ts";
+import { CocoaClientV1UploadChatAttachments } from "./attachments.ts";
+
+/** Frozen Cocoa client v1 turn-input limit. Changes require a new client protocol version. */
+export const COCOA_CLIENT_V1_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 
 export const CocoaClientV1RuntimeMode = Schema.Literals([
   "approval-required",
@@ -233,8 +236,8 @@ const CocoaClientV1ThreadTurnStartCommand = Schema.Struct({
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
-    text: Schema.String.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
-    attachments: UploadChatAttachments,
+    text: Schema.String.check(Schema.isMaxLength(COCOA_CLIENT_V1_SEND_TURN_MAX_INPUT_CHARS)),
+    attachments: CocoaClientV1UploadChatAttachments,
   }),
   modelSelection: Schema.optionalKey(CocoaClientV1ModelSelection),
   titleSeed: Schema.optionalKey(TrimmedNonEmptyString),

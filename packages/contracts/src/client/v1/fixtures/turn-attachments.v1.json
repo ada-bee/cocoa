@@ -1,0 +1,25 @@
+{
+  "type": "thread.turn.start",
+  "commandId": "command-upload-golden",
+  "threadId": "thread-1",
+  "message": {
+    "messageId": "message-upload-golden",
+    "role": "user",
+    "text": "Inspect this image.",
+    "attachments": [
+      {
+        "type": "image",
+        "name": "screenshot.png",
+        "mimeType": "image/png",
+        "sizeBytes": 1,
+        "dataUrl": "data:image/png;base64,AA==",
+        "futureAttachmentField": true
+      }
+    ],
+    "futureMessageField": true
+  },
+  "runtimeMode": "full-access",
+  "interactionMode": "default",
+  "createdAt": "2026-08-04T10:00:00.000Z",
+  "futureCommandField": true
+}

@@ -3,26 +3,93 @@ import * as CocoaClientV1 from "@t3tools/contracts/client/v1";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
+  ProjectExecuteCommandInput,
+  ProviderExecutionResult,
+  UploadChatAttachment,
+  UploadChatAttachments,
 } from "@t3tools/contracts";
 
 import discriminatorsFixture from "./fixtures/discriminators.v1.json" with { type: "json" };
+import executionFixture from "./fixtures/execution.v1.json" with { type: "json" };
 import infoResponseFixture from "./fixtures/info-response.v1.json" with { type: "json" };
 import supportedMethodsFixture from "./fixtures/supported-methods.v1.json" with { type: "json" };
 import threadEventFixture from "./fixtures/thread-event.v1.json" with { type: "json" };
+import turnAttachmentsFixture from "./fixtures/turn-attachments.v1.json" with { type: "json" };
 import versionMismatchFixture from "./fixtures/version-mismatch.v1.json" with { type: "json" };
 
 const decodeInfo = Schema.decodeUnknownEffect(CocoaClientV1.CocoaClientV1InfoResponse);
 const decodeExecuteCommand = Schema.decodeUnknownSync(
   CocoaClientV1.CocoaClientV1ExecuteCommandInput,
 );
+const decodeExecuteCommandResult = Schema.decodeUnknownSync(
+  CocoaClientV1.CocoaClientV1ExecuteCommandResult,
+);
+const decodeCommand = Schema.decodeUnknownSync(CocoaClientV1.CocoaClientV1Command);
 const decodeThreadEvent = Schema.decodeUnknownSync(CocoaClientV1.CocoaClientV1ThreadEvent);
 const decodeMismatch = Schema.decodeUnknownSync(CocoaClientV1.CocoaClientProtocolVersionMismatch);
 
 describe("Cocoa client protocol v1 compatibility", () => {
-  it("reuses the shared turn attachment count and aggregate policy", () => {
-    const decodeCommand = Schema.decodeUnknownSync(CocoaClientV1.CocoaClientV1Command);
+  it("owns execution and attachment schemas instead of aliasing internal roots", () => {
+    expect(CocoaClientV1.CocoaClientV1ExecuteCommandInput).not.toBe(ProjectExecuteCommandInput);
+    expect(CocoaClientV1.CocoaClientV1ExecuteCommandResult).not.toBe(ProviderExecutionResult);
+    expect(CocoaClientV1.CocoaClientV1UploadChatAttachment).not.toBe(UploadChatAttachment);
+    expect(CocoaClientV1.CocoaClientV1UploadChatAttachments).not.toBe(UploadChatAttachments);
+  });
+
+  it("pins v1 execution and attachment limits independently of internal contracts", () => {
+    expect(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_ARGUMENTS).toBe(128);
+    expect(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_ARGUMENT_BYTES).toBe(16 * 1024);
+    expect(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_COMMAND_BYTES).toBe(64 * 1024);
+    expect(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_TIMEOUT_MS).toBe(120_000);
+    expect(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_OUTPUT_BYTES).toBe(4 * 1024 * 1024);
+    expect(CocoaClientV1.COCOA_CLIENT_V1_SEND_TURN_MAX_INPUT_CHARS).toBe(120_000);
+    expect(CocoaClientV1.COCOA_CLIENT_V1_SEND_TURN_MAX_ATTACHMENTS).toBe(4);
+    expect(CocoaClientV1.COCOA_CLIENT_V1_SEND_TURN_MAX_IMAGE_BYTES).toBe(10 * 1024 * 1024);
+    expect(CocoaClientV1.COCOA_CLIENT_V1_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES).toBe(8 * 1024 * 1024);
+  });
+
+  it("pins the v1 execution wire shape with a golden fixture", () => {
+    expect(decodeExecuteCommand(executionFixture.input)).toEqual({
+      projectId: "project-1",
+      command: ["git", "status", "--short"],
+      timeoutMs: 5_000,
+      outputByteLimit: 4_096,
+    });
+    expect(decodeExecuteCommandResult(executionFixture.result)).toEqual({
+      exitCode: 0,
+      stdout: " M packages/contracts/src/client/v1/execution.ts\n",
+      stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
+    });
+  });
+
+  it("pins the v1 turn attachment wire shape with a golden fixture", () => {
+    expect(decodeCommand(turnAttachmentsFixture)).toEqual({
+      type: "thread.turn.start",
+      commandId: "command-upload-golden",
+      threadId: "thread-1",
+      message: {
+        messageId: "message-upload-golden",
+        role: "user",
+        text: "Inspect this image.",
+        attachments: [
+          {
+            type: "image",
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 1,
+            dataUrl: "data:image/png;base64,AA==",
+          },
+        ],
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdAt: "2026-08-04T10:00:00.000Z",
+    });
+  });
+
+  it("freezes the v1 turn attachment count and aggregate policy", () => {
     const makeCommand = (dataUrls: ReadonlyArray<string>) => ({
       type: "thread.turn.start",
       commandId: "command-upload-policy",
@@ -48,16 +115,71 @@ describe("Cocoa client protocol v1 compatibility", () => {
     expect(() =>
       decodeCommand(
         makeCommand(
-          Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS + 1 }, () => smallDataUrl),
+          Array.from(
+            { length: CocoaClientV1.COCOA_CLIENT_V1_SEND_TURN_MAX_ATTACHMENTS + 1 },
+            () => smallDataUrl,
+          ),
         ),
       ),
     ).toThrow();
     expect(() =>
       decodeCommand(
         makeCommand([
-          `data:image/png;base64,${"A".repeat(PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES)}`,
+          `data:image/png;base64,${"A".repeat(
+            CocoaClientV1.COCOA_CLIENT_V1_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
+          )}`,
         ]),
       ),
+    ).toThrow();
+
+    const prefix = "data:image/png;base64,";
+    const aggregatePayloadChars =
+      CocoaClientV1.COCOA_CLIENT_V1_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES - prefix.length * 2;
+    const firstPayloadChars = Math.floor(aggregatePayloadChars / 8) * 4;
+    const secondPayloadChars = aggregatePayloadChars - firstPayloadChars;
+    const exactBoundary = makeCommand([
+      `${prefix}${"A".repeat(firstPayloadChars)}`,
+      `${prefix}${"A".repeat(secondPayloadChars)}`,
+    ]);
+    expect(() => decodeCommand(exactBoundary)).not.toThrow();
+    expect(() =>
+      decodeCommand({
+        ...exactBoundary,
+        message: {
+          ...exactBoundary.message,
+          attachments: exactBoundary.message.attachments.map((attachment, index) =>
+            index === 1 ? { ...attachment, dataUrl: `${attachment.dataUrl}A` } : attachment,
+          ),
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      decodeCommand({
+        ...makeCommand([]),
+        message: {
+          ...makeCommand([]).message,
+          text: "x".repeat(CocoaClientV1.COCOA_CLIENT_V1_SEND_TURN_MAX_INPUT_CHARS + 1),
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
+      decodeCommand({
+        ...makeCommand([smallDataUrl]),
+        message: {
+          ...makeCommand([smallDataUrl]).message,
+          attachments: [
+            {
+              type: "image",
+              name: "oversized.png",
+              mimeType: "image/png",
+              sizeBytes: CocoaClientV1.COCOA_CLIENT_V1_SEND_TURN_MAX_IMAGE_BYTES + 1,
+              dataUrl: smallDataUrl,
+            },
+          ],
+        },
+      }),
     ).toThrow();
   });
 
@@ -91,20 +213,60 @@ describe("Cocoa client protocol v1 compatibility", () => {
   });
 
   it("bounds project execution without accepting a client cwd", () => {
-    const decoded = decodeExecuteCommand({
-      projectId: "project-1",
-      command: ["git", "status", "--short"],
-      cwd: "/gateway/not-authoritative",
-    });
+    const decoded = decodeExecuteCommand(executionFixture.input);
     expect(decoded).toEqual({
       projectId: "project-1",
       command: ["git", "status", "--short"],
+      timeoutMs: 5_000,
+      outputByteLimit: 4_096,
     });
   });
 
-  it("rejects internal commands even when the legacy root contract accepts them", () => {
-    const decodeCommand = Schema.decodeUnknownSync(CocoaClientV1.CocoaClientV1Command);
+  it.each([
+    [],
+    [""],
+    ["printf", "bad\0argument"],
+    Array.from({ length: CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_ARGUMENTS + 1 }, () => "x"),
+    ["x".repeat(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_ARGUMENT_BYTES + 1)],
+    [
+      "x".repeat(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_ARGUMENT_BYTES),
+      "x".repeat(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_ARGUMENT_BYTES),
+      "x".repeat(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_ARGUMENT_BYTES),
+      "x".repeat(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_ARGUMENT_BYTES),
+      "y",
+    ],
+  ])("freezes unsafe or unbounded v1 argv %#", (command) => {
+    expect(() => decodeExecuteCommand({ projectId: "project-1", command })).toThrow();
+  });
 
+  it("freezes v1 execution timeout, requested output, and returned output bounds", () => {
+    expect(() =>
+      decodeExecuteCommand({
+        projectId: "project-1",
+        command: ["true"],
+        timeoutMs: CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_TIMEOUT_MS + 1,
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeExecuteCommand({
+        projectId: "project-1",
+        command: ["true"],
+        outputByteLimit: CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_OUTPUT_BYTES + 1,
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeExecuteCommandResult({
+        exitCode: 0,
+        stdout: "x".repeat(CocoaClientV1.COCOA_CLIENT_V1_EXECUTION_MAX_OUTPUT_BYTES + 1),
+        stderr: "",
+        stdoutTruncated: true,
+        stderrTruncated: false,
+      }),
+    ).toThrow();
+    expect(() => decodeExecuteCommandResult({ exitCode: 0, stdout: "ok", stderr: "" })).toThrow();
+  });
+
+  it("rejects internal commands even when the legacy root contract accepts them", () => {
     expect(() =>
       decodeCommand({
         type: "thread.session.set",
