@@ -2,6 +2,7 @@ import type { CodexDirectWebSocketTransport } from "@t3tools/contracts";
 import * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -12,20 +13,15 @@ import * as Stream from "effect/Stream";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import type { CodexAppServerFramedProtocolOptions } from "effect-codex-app-server/protocol";
 
+import {
+  CODEX_SIGNED_BEARER_MINIMUM_SECRET_BYTES,
+  type CodexSignedBearerTokenInput,
+  mintCodexSignedBearerToken,
+} from "./SignedBearerToken.ts";
+
 export const DEFAULT_INCOMING_FRAME_CAPACITY = 256;
 export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 export const DEFAULT_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
-
-export class CodexEndpointUnsupportedAuthenticationError extends Schema.TaggedErrorClass<CodexEndpointUnsupportedAuthenticationError>()(
-  "CodexEndpointUnsupportedAuthenticationError",
-  {
-    authenticationType: Schema.Literal("signed-bearer-token"),
-  },
-) {
-  override get message(): string {
-    return `Codex endpoint authentication '${this.authenticationType}' is not supported yet.`;
-  }
-}
 
 export class CodexEndpointCredentialReadError extends Schema.TaggedErrorClass<CodexEndpointCredentialReadError>()(
   "CodexEndpointCredentialReadError",
@@ -43,11 +39,22 @@ export class CodexEndpointInvalidCredentialError extends Schema.TaggedErrorClass
   "CodexEndpointInvalidCredentialError",
   {
     path: Schema.String,
-    reason: Schema.Literals(["empty", "contains-newline"]),
+    reason: Schema.Literals(["empty", "contains-newline", "too-short"]),
   },
 ) {
   override get message(): string {
     return `The Codex endpoint credential at '${this.path}' is invalid (${this.reason}).`;
+  }
+}
+
+export class CodexEndpointCredentialSigningError extends Schema.TaggedErrorClass<CodexEndpointCredentialSigningError>()(
+  "CodexEndpointCredentialSigningError",
+  {
+    path: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Failed to sign a bearer token with the Codex endpoint credential at '${this.path}'.`;
   }
 }
 
@@ -120,9 +127,9 @@ export class CodexEndpointWebSocketSendError extends Schema.TaggedErrorClass<Cod
 }
 
 export type CodexDirectWebSocketConnectorError =
-  | CodexEndpointUnsupportedAuthenticationError
   | CodexEndpointCredentialReadError
   | CodexEndpointInvalidCredentialError
+  | CodexEndpointCredentialSigningError
   | CodexEndpointWebSocketOpenError;
 
 type MessageListener = (data: NodeSocket.NodeWS.RawData, isBinary: boolean) => void;
@@ -163,6 +170,8 @@ export interface DirectWebSocketConnectorOptions {
   readonly handshakeTimeoutMs?: number;
   readonly maxPayloadBytes?: number;
   readonly makeWebSocket?: CodexEndpointWebSocketFactory;
+  readonly nowEpochSeconds?: () => number;
+  readonly mintSignedBearerToken?: (input: CodexSignedBearerTokenInput) => string;
 }
 
 const defaultWebSocketFactory: CodexEndpointWebSocketFactory = (url, options) =>
@@ -170,14 +179,10 @@ const defaultWebSocketFactory: CodexEndpointWebSocketFactory = (url, options) =>
 
 const readAuthorizationHeader = Effect.fn("CodexEndpoint.readAuthorizationHeader")(function* (
   transport: CodexDirectWebSocketTransport,
+  options: Pick<DirectWebSocketConnectorOptions, "nowEpochSeconds" | "mintSignedBearerToken">,
 ) {
   const authentication = transport.authentication;
   if (authentication.type === "none") return undefined;
-  if (authentication.type === "signed-bearer-token") {
-    return yield* new CodexEndpointUnsupportedAuthenticationError({
-      authenticationType: authentication.type,
-    });
-  }
 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = authentication.credential.path;
@@ -198,6 +203,35 @@ const readAuthorizationHeader = Effect.fn("CodexEndpoint.readAuthorizationHeader
     return yield* new CodexEndpointInvalidCredentialError({
       path,
       reason: "contains-newline",
+    });
+  }
+  if (
+    authentication.type === "signed-bearer-token" &&
+    new TextEncoder().encode(token).byteLength < CODEX_SIGNED_BEARER_MINIMUM_SECRET_BYTES
+  ) {
+    return yield* new CodexEndpointInvalidCredentialError({ path, reason: "too-short" });
+  }
+  if (authentication.type === "signed-bearer-token") {
+    const nowEpochSeconds = yield* options.nowEpochSeconds === undefined
+      ? Clock.currentTimeMillis.pipe(Effect.map((milliseconds) => Math.floor(milliseconds / 1_000)))
+      : Effect.try({
+          try: options.nowEpochSeconds,
+          catch: () => new CodexEndpointCredentialSigningError({ path }),
+        }).pipe(Effect.map(Math.floor));
+    if (!Number.isSafeInteger(nowEpochSeconds) || nowEpochSeconds < 0) {
+      return yield* new CodexEndpointCredentialSigningError({
+        path,
+      });
+    }
+    return yield* Effect.try({
+      try: () =>
+        `Bearer ${(options.mintSignedBearerToken ?? mintCodexSignedBearerToken)({
+          secret: token,
+          issuer: authentication.issuer,
+          audience: authentication.audience,
+          nowEpochSeconds,
+        })}`,
+      catch: () => new CodexEndpointCredentialSigningError({ path }),
     });
   }
   return `Bearer ${token}`;
@@ -321,7 +355,7 @@ export const makeDirectWebSocketConnector = Effect.fn("CodexEndpoint.makeDirectW
       return yield* Effect.die(new RangeError("maxPayloadBytes must be a positive integer"));
     }
 
-    const authorization = yield* readAuthorizationHeader(transport);
+    const authorization = yield* readAuthorizationHeader(transport, options);
     const headers = authorization === undefined ? {} : { Authorization: authorization };
     const makeWebSocket = options.makeWebSocket ?? defaultWebSocketFactory;
     const socket = yield* Effect.acquireRelease(

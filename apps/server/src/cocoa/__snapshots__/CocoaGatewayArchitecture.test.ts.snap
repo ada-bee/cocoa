@@ -218,6 +218,7 @@ exports[`Cocoa gateway architecture > walks and reports the complete transitive 
   "provider/codexEndpoint/CodexEndpointSupervisor.ts",
   "provider/codexEndpoint/CodexExecutionAdapter.ts",
   "provider/codexEndpoint/DirectWebSocketConnector.ts",
+  "provider/codexEndpoint/SignedBearerToken.ts",
   "provider/codexEndpoint/SshProxyConnector.ts",
   "provider/codexTerminal/CodexTerminalAdapter.ts",
   "provider/codexTerminal/CodexTerminalMultiplexer.ts",

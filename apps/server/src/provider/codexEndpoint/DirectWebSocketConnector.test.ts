@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import {
@@ -131,6 +132,20 @@ const capabilityAuthentication = {
   },
 } satisfies CodexDirectWebSocketTransport;
 
+const signedBearerAuthentication = {
+  type: "direct-websocket",
+  url: "wss://codex.example.test",
+  authentication: {
+    type: "signed-bearer-token",
+    credential: { source: "file", path: "/run/secrets/codex-signing-key" },
+    issuer: "cocoa",
+    audience: "codex",
+  },
+} satisfies CodexDirectWebSocketTransport;
+
+const signingSecret = "0123456789abcdef0123456789abcdef";
+const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+
 const makeHarness = () => {
   const socket = new FakeWebSocket();
   let capturedUrl: string | undefined;
@@ -211,27 +226,101 @@ it.effect("reads a capability token file and sends an explicit Authorization hea
   }).pipe(Effect.scoped, Effect.provide(fileSystem));
 });
 
-it.effect("rejects signed bearer authentication before creating a WebSocket", () => {
+it.effect("mints a signed bearer token from the referenced shared secret", () => {
   const harness = makeHarness();
-  const signed = {
-    type: "direct-websocket",
-    url: "wss://codex.example.test",
-    authentication: {
-      type: "signed-bearer-token",
-      credential: { source: "file", path: "/run/secrets/codex-signing-key" },
-      issuer: "cocoa",
-      audience: "codex",
+  const paths: string[] = [];
+  const fileSystem = FileSystem.layerNoop({
+    readFileString: (path) => {
+      paths.push(path);
+      return Effect.succeed(`  ${signingSecret}\n`);
     },
-  } satisfies CodexDirectWebSocketTransport;
+  });
 
   return Effect.gen(function* () {
-    const error = yield* makeDirectWebSocketConnector(signed, {
+    yield* makeDirectWebSocketConnector(signedBearerAuthentication, {
+      makeWebSocket: harness.makeWebSocket,
+      nowEpochSeconds: () => 1_700_000_000,
+    });
+
+    expect(paths).toEqual(["/run/secrets/codex-signing-key"]);
+    expect(harness.capturedOptions?.headers).toEqual({
+      Authorization:
+        "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjb2NvYSIsImF1ZCI6ImNvZGV4IiwiZXhwIjoxNzAwMDAwMDYwfQ.8vMM1DNvNDzxI-i8JyaZzvgIwKIYTJ9WcqTOnRGxCtg",
+    });
+  }).pipe(Effect.scoped, Effect.provide(fileSystem));
+});
+
+it.effect("mints a fresh signed bearer token for every connector call", () => {
+  const first = makeHarness();
+  const second = makeHarness();
+  const times = [1_700_000_000, 1_700_000_001];
+  let credentialReads = 0;
+  const fileSystem = FileSystem.layerNoop({
+    readFileString: () => {
+      credentialReads += 1;
+      return Effect.succeed(signingSecret);
+    },
+  });
+
+  return Effect.gen(function* () {
+    yield* makeDirectWebSocketConnector(signedBearerAuthentication, {
+      makeWebSocket: first.makeWebSocket,
+      nowEpochSeconds: () => times.shift()!,
+    }).pipe(Effect.scoped);
+    yield* makeDirectWebSocketConnector(signedBearerAuthentication, {
+      makeWebSocket: second.makeWebSocket,
+      nowEpochSeconds: () => times.shift()!,
+    }).pipe(Effect.scoped);
+
+    const firstToken = String(first.capturedOptions?.headers?.Authorization).slice(7);
+    const secondToken = String(second.capturedOptions?.headers?.Authorization).slice(7);
+    expect(credentialReads).toBe(2);
+    expect(firstToken).not.toBe(secondToken);
+    expect(
+      decodeJson(Buffer.from(firstToken.split(".")[1]!, "base64url").toString("utf8")),
+    ).toEqual({ iss: "cocoa", aud: "codex", exp: 1_700_000_060 });
+    expect(
+      decodeJson(Buffer.from(secondToken.split(".")[1]!, "base64url").toString("utf8")),
+    ).toEqual({ iss: "cocoa", aud: "codex", exp: 1_700_000_061 });
+  }).pipe(Effect.provide(fileSystem));
+});
+
+it.effect("rejects signed bearer secrets shorter than 32 bytes before creating a WebSocket", () => {
+  const harness = makeHarness();
+  const fileSystem = FileSystem.layerNoop({
+    readFileString: () => Effect.succeed("short shared secret"),
+  });
+
+  return Effect.gen(function* () {
+    const error = yield* makeDirectWebSocketConnector(signedBearerAuthentication, {
       makeWebSocket: harness.makeWebSocket,
     }).pipe(Effect.flip);
 
-    expect(error._tag).toBe("CodexEndpointUnsupportedAuthenticationError");
+    expect(error._tag).toBe("CodexEndpointInvalidCredentialError");
+    expect(error).toMatchObject({ reason: "too-short" });
     expect(harness.capturedUrl).toBeUndefined();
-  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+  }).pipe(Effect.scoped, Effect.provide(fileSystem));
+});
+
+it.effect("does not create a WebSocket when signed bearer token signing fails", () => {
+  const harness = makeHarness();
+  const fileSystem = FileSystem.layerNoop({
+    readFileString: () => Effect.succeed(signingSecret),
+  });
+
+  return Effect.gen(function* () {
+    const error = yield* makeDirectWebSocketConnector(signedBearerAuthentication, {
+      makeWebSocket: harness.makeWebSocket,
+      mintSignedBearerToken: () => {
+        throw new Error("signing unavailable");
+      },
+    }).pipe(Effect.flip);
+
+    expect(error._tag).toBe("CodexEndpointCredentialSigningError");
+    expect(harness.capturedUrl).toBeUndefined();
+    expect(error).not.toHaveProperty("secret");
+    expect(error).toMatchObject({ path: "/run/secrets/codex-signing-key" });
+  }).pipe(Effect.scoped, Effect.provide(fileSystem));
 });
 
 it.effect("rejects binary frames as a typed transport failure", () => {

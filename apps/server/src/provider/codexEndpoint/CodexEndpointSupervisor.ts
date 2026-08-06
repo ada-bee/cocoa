@@ -142,9 +142,9 @@ export function classifyCodexEndpointSupervisorError(
   error: CodexEndpointFactory.CodexEndpointFactoryError,
 ): CodexEndpointSupervisorErrorDisposition {
   switch (error._tag) {
-    case "CodexEndpointUnsupportedAuthenticationError":
     case "CodexEndpointCredentialReadError":
     case "CodexEndpointInvalidCredentialError":
+    case "CodexEndpointCredentialSigningError":
     case "CodexEndpointCompatibilityError":
       return "permanent";
     case "CodexEndpointInitializationError":

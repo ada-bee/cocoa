@@ -15,7 +15,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexEndpointConnection from "./CodexEndpointConnection.ts";
 import type { CodexEndpointRouter } from "./CodexEndpointRouter.ts";
 import {
-  CodexEndpointUnsupportedAuthenticationError,
+  CodexEndpointInvalidCredentialError,
   CodexEndpointWebSocketOpenError,
 } from "./DirectWebSocketConnector.ts";
 import {
@@ -315,8 +315,9 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
       Effect.gen(function* () {
         let sleepCalls = 0;
         let factoryCalls = 0;
-        const permanent = new CodexEndpointUnsupportedAuthenticationError({
-          authenticationType: "signed-bearer-token",
+        const permanent = new CodexEndpointInvalidCredentialError({
+          path: "/run/secrets/codex-signing-key",
+          reason: "too-short",
         });
         const supervisor = yield* makeSupervisor({
           makeEndpoint: (() => {
