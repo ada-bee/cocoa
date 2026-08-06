@@ -265,6 +265,31 @@ export class CodexAppServerInputStreamEndedError extends Schema.TaggedErrorClass
   }
 }
 
+export class CodexAppServerRequestCapacityError extends Schema.TaggedErrorClass<CodexAppServerRequestCapacityError>()(
+  "CodexAppServerRequestCapacityError",
+  {
+    method: Schema.String,
+    maxInFlight: Schema.Int,
+  },
+) {
+  override get message() {
+    return `Codex App Server request '${this.method}' exceeded the ${this.maxInFlight}-request in-flight limit.`;
+  }
+}
+
+export class CodexAppServerRequestTimeoutError extends Schema.TaggedErrorClass<CodexAppServerRequestTimeoutError>()(
+  "CodexAppServerRequestTimeoutError",
+  {
+    method: Schema.String,
+    requestId: Schema.String,
+    timeoutMs: Schema.Int,
+  },
+) {
+  override get message() {
+    return `Codex App Server request '${this.method}' timed out after ${this.timeoutMs}ms.`;
+  }
+}
+
 export class CodexAppServerRequestError extends Schema.TaggedErrorClass<CodexAppServerRequestError>()(
   "CodexAppServerRequestError",
   {
@@ -423,6 +448,8 @@ export const CodexAppServerError = Schema.Union([
   CodexAppServerTransportError,
   CodexAppServerIdentifierGenerationError,
   CodexAppServerInputStreamEndedError,
+  CodexAppServerRequestCapacityError,
+  CodexAppServerRequestTimeoutError,
 ]);
 
 export type CodexAppServerError = typeof CodexAppServerError.Type;

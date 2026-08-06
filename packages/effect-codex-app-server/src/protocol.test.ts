@@ -1,10 +1,12 @@
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -528,6 +530,137 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
     }),
   );
 
+  it.effect("rejects requests beyond the finite in-flight correlation limit", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...frames,
+        clientRequests: { maxInFlight: 1 },
+      });
+
+      const first = yield* transport
+        .request("thread/read", { threadId: "thread-1" }, { timeoutMs: null })
+        .pipe(Effect.forkScoped);
+      assert.deepEqual(yield* decodeJson(yield* Queue.take(frames.output)), {
+        id: 1,
+        method: "thread/read",
+        params: { threadId: "thread-1" },
+      });
+
+      const error = yield* transport
+        .request("thread/read", { threadId: "thread-2" }, { timeoutMs: null })
+        .pipe(
+          Effect.match({
+            onFailure: (error) => error,
+            onSuccess: () => assert.fail("Expected the saturated request to fail"),
+          }),
+        );
+      assert.instanceOf(error, CodexError.CodexAppServerRequestCapacityError);
+      assert.deepInclude(error, {
+        method: "thread/read",
+        maxInFlight: 1,
+      });
+      assert.equal(yield* Queue.size(frames.output), 0);
+
+      yield* Queue.offer(frames.input, '{"id":1,"result":{"thread":{"id":"thread-1"}}}');
+      assert.deepEqual(yield* Fiber.join(first), { thread: { id: "thread-1" } });
+    }),
+  );
+
+  it.effect("removes timed-out correlations and ignores their late responses", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...frames,
+        clientRequests: { maxInFlight: 1 },
+      });
+
+      const timedOut = yield* transport
+        .request("thread/read", { threadId: "thread-1" })
+        .pipe(Effect.forkScoped);
+      yield* Queue.take(frames.output);
+      yield* TestClock.adjust(
+        Duration.millis(CodexProtocol.DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS),
+      );
+
+      const error = yield* Fiber.join(timedOut).pipe(
+        Effect.match({
+          onFailure: (error) => error,
+          onSuccess: () => assert.fail("Expected the request to time out"),
+        }),
+      );
+      assert.instanceOf(error, CodexError.CodexAppServerRequestTimeoutError);
+      assert.deepInclude(error, {
+        method: "thread/read",
+        requestId: "1",
+        timeoutMs: CodexProtocol.DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
+      });
+
+      yield* Queue.offer(frames.input, '{"id":1,"result":{"thread":{"id":"late"}}}');
+      const next = yield* transport
+        .request("thread/read", { threadId: "thread-2" }, { timeoutMs: null })
+        .pipe(Effect.forkScoped);
+      assert.deepEqual(yield* decodeJson(yield* Queue.take(frames.output)), {
+        id: 2,
+        method: "thread/read",
+        params: { threadId: "thread-2" },
+      });
+      yield* Queue.offer(frames.input, '{"id":2,"result":{"thread":{"id":"thread-2"}}}');
+      assert.deepEqual(yield* Fiber.join(next), { thread: { id: "thread-2" } });
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("never replays a mutating request after its response deadline", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...frames,
+        clientRequests: { defaultTimeoutMs: 1_000 },
+      });
+
+      const request = yield* transport
+        .request("turn/start", { threadId: "thread-1", input: [] })
+        .pipe(Effect.forkScoped);
+      const onlyFrame = yield* Queue.take(frames.output);
+      yield* TestClock.adjust("1 second");
+      const error = yield* Fiber.join(request).pipe(
+        Effect.match({
+          onFailure: (error) => error,
+          onSuccess: () => assert.fail("Expected the mutating request to time out"),
+        }),
+      );
+
+      assert.instanceOf(error, CodexError.CodexAppServerRequestTimeoutError);
+      assert.deepEqual(yield* decodeJson(onlyFrame), {
+        id: 1,
+        method: "turn/start",
+        params: { threadId: "thread-1", input: [] },
+      });
+      yield* TestClock.adjust("1 hour");
+      assert.equal(yield* Queue.size(frames.output), 0);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("allows an explicit no-timeout override only at the request callsite", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const transport = yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...frames,
+        clientRequests: { defaultTimeoutMs: 1_000 },
+      });
+
+      const longLived = yield* transport
+        .request("command/exec", { disableTimeout: true }, { timeoutMs: null })
+        .pipe(Effect.forkScoped);
+      yield* Queue.take(frames.output);
+      yield* TestClock.adjust("1 hour");
+      assert.isUndefined(longLived.pollUnsafe());
+
+      yield* Queue.offer(frames.input, '{"id":1,"result":{"exitCode":0}}');
+      assert.deepEqual(yield* Fiber.join(longLived), { exitCode: 0 });
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+
   it.effect("continues reading frames while a server-request handler is waiting", () =>
     Effect.gen(function* () {
       const frames = yield* makeInMemoryFramedTransport();
@@ -563,6 +696,79 @@ it.layer(NodeServices.layer)("effect-codex-app-server protocol", (it) => {
         id: 77,
         result: { approved: true },
       });
+    }),
+  );
+
+  it.effect("bounds inbound server-request admission and reports overflow", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const started = yield* Queue.unbounded<string | number>();
+      const release = yield* Queue.unbounded<void>();
+      yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...frames,
+        inboundRequests: { maxConcurrent: 1, queueCapacity: 1 },
+        onRequest: (request) =>
+          Queue.offer(started, request.id).pipe(
+            Effect.andThen(Queue.take(release)),
+            Effect.as({ approved: true }),
+          ),
+      });
+
+      yield* Queue.offer(frames.input, '{"id":71,"method":"approval/one"}');
+      assert.equal(yield* Queue.take(started), 71);
+      yield* Queue.offer(frames.input, '{"id":72,"method":"approval/two"}');
+      yield* Queue.offer(frames.input, '{"id":73,"method":"approval/three"}');
+
+      assert.deepEqual(yield* decodeJson(yield* Queue.take(frames.output)), {
+        id: 73,
+        error: {
+          code: -32001,
+          message: "Codex App Server client is at its inbound request capacity.",
+          data: { maxConcurrent: 1, queueCapacity: 1 },
+        },
+      });
+
+      yield* Queue.offer(release, undefined);
+      assert.deepEqual(yield* decodeJson(yield* Queue.take(frames.output)), {
+        id: 71,
+        result: { approved: true },
+      });
+      assert.equal(yield* Queue.take(started), 72);
+      yield* Queue.offer(release, undefined);
+      assert.deepEqual(yield* decodeJson(yield* Queue.take(frames.output)), {
+        id: 72,
+        result: { approved: true },
+      });
+    }),
+  );
+
+  it.effect("interrupts active inbound handlers when the transport terminates", () =>
+    Effect.gen(function* () {
+      const frames = yield* makeInMemoryFramedTransport();
+      const handlerStarted = yield* Deferred.make<void>();
+      const handlerInterrupted = yield* Deferred.make<void>();
+      const termination = yield* Deferred.make<CodexError.CodexAppServerError>();
+      yield* CodexProtocol.makeCodexAppServerFramedProtocol({
+        ...frames,
+        inboundRequests: { maxConcurrent: 1, queueCapacity: 1 },
+        onRequest: () =>
+          Deferred.succeed(handlerStarted, undefined).pipe(
+            Effect.andThen(Effect.never),
+            Effect.ensuring(Deferred.succeed(handlerInterrupted, undefined)),
+          ),
+        onTermination: (error) => Deferred.succeed(termination, error).pipe(Effect.asVoid),
+      });
+
+      yield* Queue.offer(frames.input, '{"id":77,"method":"approval/wait"}');
+      yield* Deferred.await(handlerStarted);
+      yield* Queue.end(frames.input);
+
+      assert.instanceOf(
+        yield* Deferred.await(termination),
+        CodexError.CodexAppServerInputStreamEndedError,
+      );
+      yield* Deferred.await(handlerInterrupted);
+      assert.equal(yield* Queue.size(frames.output), 0);
     }),
   );
 

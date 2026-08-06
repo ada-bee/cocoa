@@ -17,6 +17,10 @@ import packageJson from "../../../package.json" with { type: "json" };
 export const CODEX_ENDPOINT_INITIALIZE_TIMEOUT = "10 seconds" as const;
 export const CODEX_ENDPOINT_CAPABILITY_PROBE_TIMEOUT = "2 seconds" as const;
 export const CODEX_ENDPOINT_TESTED_BASELINE_VERSION = "0.146.0" as const;
+export const CODEX_ENDPOINT_MAX_IN_FLIGHT_REQUESTS = 256;
+export const CODEX_ENDPOINT_DEFAULT_REQUEST_TIMEOUT_MS = 150_000;
+export const CODEX_ENDPOINT_MAX_CONCURRENT_INBOUND_REQUESTS = 32;
+export const CODEX_ENDPOINT_INBOUND_REQUEST_QUEUE_CAPACITY = 64;
 
 const COCOA_CLIENT_INFO = {
   name: "cocoa_gateway",
@@ -301,6 +305,14 @@ export const make = Effect.fn("CodexEndpointConnection.make")(function* (
         );
         const client = yield* CodexClient.makeFramed({
           ...options.framedTransport,
+          clientRequests: {
+            maxInFlight: CODEX_ENDPOINT_MAX_IN_FLIGHT_REQUESTS,
+            defaultTimeoutMs: CODEX_ENDPOINT_DEFAULT_REQUEST_TIMEOUT_MS,
+          },
+          inboundRequests: {
+            maxConcurrent: CODEX_ENDPOINT_MAX_CONCURRENT_INBOUND_REQUESTS,
+            queueCapacity: CODEX_ENDPOINT_INBOUND_REQUEST_QUEUE_CAPACITY,
+          },
           onTermination: (cause) => Deferred.succeed(terminated, cause).pipe(Effect.asVoid),
         });
 

@@ -414,19 +414,27 @@ export const makeCodexTerminalAdapter = Effect.fn("CodexTerminalAdapter.make")(f
             );
 
             const commandRequest = borrowed.connection.client
-              .request("command/exec", {
-                command: makeCommand(input, processId),
-                cwd: input.cwd,
-                ...(input.env === undefined ? {} : { env: input.env }),
-                outputBytesCap: input.outputByteLimit,
-                processId,
-                sandboxPolicy: makeSandboxPolicy(options.sandboxMode, input.cwd),
-                size: { cols: input.cols, rows: input.rows },
-                streamStdin: true,
-                streamStdoutStderr: true,
-                disableTimeout: true,
-                tty: true,
-              })
+              .request(
+                "command/exec",
+                {
+                  command: makeCommand(input, processId),
+                  cwd: input.cwd,
+                  ...(input.env === undefined ? {} : { env: input.env }),
+                  outputBytesCap: input.outputByteLimit,
+                  processId,
+                  sandboxPolicy: makeSandboxPolicy(options.sandboxMode, input.cwd),
+                  size: { cols: input.cols, rows: input.rows },
+                  streamStdin: true,
+                  streamStdoutStderr: true,
+                  disableTimeout: true,
+                  tty: true,
+                },
+                {
+                  // This request intentionally remains open for the lifetime of the remote PTY.
+                  // Its scoped terminal finalizer interrupts the correlation and terminates Codex.
+                  timeoutMs: null,
+                },
+              )
               .pipe(
                 Effect.matchEffect({
                   onFailure: (error) =>

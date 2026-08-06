@@ -22,6 +22,8 @@ export interface CodexAppServerClientOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly rawObservation?: CodexProtocol.CodexAppServerRawObservationOptions;
+  readonly clientRequests?: CodexProtocol.CodexAppServerClientRequestLimits;
+  readonly inboundRequests?: CodexProtocol.CodexAppServerInboundRequestLimits;
   readonly logger?: (
     event: CodexProtocol.CodexAppServerProtocolLogEvent,
   ) => Effect.Effect<void, never>;
@@ -48,6 +50,7 @@ export class CodexAppServerClient extends Context.Service<
     readonly request: <M extends CodexRpc.ClientRequestMethod>(
       method: M,
       payload: CodexRpc.ClientRequestParamsByMethod[M],
+      options?: CodexProtocol.CodexAppServerRequestOptions,
     ) => Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexError.CodexAppServerError>;
     readonly notify: <M extends CodexRpc.ClientNotificationMethod>(
       method: M,
@@ -207,9 +210,10 @@ const makeWithProtocol = Effect.fn("effect-codex-app-server/client/makeWithProto
   const request = <M extends CodexRpc.ClientRequestMethod>(
     method: M,
     payload: CodexRpc.ClientRequestParamsByMethod[M],
+    options?: CodexProtocol.CodexAppServerRequestOptions,
   ): Effect.Effect<CodexRpc.ClientRequestResponsesByMethod[M], CodexError.CodexAppServerError> =>
     encodeOptionalPayload(method, getClientRequestParamSchema(method), payload).pipe(
-      Effect.flatMap((encoded) => transport.request(method, encoded)),
+      Effect.flatMap((encoded) => transport.request(method, encoded, options)),
       Effect.flatMap(
         (
           raw,
@@ -285,6 +289,8 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
       ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
       ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
       ...(options.rawObservation ? { rawObservation: options.rawObservation } : {}),
+      ...(options.clientRequests ? { clientRequests: options.clientRequests } : {}),
+      ...(options.inboundRequests ? { inboundRequests: options.inboundRequests } : {}),
       ...(options.logger ? { logger: options.logger } : {}),
       ...handlers,
     }),

@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as PubSub from "effect/PubSub";
@@ -38,11 +39,38 @@ export interface CodexAppServerRawObservationOptions {
   readonly capacity: number;
 }
 
+export interface CodexAppServerClientRequestLimits {
+  /** Maximum number of requests awaiting a response on one protocol connection. */
+  readonly maxInFlight?: number;
+  /** Default response deadline. Individual requests may make an explicit narrow override. */
+  readonly defaultTimeoutMs?: number;
+}
+
+export interface CodexAppServerInboundRequestLimits {
+  /** Maximum number of server requests whose handlers may execute concurrently. */
+  readonly maxConcurrent?: number;
+  /** Maximum number of server requests waiting for an available handler. */
+  readonly queueCapacity?: number;
+}
+
+export interface CodexAppServerRequestOptions {
+  /**
+   * Override the response deadline for this request. `null` is reserved for calls whose protocol
+   * contract is intentionally long-lived, such as a streaming terminal `command/exec` request.
+   */
+  readonly timeoutMs?: number | null;
+}
+
+export const DEFAULT_CODEX_APP_SERVER_MAX_IN_FLIGHT_REQUESTS = 256;
+export const DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 150_000;
+export const DEFAULT_CODEX_APP_SERVER_MAX_CONCURRENT_INBOUND_REQUESTS = 32;
+export const DEFAULT_CODEX_APP_SERVER_INBOUND_REQUEST_QUEUE_CAPACITY = 64;
+
 const DEFAULT_RAW_OBSERVATION_CAPACITY = 256;
 /** Maximum number of encoded frames retained while the transport writer is backpressured. */
 const DEFAULT_OUTGOING_FRAME_CAPACITY = 256;
 
-interface CodexAppServerProtocolOptions {
+export interface CodexAppServerProtocolOptions {
   readonly terminationError?: Effect.Effect<CodexError.CodexAppServerError>;
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
@@ -52,6 +80,8 @@ interface CodexAppServerProtocolOptions {
    * affected.
    */
   readonly rawObservation?: CodexAppServerRawObservationOptions;
+  readonly clientRequests?: CodexAppServerClientRequestLimits;
+  readonly inboundRequests?: CodexAppServerInboundRequestLimits;
   readonly logger?: (event: CodexAppServerProtocolLogEvent) => Effect.Effect<void, never>;
   readonly onNotification?: (
     notification: CodexAppServerIncomingNotification,
@@ -83,6 +113,7 @@ export interface CodexAppServerPatchedProtocol {
   readonly request: (
     method: string,
     payload?: unknown,
+    options?: CodexAppServerRequestOptions,
   ) => Effect.Effect<unknown, CodexError.CodexAppServerError>;
   readonly notify: (
     method: string,
@@ -111,6 +142,9 @@ interface CodexAppServerProtocolState {
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+
+const finitePositiveIntegerOr = (value: number | undefined, fallback: number): number =>
+  value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback;
 
 function isIncomingRequest(value: unknown): value is CodexAppServerIncomingRequest {
   if (!isObject(value) || typeof value.method !== "string") {
@@ -190,6 +224,25 @@ export const makeCodexAppServerFramedProtocol = Effect.fn("makeCodexAppServerFra
     const outgoing = yield* Queue.bounded<string, Cause.Done<void>>(
       DEFAULT_OUTGOING_FRAME_CAPACITY,
     );
+    const maxInFlightRequests = finitePositiveIntegerOr(
+      options.clientRequests?.maxInFlight,
+      DEFAULT_CODEX_APP_SERVER_MAX_IN_FLIGHT_REQUESTS,
+    );
+    const defaultRequestTimeoutMs = finitePositiveIntegerOr(
+      options.clientRequests?.defaultTimeoutMs,
+      DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
+    );
+    const maxConcurrentInboundRequests = finitePositiveIntegerOr(
+      options.inboundRequests?.maxConcurrent,
+      DEFAULT_CODEX_APP_SERVER_MAX_CONCURRENT_INBOUND_REQUESTS,
+    );
+    const inboundRequestQueueCapacity = finitePositiveIntegerOr(
+      options.inboundRequests?.queueCapacity,
+      DEFAULT_CODEX_APP_SERVER_INBOUND_REQUEST_QUEUE_CAPACITY,
+    );
+    const inboundRequestQueue = yield* Queue.dropping<CodexAppServerIncomingRequest>(
+      inboundRequestQueueCapacity,
+    );
     const rawObservationCapacity =
       options.rawObservation?.capacity ?? DEFAULT_RAW_OBSERVATION_CAPACITY;
     const incomingNotifications =
@@ -206,7 +259,11 @@ export const makeCodexAppServerFramedProtocol = Effect.fn("makeCodexAppServerFra
     });
     const nextRequestId = yield* Ref.make(1);
     const requestHandlerScope = yield* Scope.make();
-    yield* Effect.addFinalizer(() => Scope.close(requestHandlerScope, Exit.void));
+    yield* Effect.addFinalizer(() =>
+      Queue.shutdown(inboundRequestQueue).pipe(
+        Effect.andThen(Scope.close(requestHandlerScope, Exit.void)),
+      ),
+    );
 
     const logProtocol = (event: CodexAppServerProtocolLogEvent) => {
       if (event.direction === "incoming" && !options.logIncoming) {
@@ -247,6 +304,7 @@ export const makeCodexAppServerFramedProtocol = Effect.fn("makeCodexAppServerFra
         const terminated = yield* terminateProtocol(error);
         if (terminated) {
           yield* Queue.shutdown(outgoing);
+          yield* Queue.shutdown(inboundRequestQueue);
           yield* PubSub.shutdown(incomingNotifications);
           yield* PubSub.shutdown(incomingRequests);
           yield* Scope.close(requestHandlerScope, Exit.void);
@@ -297,12 +355,21 @@ export const makeCodexAppServerFramedProtocol = Effect.fn("makeCodexAppServerFra
         if (current.terminalError) {
           return [current.terminalError, current] as const;
         }
+        if (current.pending.size >= maxInFlightRequests) {
+          return [
+            new CodexError.CodexAppServerRequestCapacityError({
+              method: pendingRequest.method,
+              maxInFlight: maxInFlightRequests,
+            }),
+            current,
+          ] as const;
+        }
         const pending = new Map(current.pending);
         pending.set(requestId, pendingRequest);
         return [undefined, { ...current, pending }] as const;
       }).pipe(
-        Effect.flatMap((terminalError) =>
-          terminalError ? Effect.fail(terminalError) : Effect.void,
+        Effect.flatMap((registrationError) =>
+          registrationError ? Effect.fail(registrationError) : Effect.void,
         ),
       );
 
@@ -358,11 +425,9 @@ export const makeCodexAppServerFramedProtocol = Effect.fn("makeCodexAppServerFra
       );
     };
 
-    const handleRequest = (request: CodexAppServerIncomingRequest) =>
-      Effect.gen(function* () {
-        yield* PubSub.publish(incomingRequests, request);
-        if (options.onRequest) {
-          yield* options.onRequest(request).pipe(
+    const runRequestHandler = (request: CodexAppServerIncomingRequest) =>
+      options.onRequest
+        ? options.onRequest(request).pipe(
             Effect.matchEffect({
               onFailure: (error) =>
                 respondError(
@@ -371,8 +436,26 @@ export const makeCodexAppServerFramedProtocol = Effect.fn("makeCodexAppServerFra
                 ),
               onSuccess: (result) => respond(request.id, result),
             }),
-            Effect.forkIn(requestHandlerScope),
-          );
+          )
+        : Effect.void;
+
+    const handleRequest = (request: CodexAppServerIncomingRequest) =>
+      Effect.gen(function* () {
+        yield* PubSub.publish(incomingRequests, request);
+        if (options.onRequest) {
+          const accepted = yield* Queue.offer(inboundRequestQueue, request);
+          if (!accepted) {
+            yield* respondError(
+              request.id,
+              CodexError.CodexAppServerRequestError.overloaded(
+                "Codex App Server client is at its inbound request capacity.",
+                {
+                  maxConcurrent: maxConcurrentInboundRequests,
+                  queueCapacity: inboundRequestQueueCapacity,
+                },
+              ),
+            );
+          }
         }
       });
 
@@ -438,6 +521,19 @@ export const makeCodexAppServerFramedProtocol = Effect.fn("makeCodexAppServerFra
       );
     };
 
+    if (options.onRequest) {
+      yield* Effect.forEach(
+        Array.from({ length: maxConcurrentInboundRequests }),
+        () =>
+          Queue.take(inboundRequestQueue).pipe(
+            Effect.flatMap(runRequestHandler),
+            Effect.forever,
+            Effect.forkIn(requestHandlerScope),
+          ),
+        { discard: true },
+      );
+    }
+
     yield* options.incoming.pipe(
       Stream.runForEach(handleFrame),
       Effect.matchEffect({
@@ -468,22 +564,45 @@ export const makeCodexAppServerFramedProtocol = Effect.fn("makeCodexAppServerFra
       Effect.forkScoped,
     );
 
-    const request = (method: string, payload?: unknown) =>
+    const request = (
+      method: string,
+      payload?: unknown,
+      requestOptions: CodexAppServerRequestOptions = {},
+    ) =>
       Effect.gen(function* () {
         const requestId = yield* Ref.modify(
           nextRequestId,
           (current) => [current, current + 1] as const,
         );
         const deferred = yield* Deferred.make<unknown, CodexError.CodexAppServerError>();
-        yield* registerPending(String(requestId), { deferred, method });
-        yield* offerOutgoing({
+        const correlationId = String(requestId);
+        yield* registerPending(correlationId, { deferred, method });
+        const timeoutMs =
+          requestOptions.timeoutMs === null
+            ? null
+            : finitePositiveIntegerOr(requestOptions.timeoutMs, defaultRequestTimeoutMs);
+        const sendAndAwait = offerOutgoing({
           id: requestId,
           method,
           ...(payload !== undefined ? { params: payload } : {}),
-        }).pipe(Effect.tapError(() => removePending(String(requestId))));
-        return yield* Deferred.await(deferred).pipe(
-          Effect.onInterrupt(() => removePending(String(requestId))),
-        );
+        }).pipe(Effect.andThen(Deferred.await(deferred)));
+        return yield* (
+          timeoutMs === null
+            ? sendAndAwait
+            : sendAndAwait.pipe(
+                Effect.timeoutOrElse({
+                  duration: Duration.millis(timeoutMs),
+                  orElse: () =>
+                    Effect.fail(
+                      new CodexError.CodexAppServerRequestTimeoutError({
+                        method,
+                        requestId: correlationId,
+                        timeoutMs,
+                      }),
+                    ),
+                }),
+              )
+        ).pipe(Effect.ensuring(removePending(correlationId)));
       });
 
     const notify = (method: string, payload?: unknown) =>
@@ -523,6 +642,8 @@ export const makeCodexAppServerPatchedProtocol = Effect.fn("makeCodexAppServerPa
       ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
       ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
       ...(options.rawObservation ? { rawObservation: options.rawObservation } : {}),
+      ...(options.clientRequests ? { clientRequests: options.clientRequests } : {}),
+      ...(options.inboundRequests ? { inboundRequests: options.inboundRequests } : {}),
       ...(options.logger ? { logger: options.logger } : {}),
       ...(options.onNotification ? { onNotification: options.onNotification } : {}),
       ...(options.onRequest ? { onRequest: options.onRequest } : {}),
