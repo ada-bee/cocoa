@@ -1,7 +1,44 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@t3tools/contracts";
+import {
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
+} from "@t3tools/contracts";
 
 const files = new Map<string, { base64: string; deleted: boolean }>();
+const picker = vi.hoisted(() => ({
+  result: {
+    canceled: true,
+    assets: [],
+  } as
+    | { readonly canceled: true; readonly assets: ReadonlyArray<never> }
+    | {
+        readonly canceled: false;
+        readonly assets: ReadonlyArray<{
+          readonly base64: string;
+          readonly fileName: string;
+          readonly fileSize: number;
+          readonly mimeType: string;
+          readonly uri: string;
+        }>;
+      },
+}));
+const clipboard = vi.hoisted(() => ({
+  hasImage: false,
+  hasString: false,
+  imageData: "data:image/png;base64,AAAA",
+  text: "",
+}));
+
+vi.mock("expo-image-picker", () => ({
+  launchImageLibraryAsync: async () => picker.result,
+}));
+
+vi.mock("expo-clipboard", () => ({
+  hasImageAsync: async () => clipboard.hasImage,
+  getImageAsync: async () => ({ data: clipboard.imageData }),
+  hasStringAsync: async () => clipboard.hasString,
+  getStringAsync: async () => clipboard.text,
+}));
 
 vi.mock("expo-file-system", () => ({
   File: class {
@@ -39,8 +76,12 @@ vi.mock("./uuid", () => ({
 import {
   convertPastedImagesToAttachments,
   isOwnedPastedImageUri,
+  pasteComposerClipboard,
+  pickComposerImages,
   toUploadChatImageAttachments,
 } from "./composerImages";
+
+const AGGREGATE_LIMIT_ERROR = "Image attachments can encode to at most 8 MiB per message.";
 
 describe("toUploadChatImageAttachments", () => {
   it("strips client draft id and previewUri for the startTurn wire shape", () => {
@@ -88,17 +129,20 @@ describe("native pasted image cleanup", () => {
       "file:///private/var/mobile/Containers/Data/Application/app/tmp/t3-composer-paste/id.png";
     files.set(uri, { base64: "aGVsbG8=", deleted: false });
 
-    const attachments = await convertPastedImagesToAttachments({
+    const result = await convertPastedImagesToAttachments({
       uris: [uri],
-      existingCount: 0,
+      existingAttachments: [],
     });
 
-    expect(attachments).toEqual([
-      expect.objectContaining({
-        dataUrl: "data:image/png;base64,aGVsbG8=",
-        previewUri: "data:image/png;base64,aGVsbG8=",
-      }),
-    ]);
+    expect(result).toEqual({
+      images: [
+        expect.objectContaining({
+          dataUrl: "data:image/png;base64,aGVsbG8=",
+          previewUri: "data:image/png;base64,aGVsbG8=",
+        }),
+      ],
+      error: null,
+    });
     expect(files.get(uri)?.deleted).toBe(true);
   });
 
@@ -114,11 +158,103 @@ describe("native pasted image cleanup", () => {
 
     await convertPastedImagesToAttachments({
       uris: [rejected, overflow, userOwned],
-      existingCount: PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1,
+      existingAttachments: Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1 }, () => ({
+        dataUrl: "data:image/png;base64,AA==",
+      })),
     });
 
     expect(files.get(rejected)?.deleted).toBe(true);
     expect(files.get(overflow)?.deleted).toBe(true);
     expect(files.get(userOwned)?.deleted).toBe(false);
+  });
+
+  it("enforces and reports the encoded aggregate limit for native pasted images", async () => {
+    const uri =
+      "file:///private/var/mobile/Containers/Data/Application/app/tmp/t3-composer-paste/aggregate.png";
+    files.set(uri, { base64: "AAAA", deleted: false });
+
+    const result = await convertPastedImagesToAttachments({
+      uris: [uri],
+      existingAttachments: [
+        { dataUrl: "x".repeat(PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES - 1) },
+      ],
+    });
+
+    expect(result).toEqual({ images: [], error: AGGREGATE_LIMIT_ERROR });
+    expect(files.get(uri)?.deleted).toBe(true);
+  });
+});
+
+describe("encoded aggregate attachment preflight", () => {
+  beforeEach(() => {
+    picker.result = { canceled: true, assets: [] };
+    clipboard.hasImage = false;
+    clipboard.hasString = false;
+    clipboard.imageData = "data:image/png;base64,AAAA";
+    clipboard.text = "";
+  });
+
+  it("rejects a picked image before returning an over-budget draft", async () => {
+    picker.result = {
+      canceled: false,
+      assets: [
+        {
+          base64: "AAAA",
+          fileName: "picked.png",
+          fileSize: 3,
+          mimeType: "image/png",
+          uri: "file:///picked.png",
+        },
+      ],
+    };
+
+    const result = await pickComposerImages({
+      existingAttachments: [
+        { dataUrl: "x".repeat(PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES - 1) },
+      ],
+    });
+
+    expect(result).toEqual({ images: [], error: AGGREGATE_LIMIT_ERROR });
+  });
+
+  it("accepts a picked image at the exact encoded aggregate boundary", async () => {
+    const candidateDataUrl = "data:image/png;base64,AAAA";
+    picker.result = {
+      canceled: false,
+      assets: [
+        {
+          base64: "AAAA",
+          fileName: "boundary.png",
+          fileSize: 3,
+          mimeType: "image/png",
+          uri: "file:///boundary.png",
+        },
+      ],
+    };
+
+    const result = await pickComposerImages({
+      existingAttachments: [
+        {
+          dataUrl: "x".repeat(
+            PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES - candidateDataUrl.length,
+          ),
+        },
+      ],
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.images).toEqual([expect.objectContaining({ dataUrl: candidateDataUrl })]);
+  });
+
+  it("rejects a clipboard image before returning an over-budget draft", async () => {
+    clipboard.hasImage = true;
+
+    const result = await pasteComposerClipboard({
+      existingAttachments: [
+        { dataUrl: "x".repeat(PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES - 1) },
+      ],
+    });
+
+    expect(result).toEqual({ images: [], text: null, error: AGGREGATE_LIMIT_ERROR });
   });
 });

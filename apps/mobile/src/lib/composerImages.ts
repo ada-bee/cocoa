@@ -1,5 +1,6 @@
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type UploadChatImageAttachment,
 } from "@t3tools/contracts";
@@ -25,6 +26,21 @@ export function toUploadChatImageAttachments(
 }
 
 const OWNED_PASTED_IMAGE_DIRECTORY = "t3-composer-paste";
+const IMAGE_ATTACHMENT_AGGREGATE_LIMIT_MIB =
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES / (1024 * 1024);
+const IMAGE_ATTACHMENT_AGGREGATE_LIMIT_ERROR = `Image attachments can encode to at most ${IMAGE_ATTACHMENT_AGGREGATE_LIMIT_MIB} MiB per message.`;
+
+type ExistingComposerImageAttachment = Pick<UploadChatImageAttachment, "dataUrl">;
+
+function encodedAttachmentBytes(
+  attachments: ReadonlyArray<ExistingComposerImageAttachment>,
+): number {
+  return attachments.reduce((total, attachment) => total + attachment.dataUrl.trim().length, 0);
+}
+
+function exceedsEncodedAttachmentBudget(currentBytes: number, dataUrl: string): boolean {
+  return currentBytes + dataUrl.trim().length > PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES;
+}
 
 async function loadImagePicker() {
   try {
@@ -42,11 +58,13 @@ async function loadClipboard() {
   }
 }
 
-export async function pickComposerImages(input: { readonly existingCount: number }): Promise<{
+export async function pickComposerImages(input: {
+  readonly existingAttachments: ReadonlyArray<ExistingComposerImageAttachment>;
+}): Promise<{
   readonly images: ReadonlyArray<DraftComposerImageAttachment>;
   readonly error: string | null;
 }> {
-  const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingCount;
+  const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingAttachments.length;
   if (remainingSlots <= 0) {
     return {
       images: [],
@@ -81,6 +99,7 @@ export async function pickComposerImages(input: { readonly existingCount: number
   }
 
   const nextImages: DraftComposerImageAttachment[] = [];
+  let encodedBytes = encodedAttachmentBytes(input.existingAttachments);
   let error: string | null = null;
 
   for (const asset of result.assets) {
@@ -98,7 +117,13 @@ export async function pickComposerImages(input: { readonly existingCount: number
 
     const sizeBytes = asset.fileSize ?? estimateBase64ByteSize(base64);
     if (sizeBytes <= 0 || sizeBytes > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-      error = `'${asset.fileName ?? "image"}' exceeds the 10 MB attachment limit.`;
+      error = `'${asset.fileName ?? "image"}' exceeds the 10 MiB per-image attachment limit.`;
+      continue;
+    }
+
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+    if (exceedsEncodedAttachmentBudget(encodedBytes, dataUrl)) {
+      error = IMAGE_ATTACHMENT_AGGREGATE_LIMIT_ERROR;
       continue;
     }
 
@@ -108,9 +133,10 @@ export async function pickComposerImages(input: { readonly existingCount: number
       name: asset.fileName ?? "image",
       mimeType,
       sizeBytes,
-      dataUrl: `data:${mimeType};base64,${base64}`,
+      dataUrl,
       previewUri: asset.uri,
     });
+    encodedBytes += dataUrl.length;
   }
 
   return {
@@ -119,7 +145,9 @@ export async function pickComposerImages(input: { readonly existingCount: number
   };
 }
 
-export async function pasteComposerClipboard(input: { readonly existingCount: number }): Promise<{
+export async function pasteComposerClipboard(input: {
+  readonly existingAttachments: ReadonlyArray<ExistingComposerImageAttachment>;
+}): Promise<{
   readonly images: ReadonlyArray<DraftComposerImageAttachment>;
   readonly text: string | null;
   readonly error: string | null;
@@ -135,7 +163,7 @@ export async function pasteComposerClipboard(input: { readonly existingCount: nu
     };
   }
 
-  const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingCount;
+  const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingAttachments.length;
 
   if (await clipboard.hasImageAsync()) {
     if (remainingSlots <= 0) {
@@ -160,7 +188,16 @@ export async function pasteComposerClipboard(input: { readonly existingCount: nu
       return {
         images: [],
         text: null,
-        error: "Clipboard image exceeds the 10 MB attachment limit.",
+        error: "Clipboard image exceeds the 10 MiB per-image attachment limit.",
+      };
+    }
+    if (
+      exceedsEncodedAttachmentBudget(encodedAttachmentBytes(input.existingAttachments), image.data)
+    ) {
+      return {
+        images: [],
+        text: null,
+        error: IMAGE_ATTACHMENT_AGGREGATE_LIMIT_ERROR,
       };
     }
 
@@ -233,11 +270,16 @@ export function isOwnedPastedImageUri(uri: string): boolean {
 
 export async function convertPastedImagesToAttachments(input: {
   readonly uris: ReadonlyArray<string>;
-  readonly existingCount: number;
-}): Promise<ReadonlyArray<DraftComposerImageAttachment>> {
+  readonly existingAttachments: ReadonlyArray<ExistingComposerImageAttachment>;
+}): Promise<{
+  readonly images: ReadonlyArray<DraftComposerImageAttachment>;
+  readonly error: string | null;
+}> {
   const { File } = await import("expo-file-system");
-  const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingCount;
+  const remainingSlots = PROVIDER_SEND_TURN_MAX_ATTACHMENTS - input.existingAttachments.length;
   const results: DraftComposerImageAttachment[] = [];
+  let encodedBytes = encodedAttachmentBytes(input.existingAttachments);
+  let aggregateLimitExceeded = false;
 
   for (const [index, uri] of input.uris.entries()) {
     const ownedTemporaryFile = isOwnedPastedImageUri(uri);
@@ -252,15 +294,21 @@ export async function convertPastedImagesToAttachments(input: {
         continue;
       }
       const mimeType = mimeTypeFromUri(uri);
+      const dataUrl = `data:${mimeType};base64,${base64}`;
+      if (exceedsEncodedAttachmentBudget(encodedBytes, dataUrl)) {
+        aggregateLimitExceeded = true;
+        continue;
+      }
       results.push({
         id: uuidv4(),
         type: "image",
         name: `pasted-image.${mimeType.split("/")[1] ?? "png"}`,
         mimeType,
         sizeBytes,
-        dataUrl: `data:${mimeType};base64,${base64}`,
-        previewUri: ownedTemporaryFile ? `data:${mimeType};base64,${base64}` : uri,
+        dataUrl,
+        previewUri: ownedTemporaryFile ? dataUrl : uri,
       });
+      encodedBytes += dataUrl.length;
     } catch (error) {
       console.warn("Failed to read pasted image", uri, error);
     } finally {
@@ -277,5 +325,8 @@ export async function convertPastedImagesToAttachments(input: {
     }
   }
 
-  return results;
+  return {
+    images: results,
+    error: aggregateLimitExceeded ? IMAGE_ATTACHMENT_AGGREGATE_LIMIT_ERROR : null,
+  };
 }

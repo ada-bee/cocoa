@@ -763,21 +763,27 @@ export function NewTaskDraftScreen(props: {
     if (isIncomingShareTransferPending) {
       return;
     }
-    const result = await pickComposerImages({ existingCount: flow.attachments.length });
+    const result = await pickComposerImages({ existingAttachments: flow.attachments });
     if (result.images.length > 0) {
       flow.appendAttachments(result.images);
+    }
+    if (result.error) {
+      Alert.alert("Unable to attach image", result.error);
     }
   }
 
   const handleNativePasteImages = useCallback(
     async (uris: ReadonlyArray<string>) => {
       try {
-        const images = await convertPastedImagesToAttachments({
+        const result = await convertPastedImagesToAttachments({
           uris,
-          existingCount: flow.attachments.length,
+          existingAttachments: flow.attachments,
         });
-        if (images.length > 0) {
-          flow.appendAttachments(images);
+        if (result.images.length > 0) {
+          flow.appendAttachments(result.images);
+        }
+        if (result.error) {
+          Alert.alert("Unable to attach image", result.error);
         }
       } catch (error) {
         console.error("[native paste] error converting images", error);

@@ -2555,7 +2555,15 @@ it.layer(makeProjectionPipelinePrefixedTestLayer("t3-pending-turn-terminal-test-
             payload: {
               threadId,
               messageId: MessageId.make(`message-terminal-${status}`),
+              projectId: ProjectId.make(`project-terminal-${status}`),
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              checkpointTurnCount: 0,
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5-codex",
+              },
               runtimeMode: "approval-required",
+              interactionMode: "default",
               createdAt: requestedAt,
             },
           });
@@ -2636,11 +2644,19 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
         payload: {
           threadId,
           messageId,
+          projectId: ProjectId.make("project-restart"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          checkpointTurnCount: 0,
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
           sourceProposedPlan: {
             threadId: sourcePlanThreadId,
             planId: sourcePlanId,
           },
           runtimeMode: "approval-required",
+          interactionMode: "default",
           createdAt: turnStartedAt,
         },
       });
@@ -2822,7 +2838,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       const sql = yield* SqlClient.SqlClient;
       const createdAt = "2026-01-01T00:00:00.000Z";
 
-      yield* engine.dispatch({
+      const dispatched = yield* engine.dispatch({
         type: "project.create",
         providerInstanceId: ProviderInstanceId.make("codex"),
         commandId: CommandId.make("cmd-live-project"),
@@ -2851,7 +2867,7 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
         FROM projection_state
         WHERE projector = 'projection.projects'
       `;
-      assert.deepEqual(projectorRows, [{ lastAppliedSequence: 1 }]);
+      assert.deepEqual(projectorRows, [{ lastAppliedSequence: dispatched.sequence }]);
     }),
   );
 

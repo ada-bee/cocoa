@@ -13,6 +13,7 @@ import {
   CodexWorkspaceHelperResponse,
   CodexWorkspaceHelperResponseByteLimit,
   type CodexWorkspaceHelperConfig,
+  type CodexWorkspaceHelperCapability,
   type CodexWorkspaceHelperErrorCode,
   type CodexWorkspaceHelperMetadata,
   type CodexWorkspaceHelperRequest as CodexWorkspaceHelperRequestShape,
@@ -216,7 +217,18 @@ const encodeRequestArg = (request: CodexWorkspaceHelperRequestShape): string =>
 export const makeCodexWorkspaceAdapter = (
   options: MakeCodexWorkspaceAdapterOptions,
 ): ProviderWorkspaceAdapter => {
-  let browseCapability: { readonly generationId: number; readonly supported: boolean } | undefined;
+  const rootedCapabilities = [
+    "validate",
+    "stat",
+    "list",
+    "read",
+  ] as const satisfies ReadonlyArray<CodexWorkspaceHelperCapability>;
+  let capabilityProbe:
+    | {
+        readonly generationId: number;
+        readonly capabilities: ReadonlySet<CodexWorkspaceHelperCapability> | null;
+      }
+    | undefined;
 
   const execute = Effect.fn("CodexWorkspaceAdapter.execute")(function* (
     input: CodexWorkspaceHelperRequestShape,
@@ -336,6 +348,63 @@ export const makeCodexWorkspaceAdapter = (
     return response.result;
   });
 
+  const requireCapabilities = Effect.fn("CodexWorkspaceAdapter.requireCapabilities")(function* (
+    required: ReadonlyArray<CodexWorkspaceHelperCapability>,
+    operation: ProviderWorkspaceOperation,
+    borrowed: CodexEndpointConnectionBorrow,
+  ) {
+    let cached = capabilityProbe;
+    if (cached?.generationId !== borrowed.generationId) {
+      const probeExit = yield* execute(
+        {
+          protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
+          operation: "probe",
+        },
+        operation,
+        borrowed,
+      ).pipe(Effect.result);
+      if (probeExit._tag === "Failure") {
+        if (probeExit.failure._tag === "ProviderWorkspaceDisconnectedError") {
+          return yield* probeExit.failure;
+        }
+        capabilityProbe = {
+          generationId: borrowed.generationId,
+          capabilities: null,
+        };
+        return yield* unsupported(options.providerInstanceId, operation);
+      }
+      if (probeExit.success.operation !== "probe") {
+        capabilityProbe = {
+          generationId: borrowed.generationId,
+          capabilities: null,
+        };
+        return yield* unsupported(options.providerInstanceId, operation);
+      }
+      cached = {
+        generationId: borrowed.generationId,
+        capabilities: new Set(probeExit.success.capabilities),
+      };
+      capabilityProbe = cached;
+    }
+    if (
+      cached.capabilities === null ||
+      required.some((capability) => !cached.capabilities?.has(capability))
+    ) {
+      return yield* unsupported(options.providerInstanceId, operation);
+    }
+  });
+
+  const executeRooted = Effect.fn("CodexWorkspaceAdapter.executeRooted")(function* (
+    input: CodexWorkspaceHelperRequestShape,
+    operation: ProviderWorkspaceOperation,
+  ) {
+    const borrowed = yield* options.borrowConnection.pipe(
+      Effect.mapError(() => disconnected(options.providerInstanceId, operation)),
+    );
+    yield* requireCapabilities(rootedCapabilities, operation, borrowed);
+    return yield* execute(input, operation, borrowed);
+  });
+
   const browseDirectory: ProviderWorkspaceAdapter["browseDirectory"] = Effect.fn(
     "CodexWorkspaceAdapter.browseDirectory",
   )(function* (input) {
@@ -348,31 +417,7 @@ export const makeCodexWorkspaceAdapter = (
     const borrowed = yield* options.borrowConnection.pipe(
       Effect.mapError(() => disconnected(options.providerInstanceId, "browseDirectory")),
     );
-    const cached = browseCapability;
-    if (cached?.generationId !== borrowed.generationId) {
-      const probeResult = yield* execute(
-        {
-          protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
-          operation: "probe",
-        },
-        "browseDirectory",
-        borrowed,
-      );
-      if (probeResult.operation !== "probe") {
-        return yield* protocol(
-          options.providerInstanceId,
-          "browseDirectory",
-          "Workspace helper returned the wrong probe result.",
-        );
-      }
-      browseCapability = {
-        generationId: borrowed.generationId,
-        supported: probeResult.capabilities.includes("browse"),
-      };
-    }
-    if (browseCapability?.supported !== true) {
-      return yield* unsupported(options.providerInstanceId, "browseDirectory");
-    }
+    yield* requireCapabilities(["browse"], "browseDirectory", borrowed);
 
     const browseResult = yield* execute(
       {
@@ -446,11 +491,14 @@ export const makeCodexWorkspaceAdapter = (
   const openRoot: ProviderWorkspaceAdapter["openRoot"] = Effect.fn(
     "CodexWorkspaceAdapter.openRoot",
   )(function* (workspaceRoot) {
-    const result = yield* execute({
-      protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
-      operation: "validate",
-      root: workspaceRoot,
-    } as CodexWorkspaceHelperRequestShape);
+    const result = yield* executeRooted(
+      {
+        protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
+        operation: "validate",
+        root: workspaceRoot,
+      } as CodexWorkspaceHelperRequestShape,
+      "openRoot",
+    );
     if (result.operation !== "validate") {
       return yield* protocol(
         options.providerInstanceId,
@@ -478,7 +526,7 @@ export const makeCodexWorkspaceAdapter = (
       readonly operation: "listDirectory" | "listEntries";
     }): Effect.fn.Return<ProviderWorkspaceEntryListing, ProviderWorkspaceError> {
       const maxEntries = Math.min(input.maxEntries, 25_000);
-      const listResult = yield* execute(
+      const listResult = yield* executeRooted(
         {
           protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
           operation: "list",
@@ -541,13 +589,16 @@ export const makeCodexWorkspaceAdapter = (
 
     return {
       getMetadata: Effect.fn("CodexWorkspaceAdapter.getMetadata")(function* (input) {
-        const metadataResult = yield* execute({
-          protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
-          operation: "stat",
-          root: requestRoot,
-          expectedRoot: root,
-          relativePath: input.relativePath,
-        } as CodexWorkspaceHelperRequestShape);
+        const metadataResult = yield* executeRooted(
+          {
+            protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
+            operation: "stat",
+            root: requestRoot,
+            expectedRoot: root,
+            relativePath: input.relativePath,
+          } as CodexWorkspaceHelperRequestShape,
+          "getMetadata",
+        );
         if (metadataResult.operation !== "stat") {
           return yield* protocol(
             options.providerInstanceId,
@@ -591,14 +642,17 @@ export const makeCodexWorkspaceAdapter = (
         });
       }),
       readFile: Effect.fn("CodexWorkspaceAdapter.readFile")(function* (input) {
-        const readResult = yield* execute({
-          protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
-          operation: "read",
-          root: requestRoot,
-          expectedRoot: root,
-          relativePath: input.relativePath,
-          maxBytes: input.maxBytes,
-        } as CodexWorkspaceHelperRequestShape);
+        const readResult = yield* executeRooted(
+          {
+            protocol: CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
+            operation: "read",
+            root: requestRoot,
+            expectedRoot: root,
+            relativePath: input.relativePath,
+            maxBytes: input.maxBytes,
+          } as CodexWorkspaceHelperRequestShape,
+          "readFile",
+        );
         if (readResult.operation !== "read") {
           return yield* protocol(
             options.providerInstanceId,

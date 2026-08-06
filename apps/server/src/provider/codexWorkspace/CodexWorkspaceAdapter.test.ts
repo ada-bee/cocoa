@@ -8,6 +8,7 @@ import { assert, it } from "@effect/vitest";
 import {
   CODEX_WORKSPACE_HELPER_PROTOCOL_VERSION,
   ProviderInstanceId,
+  type CodexWorkspaceHelperCapability,
   type CodexWorkspaceHelperConfig,
   type CodexWorkspaceHelperRequest,
   type CodexWorkspaceHelperResponse,
@@ -120,13 +121,33 @@ function makeConnection(handler: RequestHandler) {
 function makeAdapter(input: {
   readonly handler: RequestHandler;
   readonly helper?: CodexWorkspaceHelperConfig;
+  readonly probeCapabilities?: ReadonlyArray<CodexWorkspaceHelperCapability> | null;
   readonly ensureCurrent?: () => Effect.Effect<void, CodexEndpointBorrowUnavailableError>;
   readonly borrow?: Effect.Effect<
     CodexEndpointConnectionBorrow,
     CodexEndpointBorrowUnavailableError
   >;
 }) {
-  const connection = makeConnection(input.handler);
+  const connection = makeConnection((method, payload) => {
+    const request = decodeRequest(payload);
+    if (request.operation === "probe" && input.probeCapabilities !== null) {
+      return Effect.succeed(
+        success({
+          operation: "probe",
+          implementation: "test-helper",
+          capabilities: input.probeCapabilities ?? [
+            "probe",
+            "validate",
+            "stat",
+            "list",
+            "read",
+            "browse",
+          ],
+        }),
+      );
+    }
+    return input.handler(method, payload);
+  });
   let borrows = 0;
   let currentChecks = 0;
   const borrowConnection =
@@ -226,7 +247,7 @@ it.effect("uses exact buffered command/exec requests and revalidates root identi
     assert.strictEqual(new TextDecoder().decode(read.bytes), "hello");
     assert.strictEqual(read.byteLength, 9);
     assert.isTrue(read.truncated);
-    assert.deepStrictEqual(counts(), { borrows: 4, currentChecks: 8 });
+    assert.deepStrictEqual(counts(), { borrows: 4, currentChecks: 10 });
 
     for (const payload of payloads) {
       assert.deepStrictEqual(Object.keys(payload).sort(), [
@@ -314,6 +335,101 @@ it.effect("enforces generation barriers before and after command execution", () 
   }),
 );
 
+it.effect("probes the full rooted helper capability set once per endpoint generation", () =>
+  Effect.gen(function* () {
+    let currentGeneration = 1;
+    const operations: Array<CodexWorkspaceHelperRequest["operation"]> = [];
+    const connection = makeConnection((_method, payload) => {
+      const request = decodeRequest(payload);
+      operations.push(request.operation);
+      switch (request.operation) {
+        case "probe":
+          return Effect.succeed(
+            success({
+              operation: "probe",
+              implementation: "test-helper",
+              capabilities: ["probe", "validate", "stat", "list", "read", "browse"],
+            }),
+          );
+        case "validate":
+          return Effect.succeed(
+            success({
+              operation: "validate",
+              root: ROOT,
+              metadata: { kind: "directory" },
+            }),
+          );
+        case "stat":
+          return Effect.succeed(
+            success({ operation: "stat", metadata: { kind: "file", size: 5 } }),
+          );
+        default:
+          return Effect.die("unexpected helper operation");
+      }
+    });
+    const { adapter } = makeAdapter({
+      probeCapabilities: null,
+      handler: () => Effect.die("unused"),
+      borrow: Effect.sync(() => ({
+        generationId: currentGeneration,
+        connection,
+        ensureCurrent: Effect.void,
+      })),
+    });
+
+    const firstRoot = yield* adapter.openRoot("/srv/project");
+    yield* adapter.openRoot("/srv/project");
+    yield* firstRoot.getMetadata({ relativePath: "README.md" });
+    currentGeneration = 2;
+    yield* firstRoot.getMetadata({ relativePath: "README.md" });
+
+    assert.deepStrictEqual(operations, ["probe", "validate", "validate", "stat", "probe", "stat"]);
+  }),
+);
+
+it.effect("caches incomplete or failed rooted helper probes as typed unsupported", () =>
+  Effect.gen(function* () {
+    for (const missing of ["validate", "stat", "list", "read"] as const) {
+      let calls = 0;
+      const capabilities = ["probe", "validate", "stat", "list", "read"].filter(
+        (capability) => capability !== missing,
+      ) as Array<CodexWorkspaceHelperCapability>;
+      const { adapter } = makeAdapter({
+        probeCapabilities: null,
+        handler: (_method, payload) => {
+          calls += 1;
+          const request = decodeRequest(payload);
+          if (request.operation !== "probe") return Effect.die("must not validate");
+          return Effect.succeed(
+            success({ operation: "probe", implementation: "partial-helper", capabilities }),
+          );
+        },
+      });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const error = yield* adapter.openRoot("/srv/project").pipe(Effect.flip);
+        assert.strictEqual(error._tag, "ProviderWorkspaceUnsupportedError");
+        assert.strictEqual(error.operation, "openRoot");
+      }
+      assert.strictEqual(calls, 1, `missing ${missing} probe result must be cached`);
+    }
+
+    let failedCalls = 0;
+    const failed = makeAdapter({
+      probeCapabilities: null,
+      handler: () => {
+        failedCalls += 1;
+        return Effect.succeed({ exitCode: 1, stdout: "", stderr: "" });
+      },
+    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const error = yield* failed.adapter.openRoot("/srv/project").pipe(Effect.flip);
+      assert.strictEqual(error._tag, "ProviderWorkspaceUnsupportedError");
+      assert.strictEqual(error.operation, "openRoot");
+    }
+    assert.strictEqual(failedCalls, 1, "failed probe result must be cached per generation");
+  }),
+);
+
 it.effect("invokes the packaged native helper without Python flags or an inline script", () =>
   Effect.gen(function* () {
     const commands: Array<ReadonlyArray<string>> = [];
@@ -370,7 +486,7 @@ it.effect("invokes the packaged native helper without Python flags or an inline 
       maxBytes: ProviderWorkspaceReadByteLimit.make(5),
     });
 
-    assert.deepStrictEqual(counts(), { borrows: 4, currentChecks: 8 });
+    assert.deepStrictEqual(counts(), { borrows: 4, currentChecks: 10 });
     assert.strictEqual(commands.length, 4);
     for (const command of commands) {
       assert.strictEqual(command.length, 2);
@@ -460,6 +576,7 @@ it.effect(
         requests.set(helper.type, helperRequests);
         const { adapter } = makeAdapter({
           helper,
+          probeCapabilities: null,
           handler: (_method, payload) => {
             const request = decodeRequest(payload);
             helperRequests.push(request);
@@ -542,6 +659,7 @@ it.effect("returns typed unsupported for legacy probes and unavailable command e
   Effect.gen(function* () {
     let legacyCalls = 0;
     const legacy = makeAdapter({
+      probeCapabilities: null,
       handler: (_method, payload) => {
         legacyCalls += 1;
         const request = decodeRequest(payload);
@@ -614,6 +732,7 @@ it.effect("re-probes browse capability after a disconnected endpoint generation"
       );
     });
     const { adapter } = makeAdapter({
+      probeCapabilities: null,
       handler: () => Effect.die("unused"),
       borrow: Effect.sync(() => {
         const generationId = currentGeneration;
@@ -656,6 +775,7 @@ it.effect("rejects browse results that exceed bounds or violate direct-entry inv
       ],
     ]) {
       const { adapter } = makeAdapter({
+        probeCapabilities: null,
         handler: (_method, payload) => {
           const request = decodeRequest(payload);
           return Effect.succeed(
@@ -776,9 +896,7 @@ it("confines the inline Python helper with descriptors and enforces read/list bo
   // host path instead of weakening the containment contract for a platform
   // alias outside the provider workspace.
   const canonicalTempRoot = NodeFS.realpathSync(NodeOS.tmpdir());
-  const temporary = NodeFS.mkdtempSync(
-    NodePath.join(canonicalTempRoot, "cocoa-workspace-helper-"),
-  );
+  const temporary = NodeFS.mkdtempSync(NodePath.join(canonicalTempRoot, "cocoa-workspace-helper-"));
   try {
     const workspace = NodePath.join(temporary, "workspace");
     const outside = NodePath.join(temporary, "outside");

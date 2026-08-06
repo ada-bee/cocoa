@@ -200,7 +200,7 @@ export function useThreadComposerState() {
 
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
     const result = await pickComposerImages({
-      existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
+      existingAttachments: composerDrafts[threadKey]?.attachments ?? [],
     });
     if (result.images.length > 0) {
       appendComposerDraftAttachments(threadKey, result.images);
@@ -217,7 +217,7 @@ export function useThreadComposerState() {
 
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
     const result = await pasteComposerClipboard({
-      existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
+      existingAttachments: composerDrafts[threadKey]?.attachments ?? [],
     });
     if (result.images.length > 0) {
       appendComposerDraftAttachments(threadKey, result.images);
@@ -238,12 +238,15 @@ export function useThreadComposerState() {
 
       const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
       try {
-        const images = await convertPastedImagesToAttachments({
+        const result = await convertPastedImagesToAttachments({
           uris,
-          existingCount: composerDrafts[threadKey]?.attachments.length ?? 0,
+          existingAttachments: composerDrafts[threadKey]?.attachments ?? [],
         });
-        if (images.length > 0) {
-          appendComposerDraftAttachments(threadKey, images);
+        if (result.images.length > 0) {
+          appendComposerDraftAttachments(threadKey, result.images);
+        }
+        if (result.error) {
+          setPendingConnectionError(result.error);
         }
       } catch (error) {
         console.error("[native paste] error converting images", {
