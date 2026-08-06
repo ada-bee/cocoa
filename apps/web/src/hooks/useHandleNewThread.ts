@@ -20,8 +20,9 @@ import {
   getProjectOrderKey,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import { readThreadShell, useProjects, useThread } from "../state/entities";
+import { readThreadShell, useProjects, useServerConfigs, useThread } from "../state/entities";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
+import { resolveNewThreadModelSelection } from "../newThreadModelSelection";
 import { primaryServerSettingsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
@@ -29,6 +30,7 @@ import { useClientSettings } from "./useSettings";
 
 export function useNewThreadHandler() {
   const projects = useProjects();
+  const serverConfigs = useServerConfigs();
   // New-thread defaults are a user preference, and the settings UI only ever
   // edits the primary environment's settings.json. Reading the target
   // environment's own settings here would silently reset remote projects to
@@ -88,7 +90,7 @@ export function useNewThreadHandler() {
       const composerModelSelection = composerActiveProvider
         ? (carrySourceComposer?.modelSelectionByProvider[composerActiveProvider] ?? null)
         : null;
-      const carryModelSelection =
+      const carriedModelSelection =
         composerModelSelection ?? carrySourceShell?.modelSelection ?? null;
       const carryRuntimeMode =
         carrySourceComposer?.runtimeMode ??
@@ -105,6 +107,13 @@ export function useNewThreadHandler() {
           candidate.id === projectRef.projectId &&
           candidate.environmentId === projectRef.environmentId,
       );
+      const targetModelSelection = project
+        ? resolveNewThreadModelSelection({
+            carriedSelection: carriedModelSelection,
+            targetProject: project,
+            targetEnvironmentProviders: serverConfigs.get(project.environmentId)?.providers ?? [],
+          })
+        : null;
       const logicalProjectKey = project
         ? deriveLogicalProjectKeyFromSettings(project, projectGroupingSettings)
         : scopedProjectKey(projectRef);
@@ -171,14 +180,14 @@ export function useNewThreadHandler() {
               ...(carryRuntimeMode ? { runtimeMode: carryRuntimeMode } : {}),
               ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
             });
-            if (carryModelSelection) {
-              // The carried selection is a complete snapshot of the viewed
-              // thread's model state: absent options mean "no options", not
-              // "keep the stale draft's options".
-              setModelSelection(reusableStoredDraftThread.draftId, carryModelSelection, {
-                replaceOptions: true,
-              });
-            }
+          }
+          if (targetModelSelection) {
+            // The target selection is a complete snapshot. It may be the
+            // carried selection only when the provider instance matches;
+            // otherwise it is the target project's/endpoint's own default.
+            setModelSelection(reusableStoredDraftThread.draftId, targetModelSelection, {
+              replaceOptions: true,
+            });
           }
           // The workspace context must also ride along here: when projectRef
           // targets a different physical member of the logical project,
@@ -228,6 +237,11 @@ export function useNewThreadHandler() {
             ...(hasStartFromOriginOption ? { startFromOrigin: options?.startFromOrigin } : {}),
           });
         }
+        if (targetModelSelection) {
+          setModelSelection(currentRouteTarget.draftId, targetModelSelection, {
+            replaceOptions: true,
+          });
+        }
         setLogicalProjectDraftThreadId(logicalProjectKey, projectRef, currentRouteTarget.draftId, {
           threadId: latestActiveDraftThread.threadId,
           createdAt: latestActiveDraftThread.createdAt,
@@ -262,13 +276,12 @@ export function useNewThreadHandler() {
           ...(carryInteractionMode ? { interactionMode: carryInteractionMode } : {}),
         });
         applyStickyState(draftId);
-        if (carryModelSelection) {
+        if (targetModelSelection) {
           // After sticky state so the viewed thread's exact selection
-          // (model + options like effort and context window) wins over the
-          // globally sticky one. replaceOptions: the carried selection is a
-          // complete snapshot — absent options mean "no options", not "keep
-          // whatever sticky state just wrote".
-          setModelSelection(draftId, carryModelSelection, { replaceOptions: true });
+          // or target endpoint default wins over any globally sticky model.
+          // Absent options mean "no options", not "keep whatever sticky
+          // state just wrote".
+          setModelSelection(draftId, targetModelSelection, { replaceOptions: true });
         }
 
         await router.navigate({
@@ -278,7 +291,14 @@ export function useNewThreadHandler() {
         });
       })();
     },
-    [getCurrentRouteTarget, primaryServerSettings, projectGroupingSettings, projects, router],
+    [
+      getCurrentRouteTarget,
+      primaryServerSettings,
+      projectGroupingSettings,
+      projects,
+      router,
+      serverConfigs,
+    ],
   );
 }
 

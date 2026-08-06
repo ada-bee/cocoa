@@ -26,10 +26,20 @@ export interface SidebarProjectSnapshot extends Project {
 }
 
 export interface SidebarProjectPickerEntry {
+  /** Stable provider-aware key for menu values and rendered rows. */
+  key: string;
+  /** Logical project name plus enough endpoint context to identify this member. */
+  displayName: string;
+  /** Endpoint/environment suffix shown separately where the UI supports it. */
+  contextLabel: string | null;
   group: SidebarProjectSnapshot;
   targetProject: SidebarProjectGroupMember;
   isPreferred: boolean;
 }
+
+export type ResolveProjectProviderDisplayName = (
+  project: Pick<SidebarProjectGroupMember, "environmentId" | "providerInstanceId">,
+) => string | null;
 
 interface SidebarProjectGroupCandidate {
   readonly logicalKey: string;
@@ -205,16 +215,17 @@ export function buildSidebarProjectSnapshots(input: {
 export function buildSidebarProjectPickerEntries(input: {
   groups: ReadonlyArray<SidebarProjectSnapshot>;
   preferredProjectRef: ScopedProjectRef | null;
+  resolveProviderDisplayName?: ResolveProjectProviderDisplayName;
 }) {
   const entries = input.groups.flatMap((group): SidebarProjectPickerEntry[] => {
-    const isPreferred = input.preferredProjectRef
+    const containsPreferredProject = input.preferredProjectRef
       ? group.memberProjectRefs.some(
           (projectRef) =>
             projectRef.environmentId === input.preferredProjectRef?.environmentId &&
             projectRef.projectId === input.preferredProjectRef.projectId,
         )
       : false;
-    const preferredProject = isPreferred
+    const preferredProject = containsPreferredProject
       ? (group.memberProjects.find(
           (project) =>
             project.environmentId === input.preferredProjectRef?.environmentId &&
@@ -224,22 +235,80 @@ export function buildSidebarProjectPickerEntries(input: {
           (project) => project.environmentId === input.preferredProjectRef?.environmentId,
         ))
       : null;
-    const targetProject =
+    const representativeProject =
       preferredProject ??
       group.memberProjects.find(
         (project) => project.environmentId === group.environmentId && project.id === group.id,
       ) ??
       group.memberProjects[0];
-    if (!targetProject) return [];
+    if (!representativeProject) return [];
 
-    return [{ group, targetProject, isPreferred }];
+    const orderedProjects = [
+      representativeProject,
+      ...group.memberProjects.filter(
+        (project) => project.physicalProjectKey !== representativeProject.physicalProjectKey,
+      ),
+    ];
+    const spansEnvironments =
+      new Set(group.memberProjects.map((project) => project.environmentId)).size > 1;
+    const rawProviderLabels = new Map(
+      group.memberProjects.map((project) => [
+        project.physicalProjectKey,
+        input.resolveProviderDisplayName?.(project)?.trim() || String(project.providerInstanceId),
+      ]),
+    );
+    const providerLabelCounts = new Map<string, number>();
+    for (const providerLabel of rawProviderLabels.values()) {
+      providerLabelCounts.set(providerLabel, (providerLabelCounts.get(providerLabel) ?? 0) + 1);
+    }
+    const baseContexts = new Map(
+      group.memberProjects.map((project) => {
+        const rawProviderLabel = rawProviderLabels.get(project.physicalProjectKey)!;
+        const providerLabel =
+          (providerLabelCounts.get(rawProviderLabel) ?? 0) > 1
+            ? `${rawProviderLabel} (${project.providerInstanceId})`
+            : rawProviderLabel;
+        const environmentLabel = project.environmentLabel?.trim() || String(project.environmentId);
+        return [
+          project.physicalProjectKey,
+          spansEnvironments ? `${providerLabel} · ${environmentLabel}` : providerLabel,
+        ] as const;
+      }),
+    );
+    const contextCounts = new Map<string, number>();
+    for (const context of baseContexts.values()) {
+      contextCounts.set(context, (contextCounts.get(context) ?? 0) + 1);
+    }
+
+    return orderedProjects.map((targetProject) => {
+      const baseContext = baseContexts.get(targetProject.physicalProjectKey)!;
+      const contextLabel =
+        (contextCounts.get(baseContext) ?? 0) > 1
+          ? `${baseContext} · ${targetProject.workspaceRoot}`
+          : baseContext;
+      return {
+        key: targetProject.physicalProjectKey,
+        displayName:
+          group.memberProjects.length > 1
+            ? `${group.displayName} — ${contextLabel}`
+            : group.displayName,
+        contextLabel: group.memberProjects.length > 1 ? contextLabel : null,
+        group,
+        targetProject,
+        isPreferred: targetProject.physicalProjectKey === preferredProject?.physicalProjectKey,
+      };
+    });
   });
   const preferredIndex = entries.findIndex((entry) => entry.isPreferred);
   if (preferredIndex <= 0) return entries;
 
+  const preferred = entries[preferredIndex]!;
   return [
-    entries[preferredIndex]!,
-    ...entries.slice(0, preferredIndex),
-    ...entries.slice(preferredIndex + 1),
+    preferred,
+    ...entries.filter(
+      (entry, index) =>
+        index !== preferredIndex && entry.group.projectKey === preferred.group.projectKey,
+    ),
+    ...entries.filter((entry) => entry.group.projectKey !== preferred.group.projectKey),
   ];
 }

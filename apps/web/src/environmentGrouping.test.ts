@@ -318,7 +318,7 @@ describe("environment grouping", () => {
     );
   });
 
-  it("builds one picker entry per logical project and targets the preferred environment", () => {
+  it("builds one picker entry per physical project and targets the preferred member first", () => {
     const primary = makeProject({ repositoryIdentity });
     const remote = makeProject({
       id: ProjectId.make("project-remote"),
@@ -345,14 +345,19 @@ describe("environment grouping", () => {
       },
     });
 
-    expect(entries).toHaveLength(2);
+    expect(entries).toHaveLength(3);
     expect(entries[0]?.group.projectKey).toBe(repositoryIdentity.canonicalKey);
     expect(entries[0]?.targetProject).toMatchObject({
       environmentId: remoteEnvironmentId,
       id: remote.id,
     });
     expect(entries[0]?.isPreferred).toBe(true);
-    expect(entries[1]?.group.displayName).toBe("separate");
+    expect(entries[1]?.targetProject).toMatchObject({
+      environmentId: primaryEnvironmentId,
+      id: primary.id,
+    });
+    expect(entries[1]?.group.projectKey).toBe(repositoryIdentity.canonicalKey);
+    expect(entries[2]?.group.displayName).toBe("separate");
   });
 
   it("keeps manual project order when building grouped sidebar entries", () => {

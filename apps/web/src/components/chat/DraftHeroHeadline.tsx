@@ -7,11 +7,12 @@ import { openCommandPalette } from "~/commandPaletteBus";
 import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { useClientSettings } from "~/hooks/useSettings";
 import { selectProjectGroupingSettings } from "~/logicalProject";
+import { getProviderInstanceEntry } from "~/providerInstances";
 import {
   buildSidebarProjectPickerEntries,
   buildSidebarProjectSnapshots,
 } from "~/sidebarProjectGrouping";
-import { useProjects, useThreadShells } from "~/state/entities";
+import { useProjects, useServerConfigs, useThreadShells } from "~/state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { sortLogicalProjectsForSidebar } from "../Sidebar.logic";
 import {
@@ -35,6 +36,7 @@ export function DraftHeroHeadline({
 }: DraftHeroHeadlineProps) {
   const projects = useProjects();
   const threads = useThreadShells();
+  const serverConfigs = useServerConfigs();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
@@ -76,11 +78,16 @@ export function DraftHeroHeadline({
       buildSidebarProjectPickerEntries({
         groups: projectGroups,
         preferredProjectRef: activeProjectRef,
+        resolveProviderDisplayName: (project) =>
+          getProviderInstanceEntry(
+            serverConfigs.get(project.environmentId)?.providers ?? [],
+            project.providerInstanceId,
+          )?.displayName ?? null,
       }),
-    [activeProjectRef, projectGroups],
+    [activeProjectRef, projectGroups, serverConfigs],
   );
   const projectEntryByKey = useMemo(
-    () => new Map(projectPickerEntries.map((entry) => [entry.group.projectKey, entry] as const)),
+    () => new Map(projectPickerEntries.map((entry) => [entry.key, entry] as const)),
     [projectPickerEntries],
   );
   const activeProjectGroup =
@@ -91,8 +98,19 @@ export function DraftHeroHeadline({
             (projectRef) => scopedProjectKey(projectRef) === scopedProjectKey(activeProjectRef),
           ),
         ) ?? null);
-  const activeProjectKey = activeProjectGroup?.projectKey ?? "";
-  const activeProjectDisplayName = activeProjectGroup?.displayName ?? activeProjectTitle;
+  const activeProjectEntry =
+    activeProjectRef === null
+      ? null
+      : (projectPickerEntries.find(
+          (entry) =>
+            entry.targetProject.environmentId === activeProjectRef.environmentId &&
+            entry.targetProject.id === activeProjectRef.projectId,
+        ) ??
+        projectPickerEntries.find((entry) => entry.isPreferred) ??
+        null);
+  const activeProjectKey = activeProjectEntry?.key ?? "";
+  const activeProjectDisplayName =
+    activeProjectEntry?.displayName ?? activeProjectGroup?.displayName ?? activeProjectTitle;
   const hasResolvedProject = activeProjectTitle !== null;
   const canChooseProject = projectPickerEntries.length > 0;
   const shouldShowProjectMenu = canChooseProject;
@@ -119,10 +137,10 @@ export function DraftHeroHeadline({
             });
           }}
         >
-          {projectPickerEntries.map(({ group }) => {
+          {projectPickerEntries.map((entry) => {
             return (
-              <MenuRadioItem key={group.projectKey} value={group.projectKey} closeOnClick>
-                <span className="min-w-0 truncate">{group.displayName}</span>
+              <MenuRadioItem key={entry.key} value={entry.key} closeOnClick>
+                <span className="min-w-0 truncate">{entry.displayName}</span>
               </MenuRadioItem>
             );
           })}
