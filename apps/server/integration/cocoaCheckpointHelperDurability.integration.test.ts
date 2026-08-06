@@ -12,24 +12,33 @@ import {
   EventId,
   MessageId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   TurnId,
   type CodexCheckpointHelperCaptureResult,
   type CodexCheckpointHelperConfig,
-  type CodexCheckpointHelperRestoreResult,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
 
+import { makeRestoreCheckpointOperationId } from "../src/checkpointing/CheckpointIds.ts";
+import { CheckpointRevertIntentRepositoryLive } from "../src/persistence/Layers/CheckpointRevertIntents.ts";
+import { CheckpointRevertSagaRepositoryLive } from "../src/persistence/Layers/CheckpointRevertSagas.ts";
 import { ProviderCheckpointOperationRepositoryLive } from "../src/persistence/Layers/ProviderCheckpointOperations.ts";
+import { ProjectionCheckpointRepositoryLive } from "../src/persistence/Layers/ProjectionCheckpoints.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
+import { CheckpointRevertIntentRepository } from "../src/persistence/Services/CheckpointRevertIntents.ts";
+import { CheckpointRevertSagaRepository } from "../src/persistence/Services/CheckpointRevertSagas.ts";
 import {
   ProviderCheckpointOperationRepository,
   type PrepareProviderCheckpointOperationInput,
@@ -40,9 +49,51 @@ import type { CodexEndpointConnectionBorrow } from "../src/provider/codexEndpoin
 import {
   type ProviderVcsCheckpointCapability,
   ProviderVcsCheckpointOutcomeUnknownError,
+  type ProviderVcsRepository,
 } from "../src/provider/ProviderVcsAdapter.ts";
 import { makeCodexCheckpointHelperAdapter } from "../src/provider/codexVcs/CodexCheckpointHelperAdapter.ts";
 import { CodexGitExecutablePath } from "../src/provider/codexVcs/CodexVcsAdapter.ts";
+import * as ProjectRepository from "../src/project/ProjectRepository.ts";
+import { makeCheckpointRevertReactor } from "../src/orchestration/Layers/CheckpointRevertReactor.ts";
+import {
+  CheckpointRevertReactor,
+  type CheckpointRevertProcessResult,
+} from "../src/orchestration/Services/CheckpointRevertReactor.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "../src/orchestration/Services/OrchestrationEngine.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionSnapshotQueryShape,
+} from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  PostTurnCheckpointReactor,
+  type PostTurnCheckpointReactorShape,
+} from "../src/orchestration/Services/PostTurnCheckpointReactor.ts";
+import {
+  ProviderCommandReactor,
+  type ProviderCommandReactorShape,
+} from "../src/orchestration/Services/ProviderCommandReactor.ts";
+import { makeProviderGenerationRecoveryReactor } from "../src/provider/Layers/ProviderGenerationRecoveryReactor.ts";
+import type {
+  ProviderInstance,
+  ProviderInstanceGenerationLifecycle,
+  ProviderInstanceGenerationState,
+} from "../src/provider/ProviderDriver.ts";
+import { ProviderGenerationRecoveryReactor } from "../src/provider/Services/ProviderGenerationRecoveryReactor.ts";
+import {
+  ProviderInstanceRegistry,
+  type ProviderInstanceRegistryShape,
+} from "../src/provider/Services/ProviderInstanceRegistry.ts";
+import {
+  ProviderService,
+  type ProviderServiceShape,
+} from "../src/provider/Services/ProviderService.ts";
+import {
+  ProviderSessionDirectory,
+  type ProviderSessionDirectoryShape,
+} from "../src/provider/Services/ProviderSessionDirectory.ts";
 
 const REPOSITORY_ROOT = NodePath.resolve(
   NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
@@ -64,7 +115,9 @@ const BASE_CHECKPOINT_ID = "10000000-0000-4000-8000-000000000001";
 const TARGET_CHECKPOINT_ID = "10000000-0000-4000-8000-000000000002";
 const BASE_CAPTURE_OPERATION_ID = "20000000-0000-4000-8000-000000000001";
 const TARGET_CAPTURE_OPERATION_ID = "20000000-0000-4000-8000-000000000002";
-const RESTORE_OPERATION_ID = "20000000-0000-4000-8000-000000000003";
+const REVERT_EVENT_ID = EventId.make("native-restore-event");
+const REVERT_COMMAND_ID = CommandId.make("native-restore-command");
+const RESTORE_OPERATION_ID = makeRestoreCheckpointOperationId({ revertEventId: REVERT_EVENT_ID });
 const PREPARED_AT = "2026-08-06T10:00:00.000Z";
 const UPDATED_AT = "2026-08-06T10:01:00.000Z";
 const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
@@ -115,6 +168,7 @@ const makeRepository = (parent: string, git: string): string => {
 
 interface ProviderBoundaryState {
   readonly generations: Array<number>;
+  restoreDispatchCount: number;
   dropFirstRestoreResponse: boolean;
 }
 
@@ -160,6 +214,7 @@ const makeConnection = (
       const decodedRequest = decodeJson(Buffer.from(encodedRequest, "base64").toString("utf8")) as {
         readonly operation?: string;
       };
+      if (decodedRequest.operation === "restore") state.restoreDispatchCount += 1;
       if (
         generationId === 1 &&
         decodedRequest.operation === "restore" &&
@@ -217,11 +272,130 @@ const openCapability = Effect.fn("acceptance.openNativeCheckpointCapability")(fu
 const makeJournalRuntime = (dbPath: string) => {
   const persistence = makeSqlitePersistenceLive(dbPath);
   return ManagedRuntime.make(
-    ProviderCheckpointOperationRepositoryLive.pipe(
-      Layer.provide(persistence),
-      Layer.provide(NodeServices.layer),
-    ),
+    Layer.mergeAll(
+      CheckpointRevertIntentRepositoryLive,
+      CheckpointRevertSagaRepositoryLive,
+      ProviderCheckpointOperationRepositoryLive,
+      ProjectionCheckpointRepositoryLive,
+    ).pipe(Layer.provide(persistence), Layer.provide(NodeServices.layer)),
   );
+};
+
+const makeRecoveryRuntime = (
+  dbPath: string,
+  checkpointCapability: ProviderVcsCheckpointCapability,
+  rootPath: string,
+  commonDirectoryPath: string,
+  recoveryCompleted: Deferred.Deferred<ReadonlyArray<CheckpointRevertProcessResult>>,
+) => {
+  const persistence = makeSqlitePersistenceLive(dbPath);
+  const repositories = Layer.mergeAll(
+    CheckpointRevertIntentRepositoryLive,
+    CheckpointRevertSagaRepositoryLive,
+    ProviderCheckpointOperationRepositoryLive,
+    ProjectionCheckpointRepositoryLive,
+  ).pipe(Layer.provide(persistence), Layer.provide(NodeServices.layer));
+  const registry = Layer.effect(
+    ProviderInstanceRegistry,
+    Effect.gen(function* () {
+      const generationChanges = yield* PubSub.unbounded<ProviderInstanceGenerationState>();
+      const registryChanges = yield* PubSub.unbounded<void>();
+      const lifecycle: ProviderInstanceGenerationLifecycle = {
+        getCurrent: Effect.succeed({
+          _tag: "Ready",
+          providerInstanceId: INSTANCE_ID,
+          generationId: 2,
+        }),
+        subscribeChanges: PubSub.subscribe(generationChanges),
+      };
+      const instance = {
+        instanceId: INSTANCE_ID,
+        driverKind: ProviderDriverKind.make("codex"),
+        continuationIdentity: {
+          driverKind: ProviderDriverKind.make("codex"),
+          continuationKey: "codex:native-checkpoint-provider",
+        },
+        displayName: "native checkpoint provider generation 2",
+        enabled: true,
+        generationLifecycle: lifecycle,
+      } as ProviderInstance;
+      return ProviderInstanceRegistry.of({
+        getInstance: (instanceId) =>
+          Effect.succeed(instanceId === INSTANCE_ID ? instance : undefined),
+        listInstances: Effect.succeed([instance]),
+        listUnavailable: Effect.succeed([]),
+        streamChanges: Stream.fromPubSub(registryChanges),
+        subscribeChanges: PubSub.subscribe(registryChanges),
+      } satisfies ProviderInstanceRegistryShape);
+    }),
+  );
+  const providerRepository: ProviderVcsRepository = {
+    identity: { kind: "git", rootPath, commonDirectoryPath },
+    capabilities: { status: true, refs: true, remotes: true, reviewDiff: true },
+    checkpoints: checkpointCapability,
+    getStatus: () => Effect.die("unused"),
+    listRefs: () => Effect.die("unused"),
+    listRemotes: () => Effect.die("unused"),
+    getReviewDiff: () => Effect.die("unused"),
+  };
+  const providerService = {} as ProviderServiceShape;
+  const directory = {
+    upsert: () => Effect.die("unused"),
+    getProvider: () => Effect.die("unused"),
+    getBinding: () => Effect.die("unused"),
+    listThreadIds: () => Effect.die("unused"),
+    listBindings: () => Effect.succeed([]),
+  } satisfies ProviderSessionDirectoryShape;
+  const providerCommands = {
+    start: () => Effect.die("unused"),
+    recover: () => Effect.void,
+    drain: Effect.void,
+  } satisfies ProviderCommandReactorShape;
+  const postTurnCheckpoints = {
+    processTurnCompleted: () => Effect.die("unused"),
+    recover: () => Effect.succeed([]),
+    start: () => Effect.die("unused"),
+    drain: Effect.void,
+  } satisfies PostTurnCheckpointReactorShape;
+  const orchestration = {
+    dispatch: (command) => {
+      assert.strictEqual(command.type, "thread.revert.complete");
+      return Effect.succeed({ sequence: 777 });
+    },
+    readEvents: () => Stream.empty,
+    streamDomainEvents: Stream.empty,
+    latestSequence: Effect.succeed(0),
+  } satisfies OrchestrationEngineShape;
+  const dependencies = Layer.mergeAll(
+    repositories,
+    registry,
+    Layer.succeed(ProviderSessionDirectory, directory),
+    Layer.succeed(ProviderService, providerService),
+    Layer.succeed(ProviderCommandReactor, providerCommands),
+    Layer.succeed(PostTurnCheckpointReactor, postTurnCheckpoints),
+    Layer.succeed(ProjectRepository.ProjectRepository, {
+      resolve: () => Effect.succeed(providerRepository),
+    }),
+    Layer.succeed(ProjectionSnapshotQuery, {} as ProjectionSnapshotQueryShape),
+    Layer.succeed(OrchestrationEngineService, orchestration),
+  );
+  const recovery = Layer.effect(
+    ProviderGenerationRecoveryReactor,
+    Effect.gen(function* () {
+      const checkpointReverts = yield* makeCheckpointRevertReactor;
+      const observedCheckpointReverts = CheckpointRevertReactor.of({
+        ...checkpointReverts,
+        recover: () =>
+          checkpointReverts
+            .recover()
+            .pipe(Effect.tap((outcomes) => Deferred.succeed(recoveryCompleted, outcomes))),
+      });
+      return yield* makeProviderGenerationRecoveryReactor.pipe(
+        Effect.provideService(CheckpointRevertReactor, observedCheckpointReverts),
+      );
+    }),
+  ).pipe(Layer.provideMerge(dependencies));
+  return ManagedRuntime.make(recovery);
 };
 
 const captureInput = (
@@ -310,6 +484,7 @@ it.live.skipIf(!HAS_HELPER)(
         } satisfies CodexCheckpointHelperConfig;
         const provider: ProviderBoundaryState = {
           generations: [],
+          restoreDispatchCount: 0,
           dropFirstRestoreResponse: true,
         };
 
@@ -446,8 +621,8 @@ it.live.skipIf(!HAS_HELPER)(
           preparedAt: PREPARED_AT,
           intentContext: {
             kind: "restore",
-            sourceRevertEventId: EventId.make("native-restore-event"),
-            sourceCommandId: CommandId.make("native-restore-command"),
+            sourceRevertEventId: REVERT_EVENT_ID,
+            sourceCommandId: REVERT_COMMAND_ID,
             requestedTurnCount: 0,
           },
         };
@@ -457,6 +632,81 @@ it.live.skipIf(!HAS_HELPER)(
             firstJournal.markInFlight({
               operationId: RESTORE_OPERATION_ID,
               providerGeneration: 1,
+              updatedAt: UPDATED_AT,
+            }),
+          ),
+        );
+        const firstIntents = yield* Effect.promise(() =>
+          firstRuntime.runPromise(Effect.service(CheckpointRevertIntentRepository)),
+        );
+        const firstSagas = yield* Effect.promise(() =>
+          firstRuntime.runPromise(Effect.service(CheckpointRevertSagaRepository)),
+        );
+        yield* Effect.promise(() =>
+          firstRuntime.runPromise(
+            firstIntents.projectInTransaction({
+              sourceEventId: REVERT_EVENT_ID,
+              sourceSequence: 10,
+              sourceCommandId: REVERT_COMMAND_ID,
+              threadId: THREAD_ID,
+              requestedTurnCount: 0,
+              requestedAt: PREPARED_AT,
+              createdAt: PREPARED_AT,
+            }),
+          ),
+        );
+        const createdSaga = yield* Effect.promise(() =>
+          firstRuntime.runPromise(
+            firstSagas.getOrCreate({
+              sourceRevertEventId: REVERT_EVENT_ID,
+              sourceCommandId: REVERT_COMMAND_ID,
+              providerInstanceId: INSTANCE_ID,
+              projectId: PROJECT_ID,
+              threadId: THREAD_ID,
+              providerDriverKind: ProviderDriverKind.make("codex"),
+              continuationIdentitySha256: "a".repeat(64),
+              requestedTurnCount: 0,
+              preimageTurnCount: 1,
+              preimage: { count: 1, sha256: "b".repeat(64) },
+              target: { count: 0, sha256: "c".repeat(64) },
+              retainedLogicalCheckpointId: BASE_CHECKPOINT_ID,
+              retainedExpectedCheckpointOid: baseResult.receipt.checkpointOid,
+              repositoryFingerprint: generationOne.binding.fingerprint,
+              repositoryObjectFormat: generationOne.binding.objectFormat,
+              restoreOperationId: RESTORE_OPERATION_ID,
+              staleTargets: [],
+              createdAt: PREPARED_AT,
+            }),
+          ),
+        );
+        yield* Effect.promise(() =>
+          firstRuntime.runPromise(
+            firstIntents.linkSaga({
+              sourceEventId: REVERT_EVENT_ID,
+              sagaId: createdSaga.saga.sagaId,
+            }),
+          ),
+        );
+        yield* Effect.promise(() =>
+          firstRuntime.runPromise(
+            firstSagas.markRollbackInFlight({
+              sagaId: createdSaga.saga.sagaId,
+              updatedAt: UPDATED_AT,
+            }),
+          ),
+        );
+        yield* Effect.promise(() =>
+          firstRuntime.runPromise(
+            firstSagas.markRollbackCompleted({
+              sagaId: createdSaga.saga.sagaId,
+              updatedAt: UPDATED_AT,
+            }),
+          ),
+        );
+        yield* Effect.promise(() =>
+          firstRuntime.runPromise(
+            firstSagas.markRestoring({
+              sagaId: createdSaga.saga.sagaId,
               updatedAt: UPDATED_AT,
             }),
           ),
@@ -486,7 +736,15 @@ it.live.skipIf(!HAS_HELPER)(
           git,
           helper,
         );
-        const secondRuntime = makeJournalRuntime(dbPath);
+        const recoveryCompleted =
+          yield* Deferred.make<ReadonlyArray<CheckpointRevertProcessResult>>();
+        const secondRuntime = makeRecoveryRuntime(
+          dbPath,
+          generationTwo,
+          root,
+          commonDirectoryPath,
+          recoveryCompleted,
+        );
         try {
           const secondJournal = yield* Effect.promise(() =>
             secondRuntime.runPromise(Effect.service(ProviderCheckpointOperationRepository)),
@@ -498,48 +756,50 @@ it.live.skipIf(!HAS_HELPER)(
           );
           assert.isTrue(Option.isSome(durableBeforeRecovery));
           assert.strictEqual(Option.getOrThrow(durableBeforeRecovery).state, "outcome_unknown");
-
-          const observed = yield* generationTwo.observe({
-            operationId: RESTORE_OPERATION_ID,
-            expectedRequestSha256: restorePrepared.requestSha256,
-          });
-          assert.strictEqual(observed.status, "found");
-          if (observed.status !== "found" || observed.receipt.operation !== "restore") {
-            return yield* Effect.die(
-              "Expected the replacement endpoint to observe restore receipt.",
-            );
-          }
-          const restoreResult: CodexCheckpointHelperRestoreResult = {
-            operation: "restore",
-            receipt: observed.receipt,
-            receiptObjectOid: observed.receiptObjectOid,
-          };
-          const durableBase = yield* Effect.promise(() =>
+          const outcomes = yield* Effect.promise(() =>
             secondRuntime.runPromise(
-              secondJournal.getLogicalCheckpoint({ logicalCheckpointId: BASE_CHECKPOINT_ID }),
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const recovery = yield* ProviderGenerationRecoveryReactor;
+                  yield* recovery.start();
+                  return yield* Deferred.await(recoveryCompleted);
+                }),
+              ),
             ),
           );
-          assert.isTrue(Option.isSome(durableBase));
-          yield* Effect.promise(() =>
-            secondRuntime.runPromise(
-              secondJournal.finalizeRestore({
-                completion: {
-                  operationId: RESTORE_OPERATION_ID,
-                  updatedAt: UPDATED_AT,
-                  receipt: observed.receipt,
-                  result: restoreResult,
-                },
-                targetCheckpoint: Option.getOrThrow(durableBase),
-              }),
-            ),
-          );
+          assert.deepStrictEqual(outcomes, [
+            {
+              sourceEventId: REVERT_EVENT_ID,
+              sagaId: createdSaga.saga.sagaId,
+              status: "completed",
+              sequence: 777,
+            },
+          ]);
           const recovered = yield* Effect.promise(() =>
             secondRuntime.runPromise(
               secondJournal.getByOperationId({ operationId: RESTORE_OPERATION_ID }),
             ),
           );
           assert.strictEqual(Option.getOrThrow(recovered).state, "completed");
+          const secondSagas = yield* Effect.promise(() =>
+            secondRuntime.runPromise(Effect.service(CheckpointRevertSagaRepository)),
+          );
+          const durableSaga = yield* Effect.promise(() =>
+            secondRuntime.runPromise(secondSagas.getBySagaId({ sagaId: createdSaga.saga.sagaId })),
+          );
+          assert.strictEqual(Option.getOrThrow(durableSaga).state, "completed");
+          const secondIntents = yield* Effect.promise(() =>
+            secondRuntime.runPromise(Effect.service(CheckpointRevertIntentRepository)),
+          );
+          const durableIntent = yield* Effect.promise(() =>
+            secondRuntime.runPromise(
+              secondIntents.getBySourceEventId({ sourceEventId: REVERT_EVENT_ID }),
+            ),
+          );
+          assert.strictEqual(Option.getOrThrow(durableIntent).state, "terminal");
+          assert.strictEqual(Option.getOrThrow(durableIntent).terminalOutcome, "completed");
           assert.deepStrictEqual(provider.generations, [1, 2]);
+          assert.strictEqual(provider.restoreDispatchCount, 1);
         } finally {
           yield* Effect.promise(() => secondRuntime.dispose());
         }

@@ -152,6 +152,11 @@ const mapCodexError = (
 const utf8Length = (value: string): number => new TextEncoder().encode(value).byteLength;
 const isBoundedField = (value: string, maxBytes: number): boolean =>
   value !== "" && !value.includes("\0") && utf8Length(value) <= maxBytes;
+const hasAsciiControl = (value: string): boolean =>
+  [...value].some((character) => {
+    const codePoint = character.codePointAt(0)!;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
 const isNormalizedRepositoryPath = (value: string): boolean =>
   isBoundedField(value, MAX_STATUS_PATH_BYTES) &&
   !value.startsWith("/") &&
@@ -230,6 +235,7 @@ const parseStatus = (
   stdout: string,
   atOutputCap: boolean,
   maxChangedPaths: number,
+  remote: { readonly hasPrimaryRemote: boolean; readonly defaultRef: string | null },
 ): Effect.Effect<
   ReturnType<ProviderVcsRepository["getStatus"]> extends Effect.Effect<infer A, any> ? A : never,
   ProviderVcsProtocolError
@@ -382,15 +388,81 @@ const parseStatus = (
           : ({ _tag: "Branch", name: branch, commit: oid } as const);
     return {
       head,
-      defaultRef: null,
+      defaultRef: remote.defaultRef,
       upstreamRef,
       aheadCount,
       behindCount,
-      hasPrimaryRemote: upstreamRef !== null,
+      hasPrimaryRemote: remote.hasPrimaryRemote,
       hasWorkingTreeChanges: changedPaths.length > 0 || truncated,
       changedPaths,
       truncated,
     };
+  });
+
+const parseRemoteNames = (
+  providerInstanceId: ProviderInstanceId,
+  stdout: string,
+  atOutputCap: boolean,
+): Effect.Effect<ReadonlyArray<string>, ProviderVcsProtocolError> =>
+  Effect.gen(function* () {
+    if (atOutputCap)
+      return yield* protocol(
+        providerInstanceId,
+        "getStatus",
+        "Git remote names exceeded their output bound.",
+      );
+    if (stdout !== "" && !stdout.endsWith("\n"))
+      return yield* protocol(
+        providerInstanceId,
+        "getStatus",
+        "Git remote names were not line terminated.",
+      );
+    const names = stdout === "" ? [] : stdout.slice(0, -1).split("\n");
+    if (names.some((name) => !isBoundedField(name, MAX_REMOTE_NAME_BYTES) || hasAsciiControl(name)))
+      return yield* protocol(
+        providerInstanceId,
+        "getStatus",
+        "Git returned an invalid remote name.",
+      );
+    return [...new Set(names)].sort();
+  });
+
+const parseDefaultRef = (
+  providerInstanceId: ProviderInstanceId,
+  primaryRemote: string,
+  stdout: string,
+  atOutputCap: boolean,
+): Effect.Effect<string | null, ProviderVcsProtocolError> =>
+  Effect.gen(function* () {
+    if (atOutputCap)
+      return yield* protocol(
+        providerInstanceId,
+        "getStatus",
+        "Git default ref exceeded its output bound.",
+      );
+    if (stdout === "") return null;
+    if (!stdout.endsWith("\n"))
+      return yield* protocol(
+        providerInstanceId,
+        "getStatus",
+        "Git default ref was not line terminated.",
+      );
+    const lines = stdout.slice(0, -1).split("\n");
+    const prefix = `refs/remotes/${primaryRemote}/`;
+    if (lines.length !== 1 || !lines[0]!.startsWith(prefix))
+      return yield* protocol(
+        providerInstanceId,
+        "getStatus",
+        "Git returned an invalid default ref.",
+      );
+    const defaultRef = lines[0]!.slice(prefix.length);
+    if (!isBoundedField(defaultRef, MAX_REF_NAME_BYTES))
+      return yield* protocol(
+        providerInstanceId,
+        "getStatus",
+        "Git returned an invalid default ref.",
+      );
+    return defaultRef;
   });
 
 const parseRefs = (
@@ -627,18 +699,51 @@ export const makeCodexVcsAdapter = (options: MakeCodexVcsAdapterOptions): Provid
       },
       ...(checkpoints === undefined ? {} : { checkpoints }),
       getStatus: Effect.fn("CodexVcsAdapter.getStatus")(function* (input) {
-        const result = yield* execute(
+        const statusResult = yield* execute(
           borrowed,
           "getStatus",
           rootPath,
           ["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"],
           CODEX_VCS_STATUS_OUTPUT_BYTES_CAP,
         );
+        const remoteResult = yield* execute(
+          borrowed,
+          "getStatus",
+          rootPath,
+          ["remote"],
+          CODEX_VCS_REMOTES_OUTPUT_BYTES_CAP,
+        );
+        const remoteNames = yield* parseRemoteNames(
+          options.providerInstanceId,
+          remoteResult.stdout,
+          remoteResult.atOutputCap,
+        );
+        const primaryRemote = remoteNames.includes("origin") ? "origin" : remoteNames[0];
+        const defaultRef =
+          primaryRemote === undefined
+            ? null
+            : yield* execute(
+                borrowed,
+                "getStatus",
+                rootPath,
+                ["for-each-ref", "--format=%(symref)", "--", `refs/remotes/${primaryRemote}/HEAD`],
+                CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+              ).pipe(
+                Effect.flatMap((result) =>
+                  parseDefaultRef(
+                    options.providerInstanceId,
+                    primaryRemote,
+                    result.stdout,
+                    result.atOutputCap,
+                  ),
+                ),
+              );
         return yield* parseStatus(
           options.providerInstanceId,
-          result.stdout,
-          result.atOutputCap,
+          statusResult.stdout,
+          statusResult.atOutputCap,
           input.maxChangedPaths,
+          { hasPrimaryRemote: primaryRemote !== undefined, defaultRef },
         );
       }),
       listRefs: Effect.fn("CodexVcsAdapter.listRefs")(function* (input) {

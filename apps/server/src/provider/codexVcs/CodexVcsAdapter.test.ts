@@ -158,6 +158,14 @@ it.effect("pins one generation and sends exact read-only command requests", () =
     const { adapter, requests, counts } = makeAdapter((payload) => {
       const argv = payload.command as ReadonlyArray<string>;
       if (argv.includes("rev-parse")) return Effect.succeed(repositoryIdentity());
+      if (argv.at(-1) === "remote")
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "origin\n" });
+      if (argv.includes("for-each-ref"))
+        return Effect.succeed({
+          exitCode: 0,
+          stderr: "",
+          stdout: "refs/remotes/origin/main\n",
+        });
       return Effect.succeed({
         exitCode: 0,
         stderr: "secret stderr is ignored",
@@ -170,8 +178,11 @@ it.effect("pins one generation and sends exact read-only command requests", () =
       maxChangedPaths: ProviderVcsStatusPathLimit.make(10),
     });
     assert.strictEqual(status.changedPaths[0]?.path, "odd --path");
-    assert.deepStrictEqual(counts(), { borrows: 1, barriers: 4 });
-    assert.strictEqual(requests.length, 2);
+    assert.isTrue(status.hasPrimaryRemote);
+    assert.strictEqual(status.defaultRef, "main");
+    assert.strictEqual(status.upstreamRef, null);
+    assert.deepStrictEqual(counts(), { borrows: 1, barriers: 8 });
+    assert.strictEqual(requests.length, 4);
     assert.deepStrictEqual(requests[0], {
       command: [
         GIT,
@@ -210,6 +221,13 @@ it.effect("pins one generation and sends exact read-only command requests", () =
       "--branch",
       "-z",
       "--untracked-files=all",
+    ]);
+    assert.deepStrictEqual((requests[2]!.command as ReadonlyArray<string>).slice(-1), ["remote"]);
+    assert.deepStrictEqual((requests[3]!.command as ReadonlyArray<string>).slice(-4), [
+      "for-each-ref",
+      "--format=%(symref)",
+      "--",
+      "refs/remotes/origin/HEAD",
     ]);
   }),
 );
@@ -428,6 +446,7 @@ it.effect("bounds status and refs, and rejects malformed structured output", () 
           stdout:
             "# branch.oid 0123456789012345678901234567890123456789\0# branch.head main\0? one\0? two\0",
         });
+      if (argv.at(-1) === "remote") return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
       return Effect.succeed({
         exitCode: 0,
         stderr: "",
@@ -447,6 +466,38 @@ it.effect("bounds status and refs, and rejects malformed structured output", () 
       }),
     );
     assert.strictEqual(error._tag, "ProviderVcsProtocolError");
+  }),
+);
+
+it.effect("derives the primary remote and default ref without relying on branch upstream", () =>
+  Effect.gen(function* () {
+    const requests: Array<ReadonlyArray<string>> = [];
+    const { adapter } = makeAdapter((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      requests.push(argv);
+      if (argv.includes("rev-parse")) return Effect.succeed(repositoryIdentity());
+      if (argv.includes("status"))
+        return Effect.succeed({
+          exitCode: 0,
+          stderr: "",
+          stdout: `# branch.oid ${"0".repeat(40)}\0# branch.head topic\0`,
+        });
+      if (argv.at(-1) === "remote")
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "zebra\nalpha\n" });
+      return Effect.succeed({
+        exitCode: 0,
+        stderr: "",
+        stdout: "refs/remotes/alpha/trunk\n",
+      });
+    });
+    const repository = yield* open(adapter);
+    const status = yield* repository.getStatus({
+      maxChangedPaths: ProviderVcsStatusPathLimit.make(1),
+    });
+    assert.isTrue(status.hasPrimaryRemote);
+    assert.strictEqual(status.defaultRef, "trunk");
+    assert.strictEqual(status.upstreamRef, null);
+    assert.strictEqual(requests.at(-1)?.at(-1), "refs/remotes/alpha/HEAD");
   }),
 );
 
