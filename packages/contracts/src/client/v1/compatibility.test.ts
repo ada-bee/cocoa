@@ -14,6 +14,9 @@ import threadEventFixture from "./fixtures/thread-event.v1.json" with { type: "j
 import versionMismatchFixture from "./fixtures/version-mismatch.v1.json" with { type: "json" };
 
 const decodeInfo = Schema.decodeUnknownEffect(CocoaClientV1.CocoaClientV1InfoResponse);
+const decodeExecuteCommand = Schema.decodeUnknownSync(
+  CocoaClientV1.CocoaClientV1ExecuteCommandInput,
+);
 const decodeThreadEvent = Schema.decodeUnknownSync(CocoaClientV1.CocoaClientV1ThreadEvent);
 const decodeMismatch = Schema.decodeUnknownSync(CocoaClientV1.CocoaClientProtocolVersionMismatch);
 
@@ -80,10 +83,23 @@ describe("Cocoa client protocol v1 compatibility", () => {
       "workspace.filesystem",
       "workspace.vcs",
       "workspace.terminal",
+      "workspace.execution",
     ]);
     expect(CocoaClientV1.COCOA_CLIENT_V1_SUPPORTED_METHODS).not.toContain("filesystem.browse");
     expect(CocoaClientV1.COCOA_CLIENT_V1_SUPPORTED_METHODS).not.toContain("vcs.pull");
     expect(CocoaClientV1.COCOA_CLIENT_V1_SUPPORTED_METHODS).not.toContain("terminal.open");
+  });
+
+  it("bounds project execution without accepting a client cwd", () => {
+    const decoded = decodeExecuteCommand({
+      projectId: "project-1",
+      command: ["git", "status", "--short"],
+      cwd: "/gateway/not-authoritative",
+    });
+    expect(decoded).toEqual({
+      projectId: "project-1",
+      command: ["git", "status", "--short"],
+    });
   });
 
   it("rejects internal commands even when the legacy root contract accepts them", () => {

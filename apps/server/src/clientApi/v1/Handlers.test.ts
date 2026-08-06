@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthTerminalOperateScope,
   AuthSessionId,
   CommandId,
   EnvironmentId,
@@ -12,6 +13,8 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThreadDetailSnapshot,
   ProjectId,
+  ProviderExecutionOutputByteLimit,
+  ProviderExecutionTimeoutMs,
   ProviderInstanceId,
   ThreadId,
   type OrchestrationCommand,
@@ -48,6 +51,11 @@ import {
 import * as OrchestrationEngine from "../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderRegistry from "../../provider/Services/ProviderRegistry.ts";
+import {
+  ProjectExecution,
+  ProjectExecutionCapabilityUnavailableError,
+  type ProjectExecutionShape,
+} from "../../project/ProjectExecution.ts";
 import * as ServerRuntimeStartup from "../../serverRuntimeStartup.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
 import { DEFAULT_RUNTIME_BUFFER_LIMITS } from "../../RuntimeBufferLimits.ts";
@@ -149,6 +157,12 @@ const operateSession: EnvironmentAuth.AuthenticatedSession = {
   scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
 };
 
+const executionSession: EnvironmentAuth.AuthenticatedSession = {
+  ...readSession,
+  sessionId: AuthSessionId.make("session-execution"),
+  scopes: [AuthOrchestrationReadScope, AuthTerminalOperateScope],
+};
+
 interface HarnessOptions {
   readonly snapshot?: typeof shellSnapshot;
   readonly thread?: Option.Option<typeof threadSnapshot>;
@@ -160,6 +174,7 @@ interface HarnessOptions {
   readonly dispatchBusy?: boolean;
   readonly dispatchBlockedByRevert?: boolean;
   readonly revertBlocked?: boolean;
+  readonly execute?: ProjectExecutionShape["execute"];
 }
 
 const makeHarness = (options: HarnessOptions = {}) =>
@@ -300,6 +315,18 @@ const makeHarness = (options: HarnessOptions = {}) =>
       subscribe: () => Effect.succeed(() => undefined),
       subscribeMetadata: () => Effect.succeed(() => undefined),
     });
+    const projectExecution = ProjectExecution.of({
+      execute:
+        options.execute ??
+        ((input) =>
+          Effect.succeed({
+            exitCode: 0,
+            stdout: input.command.join(" "),
+            stderr: "",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          })),
+    });
     const checkpointRevertGate = CheckpointRevertGate.of({
       assertThreadAvailable: (candidateThreadId) =>
         options.revertBlocked === true
@@ -321,6 +348,7 @@ const makeHarness = (options: HarnessOptions = {}) =>
       Layer.succeed(ServerEnvironment.ServerEnvironment, serverEnvironment),
       Layer.succeed(ServerRuntimeStartup.ServerRuntimeStartup, startup),
       Layer.succeed(TerminalManager.TerminalManager, terminals),
+      Layer.succeed(ProjectExecution, projectExecution),
       Layer.succeed(CheckpointRevertGate, checkpointRevertGate),
       NodeServices.layer,
       ServerConfig.layerTest(process.cwd(), { prefix: "client-v1" }).pipe(
@@ -339,13 +367,101 @@ describe("Cocoa client v1 handlers", () => {
       [COCOA_CLIENT_V1_METHODS.info]: AuthOrchestrationReadScope,
       [COCOA_CLIENT_V1_METHODS.probe]: AuthOrchestrationReadScope,
       [COCOA_CLIENT_V1_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
+      [COCOA_CLIENT_V1_METHODS.executeCommand]: AuthTerminalOperateScope,
     });
     expect(
       Object.entries(COCOA_CLIENT_V1_REQUIRED_SCOPES)
-        .filter(([method]) => method !== COCOA_CLIENT_V1_METHODS.dispatchCommand)
+        .filter(
+          ([method]) =>
+            method !== COCOA_CLIENT_V1_METHODS.dispatchCommand &&
+            method !== COCOA_CLIENT_V1_METHODS.executeCommand,
+        )
         .every(([, scope]) => scope === AuthOrchestrationReadScope),
     ).toBe(true);
   });
+
+  it.effect("authorizes and forwards bounded project execution without a cwd", () =>
+    Effect.gen(function* () {
+      const seen: Array<unknown> = [];
+      const harness = yield* makeHarness({
+        execute: (input) => {
+          return Effect.sync(() => {
+            seen.push(input);
+            return {
+              exitCode: 0,
+              stdout: "clean",
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            };
+          });
+        },
+      });
+      const readHandlers = yield* makeCocoaClientV1Handlers(readSession).pipe(
+        Effect.provide(harness.layer),
+      );
+      const denied = yield* readHandlers[COCOA_CLIENT_V1_METHODS.executeCommand]({
+        projectId,
+        command: ["git", "status", "--short"],
+      }).pipe(Effect.flip);
+      expect(denied).toMatchObject({
+        code: "insufficient_scope",
+        requiredScope: AuthTerminalOperateScope,
+      });
+
+      const handlers = yield* makeCocoaClientV1Handlers(executionSession).pipe(
+        Effect.provide(harness.layer),
+      );
+      expect(
+        yield* handlers[COCOA_CLIENT_V1_METHODS.executeCommand]({
+          projectId,
+          command: ["git", "status", "--short"],
+          timeoutMs: ProviderExecutionTimeoutMs.make(2_000),
+          outputByteLimit: ProviderExecutionOutputByteLimit.make(1_024),
+        }),
+      ).toEqual({
+        exitCode: 0,
+        stdout: "clean",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+      });
+      expect(seen).toEqual([
+        {
+          projectId,
+          command: ["git", "status", "--short"],
+          timeoutMs: 2_000,
+          outputByteLimit: 1_024,
+        },
+      ]);
+    }),
+  );
+
+  it.effect("sanitizes unsupported project execution", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({
+        execute: () =>
+          Effect.fail(
+            new ProjectExecutionCapabilityUnavailableError({
+              projectId,
+              providerInstanceId: instanceId,
+            }),
+          ),
+      });
+      const handlers = yield* makeCocoaClientV1Handlers(executionSession).pipe(
+        Effect.provide(harness.layer),
+      );
+      expect(
+        yield* handlers[COCOA_CLIENT_V1_METHODS.executeCommand]({
+          projectId,
+          command: ["true"],
+        }).pipe(Effect.flip),
+      ).toEqual({
+        code: "unsupported_operation",
+        message: "The selected project provider does not support command execution.",
+      });
+    }),
+  );
 
   it.effect("rejects a protocol range mismatch with the explicit negotiation error", () =>
     Effect.gen(function* () {
@@ -365,7 +481,7 @@ describe("Cocoa client v1 handlers", () => {
     }),
   );
 
-  it.effect("reports the negotiated v1 protocol and probe without optional workspace domains", () =>
+  it.effect("reports the negotiated v1 protocol and execution capability", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       const handlers = yield* makeCocoaClientV1Handlers(readSession).pipe(
@@ -385,6 +501,7 @@ describe("Cocoa client v1 handlers", () => {
         "orchestration.resume",
         "orchestration.search",
         "orchestration.diff",
+        "workspace.execution",
       ]);
       expect(yield* handlers[COCOA_CLIENT_V1_METHODS.probe]({})).toEqual({
         protocolVersion: 1,

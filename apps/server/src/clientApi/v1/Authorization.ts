@@ -1,6 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthTerminalOperateScope,
   type AuthEnvironmentScope,
 } from "@t3tools/contracts";
 import { COCOA_CLIENT_V1_METHODS, CocoaClientV1RpcGroup } from "@t3tools/contracts/client/v1";
@@ -12,6 +13,7 @@ export const COCOA_CLIENT_V1_REQUIRED_SCOPES = {
   [COCOA_CLIENT_V1_METHODS.info]: AuthOrchestrationReadScope,
   [COCOA_CLIENT_V1_METHODS.probe]: AuthOrchestrationReadScope,
   [COCOA_CLIENT_V1_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,
+  [COCOA_CLIENT_V1_METHODS.executeCommand]: AuthTerminalOperateScope,
   [COCOA_CLIENT_V1_METHODS.getShellSnapshot]: AuthOrchestrationReadScope,
   [COCOA_CLIENT_V1_METHODS.getThreadSnapshot]: AuthOrchestrationReadScope,
   [COCOA_CLIENT_V1_METHODS.subscribeShell]: AuthOrchestrationReadScope,

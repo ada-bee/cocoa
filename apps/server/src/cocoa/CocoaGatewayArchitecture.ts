@@ -181,6 +181,7 @@ export const COCOA_GATEWAY_RUNTIME_IMPORT_MANIFEST: ReadonlyArray<{
   },
   { path: "persistence/ProviderSessionRuntime.ts", category: "gateway-persistence" },
   { path: "preview/Manager.ts", category: "gateway-runtime" },
+  { path: "project/ProjectExecution.ts", category: "provider-endpoint" },
   { path: "project/ProjectFaviconResolver.ts", category: "provider-workspace" },
   { path: "project/ProjectRepository.ts", category: "provider-vcs" },
   { path: "project/ProjectSetupScriptRunner.ts", category: "terminal" },

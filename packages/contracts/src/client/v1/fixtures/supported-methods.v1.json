@@ -2,6 +2,7 @@
   "client.info",
   "client.probe",
   "orchestration.dispatchCommand",
+  "workspace.executeCommand",
   "orchestration.getShellSnapshot",
   "orchestration.getThreadSnapshot",
   "orchestration.subscribeShell",

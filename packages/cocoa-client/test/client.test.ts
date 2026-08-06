@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { ProjectId } from "@t3tools/contracts";
 
 import { connectWithTransport } from "../src/client.ts";
 import {
@@ -65,6 +66,43 @@ describe("Cocoa client facade", () => {
     expect(busyError).toBeInstanceOf(CocoaClientRequestError);
     expect((busyError as CocoaClientRequestError).remoteCode).toBe("busy");
     expect((busyError as CocoaClientRequestError).retryable).toBe(true);
+  });
+
+  it("exposes provider-scoped execution through the typed facade", async () => {
+    const calls: Array<{ readonly method: string; readonly input: unknown }> = [];
+    const transport = {
+      state: { status: "connected", attempt: 1 },
+      async request(method: string, input: unknown) {
+        calls.push({ method, input });
+        if (method === "client.info") return testInfo;
+        if (method === "workspace.executeCommand") {
+          return {
+            exitCode: 0,
+            stdout: "clean",
+            stderr: "",
+            stdoutTruncated: false,
+            stderrTruncated: false,
+          };
+        }
+        throw new Error(`Unexpected ${method}`);
+      },
+      subscribeShell: () => items([]),
+      subscribeThread: () => items([]),
+      reconnect: async () => {},
+      close: async () => {},
+    } as unknown as CocoaClientTransport;
+    const client = await connectWithTransport(transport);
+
+    await expect(
+      client.executeCommand({
+        projectId: ProjectId.make("project-1"),
+        command: ["git", "status"],
+      }),
+    ).resolves.toMatchObject({ exitCode: 0, stdout: "clean", stdoutTruncated: false });
+    expect(calls.at(-1)).toEqual({
+      method: "workspace.executeCommand",
+      input: { projectId: "project-1", command: ["git", "status"] },
+    });
   });
 
   it("provides capability checks from negotiated info", async () => {

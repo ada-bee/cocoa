@@ -110,6 +110,7 @@ import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
+import * as ProjectExecution from "./project/ProjectExecution.ts";
 import * as ProjectWorkspace from "./project/ProjectWorkspace.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
@@ -371,6 +372,7 @@ const buildAppUnderTest = (options?: {
     orchestrationEngine?: Partial<OrchestrationEngine.OrchestrationEngineService["Service"]>;
     checkpointRevertGate?: Partial<CheckpointRevertGate.CheckpointRevertGate["Service"]>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]>;
+    projectExecution?: Partial<ProjectExecution.ProjectExecution["Service"]>;
     projectWorkspace?: Partial<ProjectWorkspace.ProjectWorkspace["Service"]>;
     providerFilesystemBrowse?: Partial<
       ProviderFilesystemBrowse.ProviderFilesystemBrowse["Service"]
@@ -543,6 +545,7 @@ const buildAppUnderTest = (options?: {
     const workspaceAndProjectServicesLayer = Layer.mergeAll(
       WorkspacePaths.layer,
       workspaceEntriesLayer,
+      Layer.mock(ProjectExecution.ProjectExecution)(options?.layers?.projectExecution ?? {}),
       Layer.mock(ProjectWorkspace.ProjectWorkspace)(options?.layers?.projectWorkspace ?? {}),
       Layer.mock(ProviderFilesystemBrowse.ProviderFilesystemBrowse)(
         options?.layers?.providerFilesystemBrowse ?? {},
@@ -2210,6 +2213,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         "orchestration.resume",
         "orchestration.search",
         "orchestration.diff",
+        "workspace.execution",
       ]);
 
       const ownerCookie = yield* getAuthenticatedSessionCookieHeader();

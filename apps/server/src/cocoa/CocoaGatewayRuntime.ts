@@ -28,6 +28,7 @@ import { cocoaLayerConfig as SqlitePersistenceLayerLive } from "../persistence/L
 import { TurnDispatchJournalRepositoryLive } from "../persistence/Layers/TurnDispatchJournal.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as PreviewManager from "../preview/Manager.ts";
+import * as ProjectExecution from "../project/ProjectExecution.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as ProjectRepository from "../project/ProjectRepository.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
@@ -158,6 +159,11 @@ const CocoaProjectWorkspaceLayerLive = ProjectWorkspace.layer.pipe(
   Layer.provide(OrchestrationLayerLive),
 );
 
+const CocoaProjectExecutionLayerLive = ProjectExecution.layer.pipe(
+  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
+  Layer.provide(OrchestrationLayerLive),
+);
+
 const CocoaProviderFilesystemBrowseLayerLive = ProviderFilesystemBrowse.layer.pipe(
   Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
 );
@@ -207,6 +213,7 @@ const CocoaRuntimeBaseDependenciesLive = CocoaReactorLayerLive.pipe(
   Layer.provideMerge(CocoaProviderInstanceRegistryHydrationLive),
   Layer.provideMerge(ProviderEventLoggers.layer),
   Layer.provideMerge(CocoaWorkspaceAccessLayerLive),
+  Layer.provideMerge(CocoaProjectExecutionLayerLive),
   Layer.provideMerge(CocoaProjectRepositoryLayerLive),
   Layer.provideMerge(CocoaRepositoryReadLayerLive),
   Layer.provideMerge(CocoaRepositoryStatusLayerLive),

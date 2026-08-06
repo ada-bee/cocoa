@@ -36,6 +36,7 @@ export async function connectWithTransport(
     request: (method, input) => transport.request(method, input),
     probe: () => transport.request("client.probe", {}),
     dispatchCommand: (command) => transport.request("orchestration.dispatchCommand", command),
+    executeCommand: (input) => transport.request("workspace.executeCommand", input),
     getShellSnapshot: (input = {}) => transport.request("orchestration.getShellSnapshot", input),
     getThreadSnapshot: (input) => transport.request("orchestration.getThreadSnapshot", input),
     searchThreads: (input) => transport.request("orchestration.searchThreads", input),

@@ -4,6 +4,8 @@ import type {
   CocoaClientV1CapabilityId,
   CocoaClientV1Command,
   CocoaClientV1DispatchResult,
+  CocoaClientV1ExecuteCommandInput,
+  CocoaClientV1ExecuteCommandResult,
   CocoaClientV1GetFullThreadDiffInput,
   CocoaClientV1GetFullThreadDiffResult,
   CocoaClientV1GetShellSnapshotInput,
@@ -78,6 +80,7 @@ export interface CocoaClientRecovery<Snapshot, Item> extends DisposableAsyncIter
 
 export const COCOA_CLIENT_UNARY_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
+  executeCommand: "workspace.executeCommand",
   getShellSnapshot: "orchestration.getShellSnapshot",
   getThreadSnapshot: "orchestration.getThreadSnapshot",
   searchThreads: "orchestration.searchThreads",
@@ -96,6 +99,10 @@ export interface CocoaClientUnaryMethodMap {
   "orchestration.dispatchCommand": {
     readonly input: CocoaClientV1Command;
     readonly output: CocoaClientV1DispatchResult;
+  };
+  "workspace.executeCommand": {
+    readonly input: CocoaClientV1ExecuteCommandInput;
+    readonly output: CocoaClientV1ExecuteCommandResult;
   };
   "orchestration.getShellSnapshot": {
     readonly input: CocoaClientV1GetShellSnapshotInput;
@@ -131,6 +138,9 @@ export interface CocoaClient {
   ): Promise<CocoaClientUnaryMethodMap[Method]["output"]>;
   probe(): Promise<CocoaClientV1ProbeResult>;
   dispatchCommand(command: CocoaClientV1Command): Promise<CocoaClientV1DispatchResult>;
+  executeCommand(
+    input: CocoaClientV1ExecuteCommandInput,
+  ): Promise<CocoaClientV1ExecuteCommandResult>;
   getShellSnapshot(input?: CocoaClientV1GetShellSnapshotInput): Promise<CocoaClientV1ShellSnapshot>;
   getThreadSnapshot(
     input: CocoaClientV1GetThreadSnapshotInput,

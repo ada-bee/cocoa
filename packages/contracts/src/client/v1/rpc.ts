@@ -11,6 +11,10 @@ import {
   CocoaClientV1ProbeResult,
 } from "./capabilities.ts";
 import {
+  CocoaClientV1ExecuteCommandInput,
+  CocoaClientV1ExecuteCommandResult,
+} from "./execution.ts";
+import {
   CocoaClientV1Command,
   CocoaClientV1DispatchResult,
   CocoaClientV1GetFullThreadDiffInput,
@@ -33,6 +37,7 @@ export const COCOA_CLIENT_V1_METHODS = {
   info: "client.info",
   probe: "client.probe",
   dispatchCommand: "orchestration.dispatchCommand",
+  executeCommand: "workspace.executeCommand",
   getShellSnapshot: "orchestration.getShellSnapshot",
   getThreadSnapshot: "orchestration.getThreadSnapshot",
   subscribeShell: "orchestration.subscribeShell",
@@ -49,6 +54,7 @@ export const COCOA_CLIENT_V1_SUPPORTED_METHODS = [
   COCOA_CLIENT_V1_METHODS.info,
   COCOA_CLIENT_V1_METHODS.probe,
   COCOA_CLIENT_V1_METHODS.dispatchCommand,
+  COCOA_CLIENT_V1_METHODS.executeCommand,
   COCOA_CLIENT_V1_METHODS.getShellSnapshot,
   COCOA_CLIENT_V1_METHODS.getThreadSnapshot,
   COCOA_CLIENT_V1_METHODS.subscribeShell,
@@ -67,6 +73,10 @@ export const CocoaClientV1RequestError = Schema.Struct({
     "internal_error",
     "busy",
     "reset_required",
+    "provider_unavailable",
+    "unsupported_operation",
+    "protocol_incompatible",
+    "operation_failed",
   ]),
   message: TrimmedNonEmptyString,
   retryable: Schema.optionalKey(Schema.Literal(true)),
@@ -90,6 +100,12 @@ export const CocoaClientV1ProbeRpc = Rpc.make(COCOA_CLIENT_V1_METHODS.probe, {
 export const CocoaClientV1DispatchCommandRpc = Rpc.make(COCOA_CLIENT_V1_METHODS.dispatchCommand, {
   payload: CocoaClientV1Command,
   success: CocoaClientV1DispatchResult,
+  error: CocoaClientV1RequestError,
+});
+
+export const CocoaClientV1ExecuteCommandRpc = Rpc.make(COCOA_CLIENT_V1_METHODS.executeCommand, {
+  payload: CocoaClientV1ExecuteCommandInput,
+  success: CocoaClientV1ExecuteCommandResult,
   error: CocoaClientV1RequestError,
 });
 
@@ -147,6 +163,7 @@ export const CocoaClientV1RpcGroup = RpcGroup.make(
   CocoaClientV1InfoRpc,
   CocoaClientV1ProbeRpc,
   CocoaClientV1DispatchCommandRpc,
+  CocoaClientV1ExecuteCommandRpc,
   CocoaClientV1GetShellSnapshotRpc,
   CocoaClientV1GetThreadSnapshotRpc,
   CocoaClientV1SubscribeShellRpc,

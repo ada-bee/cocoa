@@ -163,6 +163,7 @@ exports[`Cocoa gateway architecture > walks and reports the complete transitive 
   "preview/Manager.ts",
   "process/externalLauncher.ts",
   "processRunner.ts",
+  "project/ProjectExecution.ts",
   "project/ProjectFaviconResolver.ts",
   "project/ProjectRepository.ts",
   "project/ProjectSetupScriptRunner.ts",

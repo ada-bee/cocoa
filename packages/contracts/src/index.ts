@@ -15,6 +15,7 @@ export * from "./codexEndpoint.ts";
 export * from "./codexWorkspaceHelper.ts";
 export * from "./codexCheckpointHelper.ts";
 export * from "./providerRuntime.ts";
+export * from "./providerExecution.ts";
 export * from "./model.ts";
 export * from "./keybindings.ts";
 export * from "./server.ts";

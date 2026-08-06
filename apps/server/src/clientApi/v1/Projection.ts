@@ -369,7 +369,7 @@ export const projectInfo = (input: {
 }): CocoaClientV1InfoResponse => ({
   protocolVersion: COCOA_CLIENT_PROTOCOL_VERSION,
   protocolRange: COCOA_CLIENT_V1_PROTOCOL_RANGE,
-  capabilities: [...COCOA_CLIENT_V1_CORE_CAPABILITIES],
+  capabilities: [...COCOA_CLIENT_V1_CORE_CAPABILITIES, "workspace.execution"],
   environment: {
     environmentId: input.environment.environmentId,
     label: input.environment.label,

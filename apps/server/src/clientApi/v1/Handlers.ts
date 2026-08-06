@@ -42,12 +42,14 @@ import * as OrchestrationEngine from "../../orchestration/Services/Orchestration
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { CheckpointRevertGate } from "../../orchestration/Services/CheckpointRevertGate.ts";
 import * as ProviderRegistry from "../../provider/Services/ProviderRegistry.ts";
+import * as ProjectExecution from "../../project/ProjectExecution.ts";
 import * as ServerRuntimeStartup from "../../serverRuntimeStartup.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
 import { DEFAULT_RUNTIME_BUFFER_LIMITS } from "../../RuntimeBufferLimits.ts";
 import type * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
 import { requiredScopeForCocoaClientV1Method } from "./Authorization.ts";
+import { projectExecutionRequestError } from "./Execution.ts";
 import {
   projectInfo,
   projectProjectShell,
@@ -408,6 +410,7 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
     const environment = yield* ServerEnvironment.ServerEnvironment;
     const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
     const terminals = yield* TerminalManager.TerminalManager;
+    const projectExecution = yield* ProjectExecution.ProjectExecution;
 
     const dispatchNormalized = (
       command: OrchestrationCommand,
@@ -592,6 +595,12 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
           session,
           COCOA_CLIENT_V1_METHODS.dispatchCommand,
           dispatch(command).pipe(Effect.mapError(preserveSanitizedDispatchError)),
+        ),
+      [COCOA_CLIENT_V1_METHODS.executeCommand]: (input) =>
+        authorizeEffect(
+          session,
+          COCOA_CLIENT_V1_METHODS.executeCommand,
+          projectExecution.execute(input).pipe(Effect.mapError(projectExecutionRequestError)),
         ),
       [COCOA_CLIENT_V1_METHODS.getShellSnapshot]: (_input) =>
         authorizeEffect(

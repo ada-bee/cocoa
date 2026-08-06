@@ -49,6 +49,7 @@ export const CocoaClientV1CapabilityId = Schema.Literals([
   "workspace.filesystem",
   "workspace.vcs",
   "workspace.terminal",
+  "workspace.execution",
 ]);
 export type CocoaClientV1CapabilityId = typeof CocoaClientV1CapabilityId.Type;
 
@@ -63,6 +64,7 @@ export const COCOA_CLIENT_V1_OPTIONAL_CAPABILITIES = [
   "workspace.filesystem",
   "workspace.vcs",
   "workspace.terminal",
+  "workspace.execution",
 ] as const satisfies ReadonlyArray<CocoaClientV1CapabilityId>;
 
 export const CocoaClientV1Capabilities = ForwardCompatibleArray(CocoaClientV1CapabilityId);

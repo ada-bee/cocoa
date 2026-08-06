@@ -4,6 +4,8 @@ export type {
   CocoaClientV1CapabilityId,
   CocoaClientV1Command,
   CocoaClientV1DispatchResult,
+  CocoaClientV1ExecuteCommandInput,
+  CocoaClientV1ExecuteCommandResult,
   CocoaClientV1GetFullThreadDiffInput,
   CocoaClientV1GetFullThreadDiffResult,
   CocoaClientV1GetShellSnapshotInput,
@@ -44,6 +46,7 @@ export const COCOA_CLIENT_V1_OPTIONAL_CAPABILITIES = [
   "workspace.filesystem",
   "workspace.vcs",
   "workspace.terminal",
+  "workspace.execution",
 ] as const satisfies ReadonlyArray<CocoaClientV1CapabilityId>;
 
 export function selectCocoaClientProtocolVersion(

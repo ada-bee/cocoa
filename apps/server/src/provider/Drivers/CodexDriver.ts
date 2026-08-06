@@ -62,6 +62,7 @@ import {
   type ProviderInstanceGenerationState,
 } from "../ProviderDriver.ts";
 import * as CodexEndpointFactory from "../codexEndpoint/CodexEndpointFactory.ts";
+import { makeCodexExecutionAdapter } from "../codexEndpoint/CodexExecutionAdapter.ts";
 import type { CodexEndpointCompatibilityMetadata } from "../codexEndpoint/CodexEndpointConnection.ts";
 import { makeCodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
@@ -128,6 +129,7 @@ export interface CodexDriverDependencies {
   readonly makeEndpointRouter: typeof makeCodexEndpointRouter;
   readonly makeEndpointRuntime: typeof makeCodexEndpointSessionRuntime;
   readonly makeEndpointTerminal: typeof makeCodexTerminalAdapter;
+  readonly makeEndpointExecution: typeof makeCodexExecutionAdapter;
   readonly makeEndpointVcs: typeof makeCodexVcsAdapter;
   readonly makeEndpointWorkspace: typeof makeCodexWorkspaceAdapter;
   readonly makeAdapter: typeof makeCodexAdapter;
@@ -145,6 +147,7 @@ const defaultDependencies: CodexDriverDependencies = {
   makeEndpointRouter: makeCodexEndpointRouter,
   makeEndpointRuntime: makeCodexEndpointSessionRuntime,
   makeEndpointTerminal: makeCodexTerminalAdapter,
+  makeEndpointExecution: makeCodexExecutionAdapter,
   makeEndpointVcs: makeCodexVcsAdapter,
   makeEndpointWorkspace: makeCodexWorkspaceAdapter,
   makeAdapter: makeCodexAdapter,
@@ -300,6 +303,10 @@ export const makeCodexDriver = (
             instanceId,
             endpointTextGeneration,
           );
+          const execution = dependencies.makeEndpointExecution({
+            providerInstanceId: instanceId,
+            borrowConnection: supervisor.borrowConnection,
+          });
           let conversationCompatibility: CodexEndpointCompatibilityMetadata | undefined;
           const terminalConfig = effectiveConfig.endpointTerminal;
           const terminalSandboxMode =
@@ -612,6 +619,11 @@ export const makeCodexDriver = (
                 conversationCompatibility?.platformFamily === "unix" &&
                 conversationCompatibility.capabilities?.commandExecControl === true
                 ? terminal
+                : undefined;
+            },
+            get execution() {
+              return conversationCompatibility?.capabilities?.commandExec === true
+                ? execution
                 : undefined;
             },
             get vcs() {

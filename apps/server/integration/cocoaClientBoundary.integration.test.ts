@@ -29,6 +29,7 @@ import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/La
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../src/persistence/Layers/Sqlite.ts";
 import * as ProviderRegistry from "../src/provider/Services/ProviderRegistry.ts";
+import { ProjectExecution } from "../src/project/ProjectExecution.ts";
 import * as RepositoryIdentityResolver from "../src/project/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "../src/orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers/ProjectionPipeline.ts";
@@ -157,6 +158,7 @@ const makeAncillaryHandlerLayer = (
     assertThreadAvailable: () => Effect.void,
     isThreadBlocked: () => Effect.succeed(false),
   });
+  const projectExecution = ProjectExecution.of({ execute: () => Effect.die("unused") });
 
   return Layer.mergeAll(
     Layer.succeed(OrchestrationEngine.OrchestrationEngineService, engine),
@@ -167,6 +169,7 @@ const makeAncillaryHandlerLayer = (
     Layer.succeed(ServerRuntimeStartup.ServerRuntimeStartup, startup),
     Layer.succeed(TerminalManager.TerminalManager, terminals),
     Layer.succeed(CheckpointRevertGate, gate),
+    Layer.succeed(ProjectExecution, projectExecution),
     NodeServices.layer,
     ServerConfig.layerTest(process.cwd(), { prefix: "cocoa-client-boundary" }).pipe(
       Layer.provide(NodeServices.layer),

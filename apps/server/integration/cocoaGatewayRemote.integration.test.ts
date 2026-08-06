@@ -12,6 +12,7 @@ import {
   ApprovalRequestId,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthTerminalOperateScope,
   AuthSessionId,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -63,6 +64,7 @@ import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
 import { TurnDispatchJournalRepositoryLive } from "../src/persistence/Layers/TurnDispatchJournal.ts";
 import { TurnDispatchJournalRepository } from "../src/persistence/Services/TurnDispatchJournal.ts";
 import * as ProjectWorkspace from "../src/project/ProjectWorkspace.ts";
+import * as ProjectExecution from "../src/project/ProjectExecution.ts";
 import * as RepositoryIdentityResolver from "../src/project/RepositoryIdentityResolver.ts";
 import * as ProviderFilesystemBrowse from "../src/provider/ProviderFilesystemBrowse.ts";
 import {
@@ -119,7 +121,7 @@ const operateSession: EnvironmentAuth.AuthenticatedSession = {
   sessionId: CLIENT_SESSION_ID,
   subject: "full-topology-client",
   method: "bearer-access-token",
-  scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+  scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope, AuthTerminalOperateScope],
 };
 
 const projectId = (value: string) => ProjectId.make(value);
@@ -177,6 +179,11 @@ interface RemoteProviderState {
     readonly workspaceRoot?: string;
     readonly relativePath?: string;
   }>;
+  readonly executionCalls: Array<{
+    readonly providerInstanceId: ProviderInstanceId;
+    readonly cwd: string;
+    readonly command: ReadonlyArray<string>;
+  }>;
   readonly diffCalls: Array<{
     readonly threadId: ThreadId;
     readonly providerInstanceId: ProviderInstanceId;
@@ -226,6 +233,7 @@ const makeRemoteProviderState: Effect.Effect<RemoteProviderState> = Effect.gen(f
     generationChanges,
     registryChanges: yield* PubSub.unbounded<void>(),
     workspaceCalls: [],
+    executionCalls: [],
     diffCalls: [],
     localWorkspaceOperations: 0,
     localTerminalOperations: 0,
@@ -485,6 +493,23 @@ const makeProviderInstances = (state: RemoteProviderState): ReadonlyArray<Provid
         subscribeChanges: PubSub.subscribe(changes!),
       },
       workspace: makeWorkspaceAdapter(state, providerInstanceId),
+      execution: {
+        execute: (input) =>
+          Effect.sync(() => {
+            state.executionCalls.push({
+              providerInstanceId,
+              cwd: input.cwd,
+              command: input.command,
+            });
+            return {
+              exitCode: 0,
+              stdout: `${providerInstanceId}:${input.command.join(" ")}`,
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            };
+          }),
+      },
       snapshot: {} as ProviderInstance["snapshot"],
       adapter: {} as ProviderInstance["adapter"],
       textGeneration: {} as ProviderInstance["textGeneration"],
@@ -515,6 +540,7 @@ interface GatewayRuntime {
     | ProviderGenerationRecoveryReactor
     | TurnDispatchJournalRepository
     | ProjectWorkspace.ProjectWorkspace
+    | ProjectExecution.ProjectExecution
     | ProviderFilesystemBrowse.ProviderFilesystemBrowse
     | HttpServer.HttpServer,
     unknown
@@ -525,6 +551,7 @@ interface GatewayRuntime {
   readonly ingestion: ProviderRuntimeIngestionService["Service"];
   readonly journal: TurnDispatchJournalRepository["Service"];
   readonly projectWorkspace: ProjectWorkspace.ProjectWorkspace["Service"];
+  readonly projectExecution: ProjectExecution.ProjectExecution["Service"];
   readonly filesystemBrowse: ProviderFilesystemBrowse.ProviderFilesystemBrowse["Service"];
   readonly httpUrl: string;
   readonly wsUrl: string;
@@ -615,6 +642,10 @@ const makeGatewayRuntime = async (
   const providerRegistry = makeProviderRegistryLayer(providerSnapshots);
   const providerInstances = makeProviderInstanceRegistryLayer(state);
   const remoteWorkspace = ProjectWorkspace.layer.pipe(
+    Layer.provide(providerInstances),
+    Layer.provide(projection),
+  );
+  const remoteExecution = ProjectExecution.layer.pipe(
     Layer.provide(providerInstances),
     Layer.provide(projection),
   );
@@ -843,6 +874,7 @@ const makeGatewayRuntime = async (
     environment,
     startup,
     terminals,
+    remoteExecution,
     auth,
     sessions,
   );
@@ -873,6 +905,7 @@ const makeGatewayRuntime = async (
     generationRecovery,
     journal,
     remoteWorkspace,
+    remoteExecution,
     remoteBrowse,
   ).pipe(
     Layer.provideMerge(servedRoutes),
@@ -896,6 +929,9 @@ const makeGatewayRuntime = async (
   const projectWorkspace = await runtime.runPromise(
     Effect.service(ProjectWorkspace.ProjectWorkspace),
   );
+  const projectExecution = await runtime.runPromise(
+    Effect.service(ProjectExecution.ProjectExecution),
+  );
   const filesystemBrowse = await runtime.runPromise(
     Effect.service(ProviderFilesystemBrowse.ProviderFilesystemBrowse),
   );
@@ -917,6 +953,7 @@ const makeGatewayRuntime = async (
     ingestion: providerRuntimeIngestion,
     journal: turnDispatchJournal,
     projectWorkspace,
+    projectExecution,
     filesystemBrowse,
     httpUrl,
     wsUrl,
@@ -1069,6 +1106,25 @@ it.live(
               ).toEqual([
                 [LINUX, REMOTE_WORKSPACE],
                 [MACBOOK, REMOTE_WORKSPACE],
+              ]);
+              expect(
+                yield* client[COCOA_CLIENT_V1_METHODS.executeCommand]({
+                  projectId: projectId("project-macbook"),
+                  command: ["git", "status", "--short"],
+                }),
+              ).toEqual({
+                exitCode: 0,
+                stdout: `${MACBOOK}:git status --short`,
+                stderr: "",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              });
+              expect(state.executionCalls).toEqual([
+                {
+                  providerInstanceId: MACBOOK,
+                  cwd: REMOTE_WORKSPACE,
+                  command: ["git", "status", "--short"],
+                },
               ]);
               yield* startTurn(client, macThread, "macbook");
             }),

@@ -234,6 +234,12 @@ export function createCocoaClientTransport(
               input as CocoaClientUnaryMethodMap["orchestration.dispatchCommand"]["input"],
             ),
           )) as CocoaClientUnaryMethodMap[typeof method]["output"];
+        case "workspace.executeCommand":
+          return (await run((rpc) =>
+            rpc[COCOA_CLIENT_V1_METHODS.executeCommand](
+              input as CocoaClientUnaryMethodMap["workspace.executeCommand"]["input"],
+            ),
+          )) as CocoaClientUnaryMethodMap[typeof method]["output"];
         case "orchestration.getShellSnapshot":
           return (await run((rpc) =>
             rpc[COCOA_CLIENT_V1_METHODS.getShellSnapshot]({}),

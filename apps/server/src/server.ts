@@ -83,6 +83,7 @@ import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
 import * as ProviderFilesystemBrowse from "./provider/ProviderFilesystemBrowse.ts";
 import * as ServerSettings from "./serverSettings.ts";
+import * as ProjectExecution from "./project/ProjectExecution.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as ProjectTerminal from "./project/ProjectTerminal.ts";
 import * as ProjectWorkspace from "./project/ProjectWorkspace.ts";
@@ -417,6 +418,11 @@ const ProjectWorkspaceLayerLive = ProjectWorkspace.layer.pipe(
   Layer.provide(OrchestrationLayerLive),
 );
 
+const ProjectExecutionLayerLive = ProjectExecution.layer.pipe(
+  Layer.provide(LegacyProviderInstanceRegistryHydrationLive),
+  Layer.provide(OrchestrationLayerLive),
+);
+
 const ProviderFilesystemBrowseLayerLive = ProviderFilesystemBrowse.layer.pipe(
   Layer.provide(LegacyProviderInstanceRegistryHydrationLive),
 );
@@ -489,6 +495,7 @@ const LegacyRuntimeCoreDependenciesLive = LegacyReactorLayerLive.pipe(
   // keeps a single Live for all opencode consumers.
   Layer.provideMerge(OpenCodeRuntime.OpenCodeRuntimeLive),
   Layer.provideMerge(WorkspaceAccessLayerLive),
+  Layer.provideMerge(ProjectExecutionLayerLive),
   Layer.provideMerge(ProjectFaviconResolverLayerLive),
   Layer.provideMerge(RepositoryIdentityResolver.layer),
   Layer.provideMerge(ServerEnvironment.layer),
@@ -526,7 +533,8 @@ const LegacyRuntimeDependenciesWithVcsLive = LegacyRuntimeDependenciesLive.pipe(
 
 type RuntimeDependenciesLayer = Layer.Layer<
   | Layer.Success<typeof CocoaRuntimeDependenciesLive>
-  | Layer.Success<typeof LegacyRuntimeDependenciesWithVcsLive>,
+  | Layer.Success<typeof LegacyRuntimeDependenciesWithVcsLive>
+  | ProjectExecution.ProjectExecution,
   | Layer.Error<typeof CocoaRuntimeDependenciesLive>
   | Layer.Error<typeof LegacyRuntimeDependenciesWithVcsLive>,
   | Layer.Services<typeof CocoaRuntimeDependenciesLive>
