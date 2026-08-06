@@ -113,6 +113,29 @@ const hasMetricSnapshot = (
   );
 
 describe("OrchestrationEngine", () => {
+  it("marks accepted command-receipt retries without changing the public result shape", async () => {
+    const system = await createOrchestrationSystem();
+    const command = {
+      type: "project.create" as const,
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      commandId: CommandId.make("cmd-idempotent-project-create"),
+      projectId: asProjectId("project-idempotent"),
+      title: "Idempotent",
+      workspaceRoot: "/tmp/project-idempotent",
+      createdAt: now(),
+    };
+
+    const first = await system.run(system.engine.dispatch(command));
+    const retry = await system.run(system.engine.dispatch(command));
+
+    expect(first.deduplicated).toBe(false);
+    expect(retry.deduplicated).toBe(true);
+    expect(first).toEqual({ sequence: 1 });
+    expect(retry).toEqual({ sequence: 1 });
+    expect((await system.readModel()).projects).toHaveLength(1);
+    await system.dispose();
+  });
+
   it("bounds stalled event delivery and rejects excess commands before accepting them", async () => {
     const system = await createOrchestrationSystem({
       bufferLimits: {

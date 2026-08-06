@@ -24,6 +24,7 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -469,6 +470,47 @@ describe("Cocoa client v1 handlers", () => {
         retryable: true,
       });
       expect(yield* Ref.get(harness.dispatched)).toEqual([]);
+    }),
+  );
+
+  it.effect("removes staged attachment blobs when dispatch is rejected before event append", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ dispatchBusy: true });
+      yield* Effect.gen(function* () {
+        const handlers = yield* makeCocoaClientV1Handlers(operateSession);
+        const error = yield* handlers[COCOA_CLIENT_V1_METHODS.dispatchCommand]({
+          type: "thread.turn.start",
+          commandId: CommandId.make("turn-with-rejected-attachment"),
+          threadId,
+          message: {
+            messageId: MessageId.make("message-with-rejected-attachment"),
+            role: "user",
+            text: "inspect",
+            attachments: [
+              {
+                type: "image",
+                name: "image.png",
+                mimeType: "image/png",
+                sizeBytes: 3,
+                dataUrl: "data:image/png;base64,AQID",
+              },
+            ],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt,
+        }).pipe(Effect.flip);
+
+        expect(error).toEqual({
+          code: "busy",
+          message: "The Cocoa gateway is busy. Retry the same command shortly.",
+          retryable: true,
+        });
+        expect(yield* Ref.get(harness.dispatched)).toEqual([]);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig.ServerConfig;
+        expect(yield* fileSystem.readDirectory(config.attachmentsDir)).toEqual([]);
+      }).pipe(Effect.provide(harness.layer));
     }),
   );
 

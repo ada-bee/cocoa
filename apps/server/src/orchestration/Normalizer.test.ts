@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -6,17 +6,62 @@ import {
   MessageId,
   ProjectId,
   ProviderInstanceId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
   ThreadId,
+  type UploadChatAttachment,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 
 import * as ServerConfig from "../config.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
-import { canonicalizeClientCommandTimestamps, normalizeDispatchCommand } from "./Normalizer.ts";
+import {
+  canonicalizeClientCommandTimestamps,
+  normalizeDispatchCommand,
+  withNormalizedDispatchCommand,
+} from "./Normalizer.ts";
 
 const clientCreatedAt = "2031-01-01T00:00:00.000Z";
 const serverReceivedAt = "2026-07-18T00:00:00.000Z";
+
+const imageUpload = (name: string, bytes: Uint8Array): UploadChatAttachment => ({
+  type: "image",
+  name,
+  mimeType: "image/png",
+  sizeBytes: bytes.byteLength,
+  dataUrl: `data:image/png;base64,${Buffer.from(bytes).toString("base64")}`,
+});
+
+const turnStart = (
+  attachments: ReadonlyArray<UploadChatAttachment>,
+): ClientOrchestrationCommand => ({
+  type: "thread.turn.start",
+  commandId: CommandId.make("command-attachments"),
+  threadId: ThreadId.make("thread-attachments"),
+  message: {
+    messageId: MessageId.make("message-attachments"),
+    role: "user",
+    text: "Inspect these images",
+    attachments,
+  },
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  createdAt: clientCreatedAt,
+});
+
+const attachmentTestLayer = (prefix: string) =>
+  Layer.mergeAll(
+    NodeServices.layer,
+    ServerConfig.layerTest(process.cwd(), { prefix }).pipe(Layer.provide(NodeServices.layer)),
+  );
+
+const attachmentFileNames = Effect.gen(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const config = yield* ServerConfig.ServerConfig;
+  return yield* fileSystem.readDirectory(config.attachmentsDir);
+});
 
 describe("canonicalizeClientCommandTimestamps", () => {
   it("replaces a client command timestamp with the server receipt timestamp", () => {
@@ -129,4 +174,92 @@ describe("normalizeDispatchCommand project paths", () => {
     expect(updated.workspaceRoot).toBe("C:\\Users\\Ada\\Cocoa");
     expect(workspacePathCalls).toEqual([]);
   });
+});
+
+describe("normalizeDispatchCommand attachment policy", () => {
+  it.effect("rejects count overflow before persisting any blobs", () =>
+    Effect.gen(function* () {
+      const attachment = imageUpload("small.png", Uint8Array.of(1));
+      yield* normalizeDispatchCommand(
+        turnStart(Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS + 1 }, () => attachment)),
+      ).pipe(Effect.flip);
+      expect(yield* attachmentFileNames).toEqual([]);
+    }).pipe(Effect.provide(attachmentTestLayer("normalizer-count-overflow"))),
+  );
+
+  it.effect("rejects aggregate overflow before persisting any blobs", () =>
+    Effect.gen(function* () {
+      const bytes = new Uint8Array(
+        Math.ceil((PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES * 3) / 4),
+      );
+      yield* normalizeDispatchCommand(turnStart([imageUpload("too-large.png", bytes)])).pipe(
+        Effect.flip,
+      );
+      expect(yield* attachmentFileNames).toEqual([]);
+    }).pipe(Effect.provide(attachmentTestLayer("normalizer-aggregate-overflow"))),
+  );
+
+  it.effect("preflights every payload so a late normalization failure leaves no blobs", () =>
+    Effect.gen(function* () {
+      const valid = imageUpload("valid.png", Uint8Array.of(1, 2, 3));
+      const invalid: UploadChatAttachment = {
+        ...valid,
+        name: "invalid.png",
+        dataUrl: "not-a-data-url",
+      };
+      yield* normalizeDispatchCommand(turnStart([valid, invalid])).pipe(Effect.flip);
+      expect(yield* attachmentFileNames).toEqual([]);
+    }).pipe(Effect.provide(attachmentTestLayer("normalizer-late-invalid"))),
+  );
+
+  it.effect("persists an exact encoded aggregate boundary without exposing upload data URLs", () =>
+    Effect.gen(function* () {
+      const first = imageUpload("first.png", new Uint8Array(3 * 1_048_570));
+      const second = imageUpload("second.png", new Uint8Array(3 * 1_048_571));
+      expect(first.dataUrl.length + second.dataUrl.length).toBe(
+        PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
+      );
+
+      const normalized = yield* normalizeDispatchCommand(turnStart([first, second]));
+      expect(normalized.type).toBe("thread.turn.start");
+      if (normalized.type !== "thread.turn.start") {
+        throw new Error("Expected a turn-start command");
+      }
+      expect(normalized.message.attachments).toHaveLength(2);
+      expect(normalized.message.attachments.every((attachment) => !("dataUrl" in attachment))).toBe(
+        true,
+      );
+      expect(yield* attachmentFileNames).toHaveLength(2);
+    }).pipe(Effect.provide(attachmentTestLayer("normalizer-exact-boundary"))),
+  );
+
+  it.effect("removes staged blobs when downstream dispatch fails", () =>
+    Effect.gen(function* () {
+      const attachment = imageUpload("dispatch.png", Uint8Array.of(1, 2, 3));
+      yield* withNormalizedDispatchCommand(turnStart([attachment]), () =>
+        Effect.fail("dispatch-failed"),
+      ).pipe(Effect.flip);
+      expect(yield* attachmentFileNames).toEqual([]);
+    }).pipe(Effect.provide(attachmentTestLayer("normalizer-dispatch-cleanup"))),
+  );
+
+  it.effect("removes newly staged retry blobs when dispatch returns a duplicate receipt", () =>
+    Effect.gen(function* () {
+      const command = turnStart([imageUpload("retry.png", Uint8Array.of(1, 2, 3))]);
+      yield* withNormalizedDispatchCommand(
+        command,
+        () => Effect.succeed({ sequence: 1, deduplicated: false }),
+        { cleanupAttachmentsOnSuccess: (result) => result.deduplicated },
+      );
+      const originalFiles = yield* attachmentFileNames;
+      expect(originalFiles).toHaveLength(1);
+
+      yield* withNormalizedDispatchCommand(
+        command,
+        () => Effect.succeed({ sequence: 1, deduplicated: true }),
+        { cleanupAttachmentsOnSuccess: (result) => result.deduplicated },
+      );
+      expect(yield* attachmentFileNames).toEqual(originalFiles);
+    }).pipe(Effect.provide(attachmentTestLayer("normalizer-duplicate-cleanup"))),
+  );
 });

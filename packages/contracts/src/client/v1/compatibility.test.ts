@@ -2,6 +2,10 @@ import { describe, expect, it } from "@effect/vitest";
 import * as CocoaClientV1 from "@t3tools/contracts/client/v1";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import {
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
+} from "@t3tools/contracts";
 
 import discriminatorsFixture from "./fixtures/discriminators.v1.json" with { type: "json" };
 import infoResponseFixture from "./fixtures/info-response.v1.json" with { type: "json" };
@@ -14,6 +18,46 @@ const decodeThreadEvent = Schema.decodeUnknownSync(CocoaClientV1.CocoaClientV1Th
 const decodeMismatch = Schema.decodeUnknownSync(CocoaClientV1.CocoaClientProtocolVersionMismatch);
 
 describe("Cocoa client protocol v1 compatibility", () => {
+  it("reuses the shared turn attachment count and aggregate policy", () => {
+    const decodeCommand = Schema.decodeUnknownSync(CocoaClientV1.CocoaClientV1Command);
+    const makeCommand = (dataUrls: ReadonlyArray<string>) => ({
+      type: "thread.turn.start",
+      commandId: "command-upload-policy",
+      threadId: "thread-1",
+      message: {
+        messageId: "message-upload-policy",
+        role: "user",
+        text: "inspect",
+        attachments: dataUrls.map((dataUrl, index) => ({
+          type: "image",
+          name: `image-${index}.png`,
+          mimeType: "image/png",
+          sizeBytes: 1,
+          dataUrl,
+        })),
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdAt: "2026-08-04T10:00:00.000Z",
+    });
+    const smallDataUrl = "data:image/png;base64,AA==";
+
+    expect(() =>
+      decodeCommand(
+        makeCommand(
+          Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS + 1 }, () => smallDataUrl),
+        ),
+      ),
+    ).toThrow();
+    expect(() =>
+      decodeCommand(
+        makeCommand([
+          `data:image/png;base64,${"A".repeat(PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES)}`,
+        ]),
+      ),
+    ).toThrow();
+  });
+
   it("pins the exact supported core method inventory", () => {
     expect(CocoaClientV1.COCOA_CLIENT_V1_SUPPORTED_METHODS).toEqual(supportedMethodsFixture);
     expect(Array.from(CocoaClientV1.CocoaClientV1RpcGroup.requests.keys())).toEqual(

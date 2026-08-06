@@ -1,4 +1,9 @@
-import type { ChatAttachment } from "@t3tools/contracts";
+import {
+  type ChatAttachment,
+  encodedImageDataUrlSize,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
@@ -6,9 +11,6 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { resolveAttachmentPath } from "./attachmentStore.ts";
-
-export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES = 4;
-export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES = 8 * 1024 * 1024;
 
 const IMAGE_MIME_TYPE_PATTERN = /^image\/[a-z0-9.+-]+$/i;
 
@@ -29,13 +31,6 @@ const isGatewayManagedImageAttachmentError = Schema.is(GatewayManagedImageAttach
 
 function failure(reason: GatewayManagedImageAttachmentError["reason"]) {
   return new GatewayManagedImageAttachmentError({ reason });
-}
-
-function encodedDataUrlSize(attachment: ChatAttachment): number {
-  return (
-    `data:${attachment.mimeType.toLowerCase()};base64,`.length +
-    Math.ceil(attachment.sizeBytes / 3) * 4
-  );
 }
 
 const readManagedAttachmentBounded = Effect.fn(
@@ -92,7 +87,7 @@ export const materializeGatewayManagedImageDataUrls = Effect.fn(
 )(function* (input: MaterializeGatewayManagedImageDataUrlsInput) {
   const attachments = input.attachments ?? [];
   if (attachments.length === 0) return [] as ReadonlyArray<string>;
-  if (attachments.length > CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES) {
+  if (attachments.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
     return yield* failure("too-many-images");
   }
 
@@ -105,8 +100,8 @@ export const materializeGatewayManagedImageDataUrls = Effect.fn(
     ) {
       return yield* failure("invalid-image");
     }
-    estimatedBytes += encodedDataUrlSize(attachment);
-    if (estimatedBytes > CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES) {
+    estimatedBytes += encodedImageDataUrlSize(attachment);
+    if (estimatedBytes > PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES) {
       return yield* failure("aggregate-too-large");
     }
   }
@@ -133,7 +128,7 @@ export const materializeGatewayManagedImageDataUrls = Effect.fn(
 
     const dataUrl = `data:${attachment.mimeType.toLowerCase()};base64,${Encoding.encodeBase64(bytes)}`;
     aggregateBytes += dataUrl.length;
-    if (aggregateBytes > CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES) {
+    if (aggregateBytes > PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES) {
       return yield* failure("aggregate-too-large");
     }
     dataUrls.push(dataUrl);

@@ -8,7 +8,7 @@ import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import { projectThreadDetailSnapshot } from "./ActivityPayloadProjection.ts";
-import { normalizeDispatchCommand } from "./Normalizer.ts";
+import { withNormalizedDispatchCommand } from "./Normalizer.ts";
 import {
   annotateEnvironmentRequest,
   failEnvironmentInternal,
@@ -83,16 +83,22 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
         Effect.fn("environment.orchestration.dispatch")(function* (args) {
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
-          const normalizedCommand = yield* normalizeDispatchCommand(args.payload).pipe(
-            Effect.catch(() => failEnvironmentInvalidRequest("invalid_command")),
+          return yield* withNormalizedDispatchCommand(
+            args.payload,
+            (normalizedCommand) =>
+              orchestrationEngine
+                .dispatch(normalizedCommand)
+                .pipe(
+                  Effect.catch((cause) =>
+                    failEnvironmentInternal("orchestration_dispatch_failed", cause),
+                  ),
+                ),
+            { cleanupAttachmentsOnSuccess: (result) => result.deduplicated === true },
+          ).pipe(
+            Effect.catchTag("OrchestrationDispatchCommandError", () =>
+              failEnvironmentInvalidRequest("invalid_command"),
+            ),
           );
-          return yield* orchestrationEngine
-            .dispatch(normalizedCommand)
-            .pipe(
-              Effect.catch((cause) =>
-                failEnvironmentInternal("orchestration_dispatch_failed", cause),
-              ),
-            );
         }),
       );
   }),

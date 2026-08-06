@@ -903,7 +903,10 @@ const makeWsRpcLayer = (
 
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
-      ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
+      ): Effect.Effect<
+        OrchestrationEngine.OrchestrationDispatchResult,
+        OrchestrationDispatchCommandError
+      > => {
         const assertThreadAvailable =
           normalizedCommand.type === "thread.checkpoint.revert" ||
           normalizedCommand.type === "thread.turn.start"
@@ -988,58 +991,61 @@ const makeWsRpcLayer = (
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.dispatchCommand,
-            withNormalizedDispatchCommand(command, (normalizedCommand) =>
-              Effect.gen(function* () {
-                const shouldStopSessionAfterArchive =
-                  normalizedCommand.type === "thread.archive"
-                    ? yield* projectionSnapshotQuery
-                        .getThreadShellById(normalizedCommand.threadId)
-                        .pipe(
-                          Effect.map(
-                            Option.match({
-                              onNone: () => false,
-                              onSome: (thread) =>
-                                thread.session !== null && thread.session.status !== "stopped",
-                            }),
+            withNormalizedDispatchCommand(
+              command,
+              (normalizedCommand) =>
+                Effect.gen(function* () {
+                  const shouldStopSessionAfterArchive =
+                    normalizedCommand.type === "thread.archive"
+                      ? yield* projectionSnapshotQuery
+                          .getThreadShellById(normalizedCommand.threadId)
+                          .pipe(
+                            Effect.map(
+                              Option.match({
+                                onNone: () => false,
+                                onSome: (thread) =>
+                                  thread.session !== null && thread.session.status !== "stopped",
+                              }),
+                            ),
+                            Effect.orElseSucceed(() => false),
+                          )
+                      : false;
+                  const result = yield* dispatchNormalizedCommand(normalizedCommand);
+                  if (normalizedCommand.type === "thread.archive") {
+                    if (shouldStopSessionAfterArchive) {
+                      yield* Effect.gen(function* () {
+                        const stopCommand = yield* normalizeDispatchCommand({
+                          type: "thread.session.stop",
+                          commandId: CommandId.make(
+                            `session-stop-for-archive:${normalizedCommand.commandId}`,
                           ),
-                          Effect.orElseSucceed(() => false),
-                        )
-                    : false;
-                const result = yield* dispatchNormalizedCommand(normalizedCommand);
-                if (normalizedCommand.type === "thread.archive") {
-                  if (shouldStopSessionAfterArchive) {
-                    yield* Effect.gen(function* () {
-                      const stopCommand = yield* normalizeDispatchCommand({
-                        type: "thread.session.stop",
-                        commandId: CommandId.make(
-                          `session-stop-for-archive:${normalizedCommand.commandId}`,
-                        ),
-                        threadId: normalizedCommand.threadId,
-                        createdAt: yield* nowIso,
-                      });
-
-                      yield* dispatchNormalizedCommand(stopCommand);
-                    }).pipe(
-                      Effect.catchCause((cause) =>
-                        Effect.logWarning("failed to stop provider session during archive", {
                           threadId: normalizedCommand.threadId,
-                          cause,
+                          createdAt: yield* nowIso,
+                        });
+
+                        yield* dispatchNormalizedCommand(stopCommand);
+                      }).pipe(
+                        Effect.catchCause((cause) =>
+                          Effect.logWarning("failed to stop provider session during archive", {
+                            threadId: normalizedCommand.threadId,
+                            cause,
+                          }),
+                        ),
+                      );
+                    }
+
+                    yield* terminalManager.close({ threadId: normalizedCommand.threadId }).pipe(
+                      Effect.catch((error) =>
+                        Effect.logWarning("failed to close thread terminals after archive", {
+                          threadId: normalizedCommand.threadId,
+                          error: error.message,
                         }),
                       ),
                     );
                   }
-
-                  yield* terminalManager.close({ threadId: normalizedCommand.threadId }).pipe(
-                    Effect.catch((error) =>
-                      Effect.logWarning("failed to close thread terminals after archive", {
-                        threadId: normalizedCommand.threadId,
-                        error: error.message,
-                      }),
-                    ),
-                  );
-                }
-                return result;
-              }),
+                  return result;
+                }),
+              { cleanupAttachmentsOnSuccess: (result) => result.deduplicated === true },
             ).pipe(
               Effect.catch((cause) =>
                 failDispatchCommand(

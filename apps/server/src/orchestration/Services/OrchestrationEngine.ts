@@ -48,7 +48,7 @@ export interface OrchestrationEngineShape {
    */
   readonly dispatch: (
     command: OrchestrationCommand,
-  ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
+  ) => Effect.Effect<OrchestrationDispatchResult, OrchestrationDispatchError, never>;
 
   /**
    * Stream persisted domain events in dispatch order.
@@ -63,6 +63,12 @@ export interface OrchestrationEngineShape {
    * choosing between an incremental replay and a fresh projected snapshot.
    */
   readonly latestSequence: Effect.Effect<number, never, never>;
+}
+
+export interface OrchestrationDispatchResult {
+  readonly sequence: number;
+  /** Internal, non-enumerable marker used to compensate staged command resources. */
+  readonly deduplicated?: boolean;
 }
 
 /**

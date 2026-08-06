@@ -14,11 +14,7 @@ import {
   TurnId,
 } from "../../baseSchemas.ts";
 import { ProviderInstanceId } from "../../providerInstance.ts";
-
-const COCOA_CLIENT_V1_SEND_TURN_MAX_INPUT_CHARS = 120_000;
-const COCOA_CLIENT_V1_SEND_TURN_MAX_ATTACHMENTS = 8;
-const COCOA_CLIENT_V1_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const COCOA_CLIENT_V1_IMAGE_DATA_URL_MAX_CHARS = 14_000_000;
+import { PROVIDER_SEND_TURN_MAX_INPUT_CHARS, UploadChatAttachments } from "../../orchestration.ts";
 
 export const CocoaClientV1RuntimeMode = Schema.Literals([
   "approval-required",
@@ -114,18 +110,6 @@ export const CocoaClientV1ModelSelection = Schema.Struct({
   options: Schema.optionalKey(Schema.Array(CocoaClientV1ProviderOptionSelection)),
 });
 export type CocoaClientV1ModelSelection = typeof CocoaClientV1ModelSelection.Type;
-
-const CocoaClientV1ImageUploadAttachment = Schema.Struct({
-  type: Schema.Literal("image"),
-  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
-  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(100), Schema.isPattern(/^image\//i)),
-  sizeBytes: NonNegativeInt.check(
-    Schema.isLessThanOrEqualTo(COCOA_CLIENT_V1_SEND_TURN_MAX_IMAGE_BYTES),
-  ),
-  dataUrl: TrimmedNonEmptyString.check(
-    Schema.isMaxLength(COCOA_CLIENT_V1_IMAGE_DATA_URL_MAX_CHARS),
-  ),
-});
 
 const CocoaClientV1ProjectCreateCommand = Schema.Struct({
   type: Schema.Literal("project.create"),
@@ -249,10 +233,8 @@ const CocoaClientV1ThreadTurnStartCommand = Schema.Struct({
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
-    text: Schema.String.check(Schema.isMaxLength(COCOA_CLIENT_V1_SEND_TURN_MAX_INPUT_CHARS)),
-    attachments: Schema.Array(CocoaClientV1ImageUploadAttachment).check(
-      Schema.isMaxLength(COCOA_CLIENT_V1_SEND_TURN_MAX_ATTACHMENTS),
-    ),
+    text: Schema.String.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
+    attachments: UploadChatAttachments,
   }),
   modelSelection: Schema.optionalKey(CocoaClientV1ModelSelection),
   titleSeed: Schema.optionalKey(TrimmedNonEmptyString),

@@ -60,6 +60,7 @@ import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
   OrchestrationEngineService,
+  type OrchestrationDispatchResult,
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import {
@@ -76,9 +77,15 @@ const isPersistenceDecodeError = Schema.is(PersistenceDecodeError);
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
-  result: Deferred.Deferred<{ sequence: number }, OrchestrationDispatchError>;
+  result: Deferred.Deferred<OrchestrationDispatchResult, OrchestrationDispatchError>;
   startedAtMs: number;
 }
+
+const dispatchResult = (sequence: number, deduplicated: boolean): OrchestrationDispatchResult =>
+  Object.defineProperty({ sequence }, "deduplicated", {
+    value: deduplicated,
+    enumerable: false,
+  });
 
 function commandToAggregateRef(command: OrchestrationCommand): {
   readonly aggregateKind: "project" | "thread";
@@ -238,9 +245,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
         });
         if (Option.isSome(existingReceipt)) {
           if (existingReceipt.value.status === "accepted") {
-            return {
-              sequence: existingReceipt.value.resultSequence,
-            };
+            return dispatchResult(existingReceipt.value.resultSequence, true);
           }
           return yield* new OrchestrationCommandPreviouslyRejectedError({
             commandId: envelope.command.commandId,
@@ -362,7 +367,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
             );
           }
         }
-        return { sequence: committedCommand.lastSequence };
+        return dispatchResult(committedCommand.lastSequence, false);
       }).pipe(Effect.withSpan(`orchestration.command.${envelope.command.type}`)),
     ).pipe(
       Effect.flatMap((exit) =>
@@ -445,7 +450,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {
-      const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
+      const result = yield* Deferred.make<
+        OrchestrationDispatchResult,
+        OrchestrationDispatchError
+      >();
       const accepted = yield* Queue.offer(commandQueue, {
         command,
         result,

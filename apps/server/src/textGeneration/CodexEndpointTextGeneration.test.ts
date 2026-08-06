@@ -1,6 +1,10 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { ChatImageAttachment, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  ChatImageAttachment,
+  ProviderInstanceId,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -8,7 +12,6 @@ import * as Layer from "effect/Layer";
 import { attachmentRelativePath } from "../attachmentStore.ts";
 import { ServerConfig } from "../config.ts";
 import {
-  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES,
   type CodexEndpointStructuredGeneration,
   type CodexEndpointStructuredGenerationInput,
 } from "../provider/codexEndpoint/CodexEndpointStructuredGeneration.ts";
@@ -166,7 +169,7 @@ it.layer(TestLayer)("CodexEndpointTextGeneration", (it) => {
     Effect.gen(function* () {
       const harness = yield* makeHarness(['{"title":"must not run"}']);
       const attachment = makeAttachment(
-        Math.ceil((CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES * 3) / 4),
+        Math.ceil((PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES * 3) / 4),
       );
 
       const result = yield* harness.textGeneration

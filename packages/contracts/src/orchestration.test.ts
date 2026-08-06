@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  ClientOrchestrationCommand,
   ModelSelection,
   OrchestrationCommand,
   OrchestrationEvent,
@@ -23,6 +24,8 @@ import {
   ThreadCreatedPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
@@ -53,6 +56,66 @@ const decodeThreadCreatedPayload = Schema.decodeUnknownEffect(ThreadCreatedPaylo
 const decodeOrchestrationCommand = Schema.decodeUnknownEffect(OrchestrationCommand);
 const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
+const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
+
+const uploadTurnCommand = (dataUrls: ReadonlyArray<string>) => ({
+  type: "thread.turn.start" as const,
+  commandId: "cmd-upload-policy",
+  threadId: "thread-1",
+  message: {
+    messageId: "message-upload-policy",
+    role: "user" as const,
+    text: "inspect",
+    attachments: dataUrls.map((dataUrl, index) => ({
+      type: "image" as const,
+      name: `image-${index}.png`,
+      mimeType: "image/png",
+      sizeBytes: 1,
+      dataUrl,
+    })),
+  },
+  runtimeMode: "full-access" as const,
+  interactionMode: "default" as const,
+  createdAt: "2026-01-01T00:00:00.000Z",
+});
+
+it.effect("enforces the shared upload count and encoded aggregate at the legacy boundary", () =>
+  Effect.gen(function* () {
+    const smallDataUrl = "data:image/png;base64,AA==";
+    const tooMany = yield* Effect.exit(
+      decodeClientOrchestrationCommand(
+        uploadTurnCommand(
+          Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS + 1 }, () => smallDataUrl),
+        ),
+      ),
+    );
+    assert.strictEqual(tooMany._tag, "Failure");
+
+    const prefix = "data:image/png;base64,";
+    const aggregatePayloadChars = PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES - prefix.length * 2;
+    const firstPayloadChars = Math.floor(aggregatePayloadChars / 8) * 4;
+    const secondPayloadChars = aggregatePayloadChars - firstPayloadChars;
+    const exactBoundary = uploadTurnCommand([
+      `${prefix}${"A".repeat(firstPayloadChars)}`,
+      `${prefix}${"A".repeat(secondPayloadChars)}`,
+    ]);
+    const accepted = yield* decodeClientOrchestrationCommand(exactBoundary);
+    assert.strictEqual(accepted.type, "thread.turn.start");
+
+    const overflow = yield* Effect.exit(
+      decodeClientOrchestrationCommand({
+        ...exactBoundary,
+        message: {
+          ...exactBoundary.message,
+          attachments: exactBoundary.message.attachments.map((attachment, index) =>
+            index === 1 ? { ...attachment, dataUrl: `${attachment.dataUrl}AAAA` } : attachment,
+          ),
+        },
+      }),
+    );
+    assert.strictEqual(overflow._tag, "Failure");
+  }),
+);
 
 it.effect("decodes provider-normal turn completion commands", () =>
   Effect.gen(function* () {

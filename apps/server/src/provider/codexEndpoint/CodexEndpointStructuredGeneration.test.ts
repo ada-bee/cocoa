@@ -1,5 +1,9 @@
 import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -13,8 +17,6 @@ import {
   CodexEndpointTerminationError,
 } from "./CodexEndpointConnection.ts";
 import {
-  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES,
-  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES,
   CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_OUTPUT_BYTES,
   CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_REMOTE_PATH_BYTES,
   CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_OUTPUT_SCHEMA_BYTES,
@@ -400,7 +402,7 @@ it.effect(
       const cyclicSchema: Record<string, unknown> = {};
       cyclicSchema.self = cyclicSchema;
       const aggregatePayload = "A".repeat(
-        Math.ceil(CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES / 4 / 4) * 4 + 4,
+        Math.ceil(PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES / 4 / 4) * 4 + 4,
       );
       const oversizedImage = `data:image/png;base64,${aggregatePayload}`;
       const cases: ReadonlyArray<CodexEndpointStructuredGenerationInput> = [
@@ -432,7 +434,7 @@ it.effect(
         {
           ...BASE_INPUT,
           imageDataUrls: Array.from(
-            { length: CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES + 1 },
+            { length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS + 1 },
             () => IMAGE_DATA_URL,
           ),
         },

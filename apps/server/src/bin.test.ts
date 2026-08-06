@@ -7,8 +7,10 @@ import * as NodePath from "node:path";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AuthOrchestrationOperateScope,
   CommandId,
   EnvironmentOrchestrationHttpApi,
+  MessageId,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -570,6 +572,79 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
         }),
       );
     }),
+  );
+
+  it.effect(
+    "returns invalid_command for an invalid HTTP attachment without persisting a blob",
+    () =>
+      Effect.gen(function* () {
+        const baseDir = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-cli-http-invalid-attachment-test-"),
+        );
+        const paths = yield* ServerConfig.deriveServerPaths(baseDir, undefined);
+
+        yield* withLiveProjectCliServer(baseDir, () =>
+          Effect.gen(function* () {
+            const server = yield* HttpServer.HttpServer;
+            const address = server.address;
+            if (typeof address === "string" || !("port" in address)) {
+              assert.fail(`Expected TCP address, got ${address}`);
+            }
+            const auth = yield* EnvironmentAuth.EnvironmentAuth;
+            const session = yield* auth.issueSession({
+              subject: "http-invalid-attachment-test",
+              scopes: [AuthOrchestrationOperateScope],
+            });
+            const response = yield* Effect.tryPromise(() => {
+              // @effect-diagnostics-next-line globalFetchInEffect:off - This is an HTTP boundary integration test.
+              return fetch(`http://127.0.0.1:${address.port}/api/orchestration/dispatch`, {
+                method: "POST",
+                headers: {
+                  authorization: `Bearer ${session.token}`,
+                  "content-type": "application/json",
+                },
+                // @effect-diagnostics-next-line preferSchemaOverJson:off - The request body is intentionally malformed beyond schema-level fields.
+                body: JSON.stringify({
+                  type: "thread.turn.start",
+                  commandId: CommandId.make("command-http-invalid-attachment"),
+                  threadId: ThreadId.make("thread-http-invalid-attachment"),
+                  message: {
+                    messageId: MessageId.make("message-http-invalid-attachment"),
+                    role: "user",
+                    text: "inspect",
+                    attachments: [
+                      {
+                        type: "image",
+                        name: "invalid.png",
+                        mimeType: "image/png",
+                        sizeBytes: 1,
+                        dataUrl: "not-a-data-url",
+                      },
+                    ],
+                  },
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  createdAt: "2026-01-01T00:00:00.000Z",
+                }),
+              });
+            });
+            assert.equal(response.status, 400);
+            const body = (yield* Effect.tryPromise(() => response.json())) as {
+              readonly code: string;
+              readonly reason: string;
+            };
+            assert.equal(body.code, "invalid_request");
+            assert.equal(body.reason, "invalid_command");
+
+            assert.deepEqual(
+              NodeFS.existsSync(paths.attachmentsDir)
+                ? NodeFS.readdirSync(paths.attachmentsDir)
+                : [],
+              [],
+            );
+          }),
+        );
+      }),
   );
 
   it.effect("rejects dev-url on project commands", () =>

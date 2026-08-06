@@ -11,6 +11,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderItemId,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
   type ProviderApprovalDecision,
   type ProviderEvent,
   type ProviderSession,
@@ -39,7 +40,6 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
-import { CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES } from "../../gatewayManagedImageAttachments.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
@@ -681,7 +681,7 @@ attachmentLayer("CodexAdapterLive managed image attachments", (it) => {
       NodeAssert.ok(runtime);
       runtime.sendTurnImpl.mockClear();
       const attachment = makeImageAttachment(
-        Math.ceil((CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES * 3) / 4),
+        Math.ceil((PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES * 3) / 4),
         "oversized",
       );
 

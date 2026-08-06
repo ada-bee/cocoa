@@ -1,5 +1,6 @@
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { normalizeProjectPathForDispatch } from "@t3tools/shared/path";
@@ -8,7 +9,10 @@ import {
   type IsoDateTime,
   type OrchestrationCommand,
   OrchestrationDispatchCommandError,
+  encodedImageDataUrlSize,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
 } from "@t3tools/contracts";
 
 import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts";
@@ -43,17 +47,36 @@ export const canonicalizeClientCommandTimestamps = (
   };
 };
 
-export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
+interface NormalizedDispatchCommand {
+  readonly command: OrchestrationCommand;
+  readonly persistedAttachmentPaths: ReadonlyArray<string>;
+}
+
+const cleanupPersistedAttachments = (
+  fileSystem: FileSystem.FileSystem,
+  attachmentPaths: ReadonlyArray<string>,
+) =>
+  Effect.forEach(
+    attachmentPaths,
+    (attachmentPath) =>
+      fileSystem.remove(attachmentPath, { force: true }).pipe(Effect.catch(() => Effect.void)),
+    { concurrency: 1, discard: true },
+  );
+
+const normalizeDispatchCommandWithMetadata = (command: ClientOrchestrationCommand) =>
   Effect.gen(function* () {
     const receivedAt = DateTime.formatIso(yield* DateTime.now);
     const canonicalCommand = canonicalizeClientCommandTimestamps(command, receivedAt);
 
     if (canonicalCommand.type === "project.create") {
       return {
-        ...canonicalCommand,
-        workspaceRoot: normalizeProjectPathForDispatch(canonicalCommand.workspaceRoot),
-        createWorkspaceRootIfMissing: canonicalCommand.createWorkspaceRootIfMissing === true,
-      } satisfies OrchestrationCommand;
+        command: {
+          ...canonicalCommand,
+          workspaceRoot: normalizeProjectPathForDispatch(canonicalCommand.workspaceRoot),
+          createWorkspaceRootIfMissing: canonicalCommand.createWorkspaceRootIfMissing === true,
+        } satisfies OrchestrationCommand,
+        persistedAttachmentPaths: [],
+      } satisfies NormalizedDispatchCommand;
     }
 
     if (
@@ -61,20 +84,33 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       canonicalCommand.workspaceRoot !== undefined
     ) {
       return {
-        ...canonicalCommand,
-        workspaceRoot: normalizeProjectPathForDispatch(canonicalCommand.workspaceRoot),
-      } satisfies OrchestrationCommand;
+        command: {
+          ...canonicalCommand,
+          workspaceRoot: normalizeProjectPathForDispatch(canonicalCommand.workspaceRoot),
+        } satisfies OrchestrationCommand,
+        persistedAttachmentPaths: [],
+      } satisfies NormalizedDispatchCommand;
     }
 
     if (canonicalCommand.type !== "thread.turn.start") {
-      return canonicalCommand as OrchestrationCommand;
+      return {
+        command: canonicalCommand as OrchestrationCommand,
+        persistedAttachmentPaths: [],
+      } satisfies NormalizedDispatchCommand;
     }
 
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;
 
-    const normalizedAttachments = yield* Effect.forEach(
+    if (canonicalCommand.message.attachments.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+      return yield* new OrchestrationDispatchCommandError({
+        message: `A turn can include at most ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} image attachments.`,
+      });
+    }
+
+    let aggregateEncodedBytes = 0;
+    const preparedAttachments = yield* Effect.forEach(
       canonicalCommand.message.attachments,
       (attachment) =>
         Effect.gen(function* () {
@@ -89,6 +125,16 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
           if (bytes.byteLength === 0 || bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
             return yield* new OrchestrationDispatchCommandError({
               message: `Image attachment '${attachment.name}' is empty or too large.`,
+            });
+          }
+
+          aggregateEncodedBytes += encodedImageDataUrlSize({
+            mimeType: parsed.mimeType,
+            sizeBytes: bytes.byteLength,
+          });
+          if (aggregateEncodedBytes > PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES) {
+            return yield* new OrchestrationDispatchCommandError({
+              message: `Image attachments must encode to at most ${PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES} bytes.`,
             });
           }
 
@@ -117,33 +163,79 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
             });
           }
 
-          yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true }).pipe(
-            Effect.mapError(
-              () =>
-                new OrchestrationDispatchCommandError({
-                  message: `Failed to create attachment directory for '${attachment.name}'.`,
-                }),
-            ),
-          );
-          yield* fileSystem.writeFile(attachmentPath, bytes).pipe(
-            Effect.mapError(
-              () =>
-                new OrchestrationDispatchCommandError({
-                  message: `Failed to persist attachment '${attachment.name}'.`,
-                }),
-            ),
-          );
-
-          return persistedAttachment;
+          return { attachment: persistedAttachment, attachmentPath, bytes };
         }),
       { concurrency: 1 },
     );
 
+    const persistedAttachmentPaths = preparedAttachments.map((prepared) => prepared.attachmentPath);
+    yield* Effect.forEach(
+      preparedAttachments,
+      (prepared) =>
+        fileSystem.makeDirectory(path.dirname(prepared.attachmentPath), { recursive: true }).pipe(
+          Effect.mapError(
+            () =>
+              new OrchestrationDispatchCommandError({
+                message: `Failed to create attachment directory for '${prepared.attachment.name}'.`,
+              }),
+          ),
+          Effect.andThen(
+            fileSystem.writeFile(prepared.attachmentPath, prepared.bytes).pipe(
+              Effect.mapError(
+                () =>
+                  new OrchestrationDispatchCommandError({
+                    message: `Failed to persist attachment '${prepared.attachment.name}'.`,
+                  }),
+              ),
+            ),
+          ),
+        ),
+      { concurrency: 1, discard: true },
+    ).pipe(
+      Effect.onExit((exit) =>
+        Exit.isFailure(exit)
+          ? cleanupPersistedAttachments(fileSystem, persistedAttachmentPaths)
+          : Effect.void,
+      ),
+    );
+
     return {
-      ...canonicalCommand,
-      message: {
-        ...canonicalCommand.message,
-        attachments: normalizedAttachments,
-      },
-    } satisfies OrchestrationCommand;
+      command: {
+        ...canonicalCommand,
+        message: {
+          ...canonicalCommand.message,
+          attachments: preparedAttachments.map((prepared) => prepared.attachment),
+        },
+      } satisfies OrchestrationCommand,
+      persistedAttachmentPaths,
+    } satisfies NormalizedDispatchCommand;
   });
+
+export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
+  normalizeDispatchCommandWithMetadata(command).pipe(
+    Effect.map((normalized) => normalized.command),
+  );
+
+export const withNormalizedDispatchCommand = <A, E, R>(
+  command: ClientOrchestrationCommand,
+  use: (command: OrchestrationCommand) => Effect.Effect<A, E, R>,
+  options?: {
+    readonly cleanupAttachmentsOnSuccess?: (value: A) => boolean;
+  },
+) =>
+  normalizeDispatchCommandWithMetadata(command).pipe(
+    Effect.flatMap((normalized) =>
+      use(normalized.command).pipe(
+        Effect.onExit((exit) =>
+          normalized.persistedAttachmentPaths.length > 0 &&
+          (Exit.isFailure(exit) ||
+            (Exit.isSuccess(exit) && options?.cleanupAttachmentsOnSuccess?.(exit.value) === true))
+            ? Effect.gen(function* () {
+                const fileSystem = yield* FileSystem.FileSystem;
+                yield* cleanupPersistedAttachments(fileSystem, normalized.persistedAttachmentPaths);
+              })
+            : Effect.void,
+        ),
+      ),
+    ),
+  );

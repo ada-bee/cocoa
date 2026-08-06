@@ -30,7 +30,10 @@ import * as Stream from "effect/Stream";
 
 import * as CheckpointDiffQuery from "../../checkpointing/CheckpointDiffQuery.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
-import { normalizeDispatchCommand } from "../../orchestration/Normalizer.ts";
+import {
+  normalizeDispatchCommand,
+  withNormalizedDispatchCommand,
+} from "../../orchestration/Normalizer.ts";
 import {
   OrchestrationCommandBlockedByRevertError,
   OrchestrationCommandBusyError,
@@ -408,7 +411,7 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
 
     const dispatchNormalized = (
       command: OrchestrationCommand,
-    ): Effect.Effect<{ readonly sequence: number }, CocoaClientV1RequestError> =>
+    ): Effect.Effect<OrchestrationEngine.OrchestrationDispatchResult, CocoaClientV1RequestError> =>
       (command.type === "thread.checkpoint.revert" || command.type === "thread.turn.start"
         ? checkpointRevertGate.assertThreadAvailable(command.threadId).pipe(
             Effect.mapError(
@@ -429,51 +432,55 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
       );
 
     const dispatch = (command: Parameters<typeof normalizeDispatchCommand>[0]) =>
-      Effect.gen(function* () {
-        const normalized = yield* normalizeDispatchCommand(command);
-        const shouldStopSessionAfterArchive =
-          normalized.type === "thread.archive"
-            ? yield* projections.getThreadShellById(normalized.threadId).pipe(
-                Effect.map(
-                  Option.match({
-                    onNone: () => false,
-                    onSome: (thread) =>
-                      thread.session !== null && thread.session.status !== "stopped",
+      withNormalizedDispatchCommand(
+        command,
+        (normalized) =>
+          Effect.gen(function* () {
+            const shouldStopSessionAfterArchive =
+              normalized.type === "thread.archive"
+                ? yield* projections.getThreadShellById(normalized.threadId).pipe(
+                    Effect.map(
+                      Option.match({
+                        onNone: () => false,
+                        onSome: (thread) =>
+                          thread.session !== null && thread.session.status !== "stopped",
+                      }),
+                    ),
+                    Effect.orElseSucceed(() => false),
+                  )
+                : false;
+            const result = yield* dispatchNormalized(normalized);
+            if (normalized.type !== "thread.archive") {
+              return result;
+            }
+            if (shouldStopSessionAfterArchive) {
+              yield* normalizeDispatchCommand({
+                type: "thread.session.stop",
+                commandId: CommandId.make(`session-stop-for-archive:${normalized.commandId}`),
+                threadId: normalized.threadId,
+                createdAt: yield* nowIso,
+              }).pipe(
+                Effect.flatMap(dispatchNormalized),
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("failed to stop provider session during Cocoa v1 archive", {
+                    threadId: normalized.threadId,
+                    cause,
                   }),
                 ),
-                Effect.orElseSucceed(() => false),
-              )
-            : false;
-        const result = yield* dispatchNormalized(normalized);
-        if (normalized.type !== "thread.archive") {
-          return result;
-        }
-        if (shouldStopSessionAfterArchive) {
-          yield* normalizeDispatchCommand({
-            type: "thread.session.stop",
-            commandId: CommandId.make(`session-stop-for-archive:${normalized.commandId}`),
-            threadId: normalized.threadId,
-            createdAt: yield* nowIso,
-          }).pipe(
-            Effect.flatMap(dispatchNormalized),
-            Effect.catchCause((cause) =>
-              Effect.logWarning("failed to stop provider session during Cocoa v1 archive", {
-                threadId: normalized.threadId,
-                cause,
-              }),
-            ),
-          );
-        }
-        yield* terminals.close({ threadId: normalized.threadId }).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("failed to close thread terminals after Cocoa v1 archive", {
-              threadId: normalized.threadId,
-              detail: error.message,
-            }),
-          ),
-        );
-        return result;
-      });
+              );
+            }
+            yield* terminals.close({ threadId: normalized.threadId }).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("failed to close thread terminals after Cocoa v1 archive", {
+                  threadId: normalized.threadId,
+                  detail: error.message,
+                }),
+              ),
+            );
+            return result;
+          }),
+        { cleanupAttachmentsOnSuccess: (result) => result.deduplicated === true },
+      );
 
     const subscribeShell = (input: {
       readonly afterSequence?: number;

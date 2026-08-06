@@ -1,4 +1,9 @@
-import { type ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  type ModelSelection,
+  ProviderInstanceId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES,
+} from "@t3tools/contracts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -11,10 +16,6 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
-import {
-  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES,
-  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES,
-} from "../../gatewayManagedImageAttachments.ts";
 import { CodexEndpointTerminationError } from "./CodexEndpointConnection.ts";
 import {
   CodexEndpointInternalOperationRegistrationError,
@@ -31,11 +32,6 @@ export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_PROMPT_BYTES = 256 * 1024;
 export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_OUTPUT_SCHEMA_BYTES = 64 * 1024;
 export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_OUTPUT_BYTES = 256 * 1024;
 export const CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_REMOTE_PATH_BYTES = 4096;
-export {
-  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES,
-  CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES,
-} from "../../gatewayManagedImageAttachments.ts";
-
 const IMAGE_DATA_URL_PATTERN = /^data:image\/[a-zA-Z0-9.+-]+;base64,([a-zA-Z0-9+/]+={0,2})$/;
 const UTF8_ENCODER = new TextEncoder();
 
@@ -195,7 +191,7 @@ const validateInput = Effect.fn("CodexEndpointStructuredGeneration.validateInput
     Effect.mapError((cause) => makeFailure(providerInstanceId, "invalid-input", cause)),
   );
 
-  if (input.imageDataUrls.length > CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGES) {
+  if (input.imageDataUrls.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
     return yield* makeFailure(providerInstanceId, "invalid-input");
   }
   let aggregateImageBytes = 0;
@@ -205,7 +201,7 @@ const validateInput = Effect.fn("CodexEndpointStructuredGeneration.validateInput
       return yield* makeFailure(providerInstanceId, "invalid-input");
     }
     aggregateImageBytes += imageDataUrl.length;
-    if (aggregateImageBytes > CODEX_ENDPOINT_STRUCTURED_GENERATION_MAX_IMAGE_DATA_URL_BYTES) {
+    if (aggregateImageBytes > PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_BYTES) {
       return yield* makeFailure(providerInstanceId, "invalid-input");
     }
   }
