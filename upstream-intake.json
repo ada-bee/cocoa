@@ -40,8 +40,8 @@
         },
         {
           "sha": "1cbd88aba042f3209e1538a927775a7c4f7fdb06",
-          "classification": "deferred",
-          "reason": "The sanitizer changes only the legacy terminal manager; Cocoa needs the behavior shared with ProviderManager before intake."
+          "classification": "skipped",
+          "reason": "Cocoa ports the sanitizer behavior through a shared implementation used by both the legacy and provider-owned terminal managers; the upstream legacy-only patch is no longer needed."
         },
         {
           "sha": "966cc05a9007a4ad1b7f8d5d3a1fc0e5c82a5b94",
@@ -161,8 +161,8 @@
         },
         {
           "sha": "47dfc6526521866992f6b50beac4587b45114631",
-          "classification": "deferred",
-          "reason": "Grouped projects are valuable, but Cocoa must group by provider instance plus workspace root and avoid local VCS assumptions."
+          "classification": "skipped",
+          "reason": "Cocoa implements provider-aware physical project identity and exact endpoint selection across web and mobile without the upstream environment-equals-machine or local-VCS assumptions."
         },
         {
           "sha": "70de6e17860d7343a73e117e6e9e1ce41b1b633e",
@@ -247,8 +247,8 @@
         },
         {
           "sha": "80720ad592dc68c29677444fd7b6abb97b82c03e",
-          "classification": "deferred",
-          "reason": "Update UX must first model Cocoa's administrator-managed lifecycle instead of suggesting T3 self-update."
+          "classification": "skipped",
+          "reason": "Cocoa now advertises a typed administrator-managed lifecycle and renders deployment guidance without the upstream T3 self-update action."
         },
         {
           "sha": "808d6853555c8b57f414a06e0a79eb1b9e192ef5",
