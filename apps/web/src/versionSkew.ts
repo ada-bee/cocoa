@@ -1,4 +1,4 @@
-import type { EnvironmentId, ServerConfig, ServerSelfUpdateCapability } from "@t3tools/contracts";
+import type { EnvironmentId, ServerConfig, ServerUpdateCapability } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { APP_VERSION } from "./branding";
@@ -49,12 +49,13 @@ export function resolveServerConfigVersionMismatch(
   return resolveVersionMismatch(serverConfig?.environment.serverVersion);
 }
 
-/** The update path the connected server offers, or null when it only
-    supports a manual relaunch (older servers, dev checkouts, Windows). */
+/** The client-facing update path for the connected server, including
+    external lifecycle ownership. Null retains the manual legacy fallback. */
 export function resolveServerSelfUpdateCapability(
   serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
-): ServerSelfUpdateCapability | null {
-  return serverConfig?.environment.capabilities.serverSelfUpdate ?? null;
+): ServerUpdateCapability | null {
+  const capabilities = serverConfig?.environment.capabilities;
+  return capabilities?.serverUpdateManagement ?? capabilities?.serverSelfUpdate ?? null;
 }
 
 /** The command to hand users whose server cannot update itself. */
@@ -65,7 +66,7 @@ export function manualServerUpdateCommand(targetVersion: string): string {
 /** One sentence telling the user how to resolve version skew for a server,
     matched to the update path it offers. */
 export function serverUpdateGuidance(
-  capability: ServerSelfUpdateCapability | null,
+  capability: ServerUpdateCapability | null,
   serverLabel: string,
 ): string {
   switch (capability) {
@@ -74,6 +75,8 @@ export function serverUpdateGuidance(
       return `Update the ${serverLabel} so they stay in sync.`;
     case "desktop-managed":
       return `The ${serverLabel} is run by the T3 Code desktop app on its machine — update the desktop app there to sync them.`;
+    case "administrator-managed":
+      return `The ${serverLabel} is administrator-managed — update its deployment to sync them.`;
     default:
       return `Relaunch the ${serverLabel} with the copied command to sync them.`;
   }

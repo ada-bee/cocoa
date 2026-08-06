@@ -1,4 +1,4 @@
-import type { EnvironmentId, ServerSelfUpdateCapability } from "@t3tools/contracts";
+import type { EnvironmentId, ServerUpdateCapability } from "@t3tools/contracts";
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import {
   isAtomCommandInterrupted,
@@ -123,7 +123,7 @@ export function ServerUpdateAction({
 }: {
   readonly environmentId: EnvironmentId;
   readonly serverLabel: string;
-  readonly selfUpdate: ServerSelfUpdateCapability | null;
+  readonly selfUpdate: ServerUpdateCapability | null;
   readonly targetVersion: string;
   readonly label?: string;
 }) {
@@ -183,6 +183,14 @@ export function ServerUpdateAction({
     return (
       <span className="text-muted-foreground text-xs">
         Update the desktop app on that machine to update this server.
+      </span>
+    );
+  }
+
+  if (selfUpdate === "administrator-managed") {
+    return (
+      <span className="text-muted-foreground text-xs">
+        This server is administrator-managed. Update its deployment to change versions.
       </span>
     );
   }

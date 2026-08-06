@@ -98,6 +98,37 @@ describe("ServerUpdateAction", () => {
 
     expect(testState.toast).not.toHaveBeenCalled();
   });
+
+  it("renders administrator-managed guidance without an update action", () => {
+    const markup = renderToStaticMarkup(
+      <ServerUpdateAction
+        environmentId={"env-cocoa" as EnvironmentId}
+        serverLabel="Cocoa gateway"
+        selfUpdate="administrator-managed"
+        targetVersion="0.0.31"
+      />,
+    );
+
+    expect(markup).toContain("administrator-managed");
+    expect(markup).toContain("Update its deployment");
+    expect(markup).not.toContain("button");
+    expect(markup).not.toContain("npx t3");
+  });
+
+  it("preserves the copy-command action for legacy servers without a capability", () => {
+    const markup = renderToStaticMarkup(
+      <ServerUpdateAction
+        environmentId={"env-legacy" as EnvironmentId}
+        serverLabel="Legacy server"
+        selfUpdate={null}
+        targetVersion="0.0.31"
+      />,
+    );
+
+    expect(markup).toContain("Copy update command");
+    expect(markup).toContain("button");
+    expect(markup).not.toContain("administrator-managed");
+  });
 });
 
 describe("ServerUpdateProgress", () => {

@@ -78,7 +78,7 @@ describe("versionSkew", () => {
     );
   });
 
-  it("reads desktop-managed update capabilities from config descriptors", () => {
+  it("reads client and administrator-managed update capabilities from config descriptors", () => {
     expect(
       resolveServerSelfUpdateCapability({
         environment: {
@@ -93,6 +93,20 @@ describe("versionSkew", () => {
         },
       }),
     ).toBe("desktop-managed");
+    expect(
+      resolveServerSelfUpdateCapability({
+        environment: {
+          environmentId: EnvironmentId.make("environment-cocoa"),
+          label: "Cocoa Gateway",
+          platform: { os: "linux", arch: "arm64" },
+          serverVersion: "9.9.9",
+          capabilities: {
+            repositoryIdentity: false,
+            serverUpdateManagement: "administrator-managed",
+          },
+        },
+      }),
+    ).toBe("administrator-managed");
     expect(resolveServerSelfUpdateCapability(null)).toBeNull();
   });
 
@@ -102,6 +116,9 @@ describe("versionSkew", () => {
     );
     expect(serverUpdateGuidance("desktop-managed", "Desktop server")).toBe(
       "The Desktop server is run by the T3 Code desktop app on its machine — update the desktop app there to sync them.",
+    );
+    expect(serverUpdateGuidance("administrator-managed", "Cocoa gateway")).toBe(
+      "The Cocoa gateway is administrator-managed — update its deployment to sync them.",
     );
     expect(serverUpdateGuidance(null, "Local server")).toBe(
       "Relaunch the Local server with the copied command to sync them.",

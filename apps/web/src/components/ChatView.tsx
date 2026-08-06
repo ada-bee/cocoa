@@ -2009,12 +2009,13 @@ function ChatViewContent(props: ChatViewProps) {
               {serverUpdateGuidance(versionMismatchSelfUpdate, versionMismatchServerLabel)}
             </>
           ) : null,
-        // The desktop-managed guidance is already the description; the action
-        // slot would only repeat it.
+        // Managed-server guidance is already the description; the action slot
+        // would only repeat it.
         actions:
           updateInProgress ||
           !versionMismatch ||
-          versionMismatchSelfUpdate === "desktop-managed" ? undefined : (
+          versionMismatchSelfUpdate === "desktop-managed" ||
+          versionMismatchSelfUpdate === "administrator-managed" ? undefined : (
             <ServerUpdateAction
               environmentId={serverUpdateEnvironmentId}
               serverLabel={versionMismatchServerLabel}

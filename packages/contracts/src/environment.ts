@@ -28,14 +28,25 @@ export type ServerSelfUpdateMethod = typeof ServerSelfUpdateMethod.Type;
 
 /** What update path a client should offer for a server: one of the RPC
     self-update methods above, or "desktop-managed" when the backend's
-    version belongs to the T3 Code desktop app supervising it — updating the
-    app on that machine is the only way to update the server. */
+    version belongs to the T3 Code desktop app supervising it. */
 export const ServerSelfUpdateCapability = Schema.Literals([
   "boot-service",
   "respawn",
   "desktop-managed",
 ]);
 export type ServerSelfUpdateCapability = typeof ServerSelfUpdateCapability.Type;
+
+/** Lifecycle ownership outside the client. This is separate from
+    serverSelfUpdate so older clients can ignore the new field instead of
+    rejecting an unknown member of the existing capability enum. */
+export const ServerUpdateManagement = Schema.Literal("administrator-managed");
+export type ServerUpdateManagement = typeof ServerUpdateManagement.Type;
+
+export const ServerUpdateCapability = Schema.Union([
+  ServerSelfUpdateCapability,
+  ServerUpdateManagement,
+]);
+export type ServerUpdateCapability = typeof ServerUpdateCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -50,10 +61,12 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   /** Server understands regenerateTitle on thread.meta.update. Absent on
       older servers, so clients hide the action instead of sending it. */
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
-  /** The update path clients should offer for this server. Absent on
+  /** The update path clients should offer for this server. Absent on legacy
       servers that must be relaunched manually (dev checkouts, Windows
       foreground runs, pre-update servers). */
   serverSelfUpdate: Schema.optionalKey(ServerSelfUpdateCapability),
+  /** Deployment tooling outside the client owns server updates. */
+  serverUpdateManagement: Schema.optionalKey(ServerUpdateManagement),
   /** Server can stream self-update progress before acknowledging the
       restart. Clients fall back to server.updateServer when absent. */
   serverSelfUpdateProgress: Schema.optionalKey(Schema.Boolean),

@@ -195,6 +195,7 @@ export const makeCocoaGateway = Effect.gen(function* () {
       threadSettlement: true,
       threadSnooze: true,
       threadTitleRegeneration: true,
+      serverUpdateManagement: "administrator-managed",
     },
   };
 

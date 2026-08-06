@@ -81,39 +81,42 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
     }),
   );
 
-  it.effect("builds Cocoa metadata without local repository or update capabilities", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "cocoa-server-environment-test-",
-      });
-      const readDescriptor = Effect.gen(function* () {
-        const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
-        return yield* serverEnvironment.getDescriptor;
-      }).pipe(
-        Effect.provide(makeCocoaServerEnvironmentLayer(baseDir)),
-        Effect.provideService(HostProcessHostname, "cocoa-pi"),
-      );
+  it.effect(
+    "marks Cocoa updates as administrator-managed without local repository capabilities",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "cocoa-server-environment-test-",
+        });
+        const readDescriptor = Effect.gen(function* () {
+          const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+          return yield* serverEnvironment.getDescriptor;
+        }).pipe(
+          Effect.provide(makeCocoaServerEnvironmentLayer(baseDir)),
+          Effect.provideService(HostProcessHostname, "cocoa-pi"),
+        );
 
-      const first = yield* readDescriptor;
-      const second = yield* readDescriptor;
+        const first = yield* readDescriptor;
+        const second = yield* readDescriptor;
 
-      expect(second.environmentId).toBe(first.environmentId);
-      expect(second.label).toBe("cocoa-pi");
-      expect(second.capabilities.repositoryIdentity).toBe(false);
-      expect(second.capabilities.connectionProbe).toBe(true);
-      expect(second.capabilities).not.toHaveProperty("serverSelfUpdate");
-      expect(second.capabilities).not.toHaveProperty("serverSelfUpdateProgress");
+        expect(second.environmentId).toBe(first.environmentId);
+        expect(second.label).toBe("cocoa-pi");
+        expect(second.capabilities.repositoryIdentity).toBe(false);
+        expect(second.capabilities.connectionProbe).toBe(true);
+        expect(second.capabilities.serverUpdateManagement).toBe("administrator-managed");
+        expect(second.capabilities).not.toHaveProperty("serverSelfUpdate");
+        expect(second.capabilities).not.toHaveProperty("serverSelfUpdateProgress");
 
-      const { environmentIdPath } = yield* ServerConfig.deriveServerPaths(baseDir, undefined);
-      yield* fileSystem.writeFileString(environmentIdPath, "\n");
+        const { environmentIdPath } = yield* ServerConfig.deriveServerPaths(baseDir, undefined);
+        yield* fileSystem.writeFileString(environmentIdPath, "\n");
 
-      const regenerated = yield* readDescriptor;
-      const persisted = yield* readDescriptor;
-      expect(regenerated.environmentId).not.toBe(first.environmentId);
-      expect(regenerated.environmentId.length).toBeGreaterThan(0);
-      expect(persisted.environmentId).toBe(regenerated.environmentId);
-    }),
+        const regenerated = yield* readDescriptor;
+        const persisted = yield* readDescriptor;
+        expect(regenerated.environmentId).not.toBe(first.environmentId);
+        expect(regenerated.environmentId.length).toBeGreaterThan(0);
+        expect(persisted.environmentId).toBe(regenerated.environmentId);
+      }),
   );
 
   it.effect("structures persisted environment id filesystem failures", () =>
