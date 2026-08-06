@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 
 import {
   SERVICE_LAUNCHER_CONTEXT_ENV,
@@ -126,5 +127,62 @@ it.effect("rejects contradictory trial context instead of leaving activation clo
     });
     const error = yield* makeClient(host, "1.1.0").pipe(Effect.flip);
     expect(error.message).toBe("The service launcher supplied invalid startup context.");
+  }),
+);
+
+const runCocoaGatewayClient = (host: FakeLauncherProcess) =>
+  Effect.gen(function* () {
+    const client = yield* ServiceLauncherClient.ServiceLauncherClient;
+    const prepared = yield* client.prepareTrial;
+    const updateError = yield* client.requestUpdate({ targetVersion: "9.9.9" }).pipe(Effect.flip);
+    return { client, prepared, updateError };
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        ServiceLauncherClient.layerForRuntimeProfile("cocoa-gateway"),
+        Layer.succeed(ServiceLauncherClient.ServiceLauncherHostProcess, host),
+        Layer.succeed(HostProcessEnvironment, host.env),
+      ),
+    ),
+  );
+
+it("keeps legacy and unspecified profiles on the existing launcher layer", () => {
+  expect(ServiceLauncherClient.layerForRuntimeProfile("legacy")).toBe(ServiceLauncherClient.layer);
+  expect(ServiceLauncherClient.layerForRuntimeProfile(undefined)).toBe(ServiceLauncherClient.layer);
+});
+
+it.effect("Cocoa ignores valid pending launcher context and never sends update IPC", () =>
+  Effect.gen(function* () {
+    const host = new FakeLauncherProcess({
+      protocol: 1,
+      childVersion: "9.9.9",
+      update: {
+        id: "poison-update",
+        fromVersion: "1.0.0",
+        targetVersion: "9.9.9",
+        status: "pending",
+      },
+    });
+
+    const result = yield* runCocoaGatewayClient(host);
+    expect(result.client).toMatchObject({ managed: false, trial: false });
+    expect(result.prepared).toBeUndefined();
+    expect(result.updateError).toMatchObject({
+      _tag: "ServiceLauncherClientError",
+      operation: "unmanaged",
+    });
+    expect(host.sent).toEqual([]);
+  }),
+);
+
+it.effect("Cocoa ignores malformed launcher context instead of failing acquisition", () =>
+  Effect.gen(function* () {
+    const host = new FakeLauncherProcess("not-a-launcher-context");
+    host.env[SERVICE_LAUNCHER_CONTEXT_ENV] = "{malformed-json";
+
+    const result = yield* runCocoaGatewayClient(host);
+    expect(result.client).toMatchObject({ managed: false, trial: false });
+    expect(result.prepared).toBeUndefined();
+    expect(host.sent).toEqual([]);
   }),
 );

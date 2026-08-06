@@ -47,7 +47,7 @@ import * as CodexEndpointConnection from "../codexEndpoint/CodexEndpointConnecti
 import type { CodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
 import {
-  CodexEndpointUnsupportedAuthenticationError,
+  CodexEndpointInvalidCredentialError,
   CodexEndpointWebSocketOpenError,
 } from "../codexEndpoint/DirectWebSocketConnector.ts";
 import { makeCodexDriver, type CodexDriverDependencies } from "./CodexDriver.ts";
@@ -446,7 +446,13 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
               instanceId: INSTANCE_ID,
               displayName: "Remote Codex",
               accentColor: undefined,
-              environment: [],
+              environment: [
+                {
+                  name: "OPENAI_API_KEY",
+                  value: "must-not-be-captured-by-endpoint-adapter",
+                  sensitive: true,
+                },
+              ],
               enabled: true,
               config: WORKSPACE_ENDPOINT_CONFIG,
             })
@@ -462,6 +468,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           );
 
           assert.equal(endpointFactoryCalls, 1);
+          assert.deepStrictEqual(adapterOptions?.environment, {});
           assert.equal(workspaceFactoryCalls, 1);
           assert.equal(vcsFactoryCalls, 1);
           assert.equal(endpointTextGenerationFactoryCalls, 1);
@@ -646,7 +653,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
                 subscribeChanges: PubSub.subscribe(changes),
               } satisfies CodexEndpointSupervisor.CodexEndpointSupervisor;
             })) as CodexDriverDependencies["makeEndpointSupervisor"],
-          makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],
+          makeAdapter: ((_config: CodexSettings, options?: CodexAdapterLiveOptions) => {
+            assert.deepStrictEqual(options?.environment, {});
+            return Effect.succeed(adapter);
+          }) as CodexDriverDependencies["makeAdapter"],
           makeEndpointWorkspace: (() =>
             Effect.die(
               "workspace factory called without helper",
@@ -892,13 +902,17 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         let terminalCalls = 0;
         let vcsCalls = 0;
         let workspaceCalls = 0;
+        let adapterOptions: CodexAdapterLiveOptions | undefined;
         const adapter = { stopAll: () => Effect.void } as unknown as CodexAdapterShape;
         const driver = makeCodexDriver({
           makeEndpoint: (() => {
             endpointCalls += 1;
             return Effect.die("disabled endpoint connected");
           }) as CodexDriverDependencies["makeEndpoint"],
-          makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],
+          makeAdapter: ((_config: CodexSettings, options?: CodexAdapterLiveOptions) => {
+            adapterOptions = options;
+            return Effect.succeed(adapter);
+          }) as CodexDriverDependencies["makeAdapter"],
           makeEndpointWorkspace: (() => {
             workspaceCalls += 1;
             throw new Error("disabled endpoint created workspace adapter");
@@ -933,7 +947,13 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           instanceId: INSTANCE_ID,
           displayName: undefined,
           accentColor: undefined,
-          environment: [],
+          environment: [
+            {
+              name: "OPENAI_API_KEY",
+              value: "must-not-be-captured-by-disabled-endpoint-adapter",
+              sensitive: true,
+            },
+          ],
           enabled: false,
           config: TERMINAL_WORKSPACE_ENDPOINT_CONFIG,
         });
@@ -942,6 +962,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         assert.equal(terminalCalls, 0);
         assert.equal(vcsCalls, 0);
         assert.equal(workspaceCalls, 0);
+        assert.deepStrictEqual(adapterOptions?.environment, {});
         assert.isUndefined(instance.workspace);
         assert.isUndefined(instance.terminal);
         assert.isUndefined(instance.vcs);
@@ -1031,8 +1052,9 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           }),
           makeEndpoint: (() =>
             Effect.fail(
-              new CodexEndpointUnsupportedAuthenticationError({
-                authenticationType: "signed-bearer-token",
+              new CodexEndpointInvalidCredentialError({
+                path: "/run/secrets/codex-signing-key",
+                reason: "too-short",
               }),
             )) as CodexDriverDependencies["makeEndpoint"],
           makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],

@@ -42,6 +42,7 @@ export const CocoaGatewayPolicyFailureReason = Schema.Literals([
   "local-process-field",
   "missing-provider-config",
   "missing-endpoint-transport",
+  "provider-environment-forbidden",
   "unknown-provider-field",
   "unsupported-driver",
   "invalid-model-selection",
@@ -91,6 +92,14 @@ const validateInstance = Effect.fn("CocoaGatewayPolicy.validateInstance")(functi
     return yield* fail("unsupported-driver", {
       providerInstanceId,
       detail: `Driver '${instance.driver}' is not available in the Cocoa gateway profile.`,
+    });
+  }
+
+  if (instance.environment !== undefined && instance.environment.length > 0) {
+    return yield* fail("provider-environment-forbidden", {
+      providerInstanceId,
+      detail:
+        "Cocoa endpoint providers cannot carry process environment values; use an explicit endpoint credential reference.",
     });
   }
 

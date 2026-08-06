@@ -91,6 +91,7 @@ import {
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
+const EMPTY_ENDPOINT_PROCESS_ENV: NodeJS.ProcessEnv = Object.freeze({});
 const UPDATE = makePackageManagedProviderMaintenanceResolver({
   provider: DRIVER_KIND,
   npmPackageName: "@openai/codex",
@@ -214,7 +215,6 @@ export const makeCodexDriver = (
       Effect.gen(function* () {
         const serverSettings = yield* ServerSettingsService;
         const eventLoggers = yield* ProviderEventLoggers;
-        const processEnv = mergeProviderInstanceEnvironment(environment);
         const mapDriverError = (detail: string, cause: unknown) =>
           new ProviderDriverError({
             driver: DRIVER_KIND,
@@ -245,7 +245,7 @@ export const makeCodexDriver = (
             const adapter = yield* dependencies.makeAdapter(effectiveConfig, {
               instanceId,
               enabled: false,
-              environment: processEnv,
+              environment: EMPTY_ENDPOINT_PROCESS_ENV,
               ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
             });
             const snapshotSettings = makeProviderSnapshotSettingsSource(
@@ -463,7 +463,7 @@ export const makeCodexDriver = (
           const nativeAdapter = yield* dependencies.makeAdapter(effectiveConfig, {
             instanceId,
             enabled: true,
-            environment: processEnv,
+            environment: EMPTY_ENDPOINT_PROCESS_ENV,
             makeRuntime: (runtimeOptions) => {
               const {
                 binaryPath: _binaryPath,
@@ -636,6 +636,7 @@ export const makeCodexDriver = (
           } satisfies ProviderInstance;
         }
 
+        const processEnv = mergeProviderInstanceEnvironment(environment);
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
         const httpClient = yield* HttpClient.HttpClient;
         const homeLayout = yield* dependencies.resolveHomeLayout(config);

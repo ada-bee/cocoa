@@ -637,7 +637,7 @@ export const makeServerLayer = Layer.unwrap(
     const tailscaleParked = yield* Deferred.make<void>();
     const cloudLinkParked = yield* Deferred.make<void>();
     const routesReady = yield* Deferred.make<void>();
-    const launcherLayer = ServiceLauncherClient.layer;
+    const launcherLayer = ServiceLauncherClient.layerForRuntimeProfile(config.runtimeProfile);
 
     if (config.runtimeProfile !== "cocoa-gateway") {
       yield* fixPath();

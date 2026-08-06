@@ -246,4 +246,24 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
   });
 });
 
+/**
+ * Cocoa is deployed and updated by its administrator, never by T3's launcher.
+ *
+ * Keep this as a value-only layer: unlike `layer`, acquiring it must not inspect
+ * launcher environment, process IPC state, or pending trial metadata.
+ */
+export const cocoaGatewayLayer = Layer.succeed(
+  ServiceLauncherClient,
+  ServiceLauncherClient.of({
+    managed: false,
+    trial: false,
+    requestUpdate: () => Effect.fail(new ServiceLauncherClientError({ operation: "unmanaged" })),
+    prepareTrial: Effect.sync((): ServerSelfUpdateOutcome | undefined => undefined),
+  }),
+);
+
 export const layer = Layer.effect(ServiceLauncherClient, make());
+
+/** Selects the launcher contract without allowing Cocoa to acquire legacy IPC state. */
+export const layerForRuntimeProfile = (runtimeProfile: "legacy" | "cocoa-gateway" | undefined) =>
+  runtimeProfile === "cocoa-gateway" ? cocoaGatewayLayer : layer;

@@ -129,6 +129,88 @@ describe("Cocoa gateway provider policy", () => {
     );
   });
 
+  it.effect("rejects API and model-provider credentials on the provider environment", () => {
+    const settings = validSettings();
+    const macbook = settings.providerInstances[ProviderInstanceId.make("macbook_air")]!;
+
+    return Effect.all(
+      ["OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY"].map((name) =>
+        expectReason(
+          {
+            ...settings,
+            providerInstances: {
+              ...settings.providerInstances,
+              [ProviderInstanceId.make("macbook_air")]: {
+                ...macbook,
+                environment: [
+                  {
+                    name,
+                    value: "must-never-enter-the-cocoa-gateway",
+                    sensitive: true,
+                  },
+                ],
+              },
+            },
+          },
+          "provider-environment-forbidden",
+        ),
+      ),
+      { discard: true },
+    );
+  });
+
+  it.effect("allows explicit SSH and WebSocket endpoint credential file references", () => {
+    const settings = validSettings();
+    const macbook = settings.providerInstances[ProviderInstanceId.make("macbook_air")]!;
+    const linux = settings.providerInstances[ProviderInstanceId.make("linux_dev_box")]!;
+    const withEndpointCredentials = {
+      ...settings,
+      providerInstances: {
+        ...settings.providerInstances,
+        [ProviderInstanceId.make("macbook_air")]: {
+          ...macbook,
+          config: {
+            endpointTransport: {
+              type: "direct-websocket" as const,
+              url: "wss://codex.internal.example:4500",
+              authentication: {
+                type: "capability-token" as const,
+                credential: { source: "file" as const, path: "/run/secrets/codex-token" },
+              },
+            },
+          },
+        },
+        [ProviderInstanceId.make("linux_dev_box")]: {
+          ...linux,
+          config: {
+            endpointTransport: {
+              type: "ssh-proxy" as const,
+              host: "rigatoni-alfredo",
+              options: { identityFile: "/run/secrets/cocoa-ssh-identity" },
+            },
+          },
+        },
+      },
+    };
+
+    return Effect.gen(function* () {
+      const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(withEndpointCredentials);
+      expect(resolved[ProviderInstanceId.make("macbook_air")]?.config).toMatchObject({
+        endpointTransport: {
+          authentication: {
+            type: "capability-token",
+            credential: { source: "file", path: "/run/secrets/codex-token" },
+          },
+        },
+      });
+      expect(resolved[ProviderInstanceId.make("linux_dev_box")]?.config).toMatchObject({
+        endpointTransport: {
+          options: { identityFile: "/run/secrets/cocoa-ssh-identity" },
+        },
+      });
+    });
+  });
+
   it.effect("rejects missing and malformed endpoint configuration", () => {
     const settings = validSettings();
     return Effect.all([
