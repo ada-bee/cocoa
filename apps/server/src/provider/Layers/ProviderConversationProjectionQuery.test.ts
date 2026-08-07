@@ -236,6 +236,87 @@ it.effect("projects provider-owned catalog and history into Cocoa shell/detail c
   }).pipe(Effect.provide(persistenceLayer)),
 );
 
+it.effect("uses Cocoa archive state while retaining history after provider deletion", () =>
+  Effect.gen(function* () {
+    const repository = yield* ProviderConversationCacheRepository;
+    yield* repository.beginSync({
+      providerInstanceId: INSTANCE_ID,
+      syncEpoch: SYNC,
+      startedAt: NOW,
+    });
+    yield* repository.upsertCatalogThread({
+      providerInstanceId: INSTANCE_ID,
+      thread: { ...providerThread, turns: [] },
+      archived: false,
+      syncEpoch: SYNC,
+      observedAt: NOW,
+    });
+    yield* repository.completeSync({
+      providerInstanceId: INSTANCE_ID,
+      syncEpoch: SYNC,
+      completedAt: NOW,
+    });
+    yield* repository.upsertThreadDetail({
+      providerInstanceId: INSTANCE_ID,
+      thread: providerThread,
+      observedAt: NOW,
+    });
+    const cached = Option.getOrThrow(
+      yield* repository.getThread({
+        providerInstanceId: INSTANCE_ID,
+        providerThreadId: providerThread.providerThreadId,
+      }),
+    );
+    const archivedReadModel: OrchestrationReadModel = {
+      ...readModel,
+      threads: [
+        {
+          id: cached.threadId,
+          projectId: PROJECT_ID,
+          title: "Cocoa overlay",
+          modelSelection: ModelSelection.make({ instanceId: INSTANCE_ID, model: "gpt-5.6-sol" }),
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          latestTurn: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+          archivedAt: NOW,
+          settledOverride: null,
+          settledAt: null,
+          snoozedUntil: null,
+          snoozedAt: null,
+          titleRegeneration: null,
+          session: null,
+          deletedAt: null,
+          messages: [],
+          proposedPlans: [],
+          activities: [],
+          checkpoints: [],
+        },
+      ],
+    };
+    const archivedBase = ProjectionSnapshotQuery.of({
+      ...base,
+      getCommandReadModel: () => Effect.succeed(archivedReadModel),
+    });
+    const query = yield* makeProviderConversationProjectionQuery.pipe(
+      Effect.provideService(ProjectionSnapshotQuery, archivedBase),
+      Effect.provideService(ProviderConversationCacheSync, cacheSync),
+    );
+
+    assert.isEmpty((yield* query.getShellSnapshot()).threads);
+    assert.lengthOf((yield* query.getArchivedShellSnapshot()).threads, 1);
+    assert.isEmpty((yield* query.searchThreads({ query: "hello" })).matches);
+
+    yield* repository.markProviderDeleted({ threadId: cached.threadId, deletedAt: NOW });
+    const retained = Option.getOrThrow(yield* query.getThreadDetailById(cached.threadId));
+    assert.equal(retained.session?.status, "stopped");
+    assert.equal(retained.messages[0]?.text, "hello");
+  }).pipe(Effect.provide(persistenceLayer)),
+);
+
 it.effect("pages provider history by user-anchored turn windows without changing full reads", () =>
   Effect.gen(function* () {
     const repository = yield* ProviderConversationCacheRepository;

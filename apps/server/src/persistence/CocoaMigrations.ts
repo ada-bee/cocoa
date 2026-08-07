@@ -11,6 +11,7 @@ import Migration0005 from "./CocoaMigrations/005_CheckpointRevertIntents.ts";
 import Migration0006 from "./CocoaMigrations/006_CheckpointRevertIntentActiveThread.ts";
 import Migration0007 from "./CocoaMigrations/007_ProviderConversationCache.ts";
 import Migration0008 from "./CocoaMigrations/008_RetainProviderConversationHistory.ts";
+import Migration0009 from "./CocoaMigrations/009_ProviderConversationPresence.ts";
 
 export const cocoaMigrationEntries = [
   [1, "ProviderCheckpointOperations", Migration0001],
@@ -21,6 +22,7 @@ export const cocoaMigrationEntries = [
   [6, "CheckpointRevertIntentActiveThread", Migration0006],
   [7, "ProviderConversationCache", Migration0007],
   [8, "RetainProviderConversationHistory", Migration0008],
+  [9, "ProviderConversationPresence", Migration0009],
 ] as const;
 
 export const cocoaMigrationManifest = cocoaMigrationEntries.map(

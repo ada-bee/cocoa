@@ -29,12 +29,15 @@ layer("Cocoa migrations", (it) => {
       `;
       yield* runCocoaMigrations();
 
-      const restored = yield* sql<{ readonly deletedAt: string | null }>`
-        SELECT deleted_at AS "deletedAt"
+      const restored = yield* sql<{
+        readonly deletedAt: string | null;
+        readonly providerDeletedAt: string | null;
+      }>`
+        SELECT deleted_at AS "deletedAt", provider_deleted_at AS "providerDeletedAt"
         FROM provider_conversation_cache_threads
         WHERE provider_instance_id = 'migration-provider'
       `;
-      assert.deepStrictEqual(restored, [{ deletedAt: null }]);
+      assert.deepStrictEqual(restored, [{ deletedAt: null, providerDeletedAt: null }]);
 
       assert.equal(migrationManifest.at(-1)?.[0], 35);
       assert.deepStrictEqual(cocoaMigrationManifest, [
@@ -46,6 +49,7 @@ layer("Cocoa migrations", (it) => {
         [6, "CheckpointRevertIntentActiveThread"],
         [7, "ProviderConversationCache"],
         [8, "RetainProviderConversationHistory"],
+        [9, "ProviderConversationPresence"],
       ]);
 
       yield* sql`
@@ -80,6 +84,7 @@ layer("Cocoa migrations", (it) => {
         { migrationId: 6, name: "CheckpointRevertIntentActiveThread" },
         { migrationId: 7, name: "ProviderConversationCache" },
         { migrationId: 8, name: "RetainProviderConversationHistory" },
+        { migrationId: 9, name: "ProviderConversationPresence" },
       ]);
     }),
   );

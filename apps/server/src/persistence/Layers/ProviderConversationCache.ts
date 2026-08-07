@@ -62,6 +62,7 @@ const CacheThreadDbRow = Schema.Struct({
   syncEpoch: ProviderConversationSyncEpoch,
   observedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
+  providerDeletedAt: Schema.NullOr(IsoDateTime),
 });
 const SyncStateDbRow = ProviderConversationCacheSyncState;
 const ListDbInput = Schema.Struct({
@@ -96,6 +97,7 @@ function toCacheThread(row: typeof CacheThreadDbRow.Type): ProviderConversationC
     syncEpoch: row.syncEpoch,
     observedAt: row.observedAt,
     deletedAt: row.deletedAt,
+    providerDeletedAt: row.providerDeletedAt,
   };
 }
 
@@ -111,7 +113,8 @@ const make = Effect.gen(function* () {
       detail_json AS "detail",
       sync_epoch AS "syncEpoch",
       observed_at AS "observedAt",
-      deleted_at AS "deletedAt"
+      deleted_at AS "deletedAt",
+      provider_deleted_at AS "providerDeletedAt"
     FROM provider_conversation_cache_threads
   `;
 
@@ -189,7 +192,8 @@ const make = Effect.gen(function* () {
         provider_updated_at = excluded.provider_updated_at,
         sync_epoch = excluded.sync_epoch,
         observed_at = excluded.observed_at,
-        deleted_at = NULL
+        deleted_at = NULL,
+        provider_deleted_at = NULL
     `,
   });
 
@@ -206,7 +210,8 @@ const make = Effect.gen(function* () {
           summary_json = ${input.summary},
           detail_json = ${input.detail},
           observed_at = ${input.observedAt},
-          deleted_at = NULL
+          deleted_at = NULL,
+          provider_deleted_at = NULL
         WHERE provider_instance_id = ${input.providerInstanceId}
           AND provider_thread_id = ${input.providerThreadId}
       `,
@@ -221,6 +226,22 @@ const make = Effect.gen(function* () {
       WHERE provider_instance_id = ${input.providerInstanceId}
         AND status = 'syncing'
         AND active_sync_epoch = ${input.syncEpoch}
+    `,
+  });
+
+  const markUnseenProviderThreads = SqlSchema.void({
+    Request: CompleteProviderConversationSyncInput,
+    execute: (input) => sql`
+      UPDATE provider_conversation_cache_threads
+      SET provider_deleted_at = COALESCE(provider_deleted_at, ${input.completedAt})
+      WHERE provider_instance_id = ${input.providerInstanceId}
+        AND sync_epoch <> ${input.syncEpoch}
+        AND EXISTS (
+          SELECT 1 FROM provider_conversation_cache_sync sync
+          WHERE sync.provider_instance_id = ${input.providerInstanceId}
+            AND sync.status = 'syncing'
+            AND sync.active_sync_epoch = ${input.syncEpoch}
+        )
     `,
   });
 
@@ -245,6 +266,23 @@ const make = Effect.gen(function* () {
          WHERE provider_instance_id = ? AND provider_thread_id = ?`,
         [input.providerInstanceId, input.providerThreadId],
       ),
+  });
+
+  const markProviderDeletedRow = SqlSchema.void({
+    Request: Schema.Struct({ threadId: ThreadId, deletedAt: IsoDateTime }),
+    execute: (input) => sql`
+      UPDATE provider_conversation_cache_threads
+      SET provider_deleted_at = COALESCE(provider_deleted_at, ${input.deletedAt})
+      WHERE cocoa_thread_id = ${input.threadId}
+    `,
+  });
+
+  const purgeThreadRow = SqlSchema.void({
+    Request: GetProviderConversationCacheThreadByIdInput,
+    execute: (input) => sql`
+      DELETE FROM provider_conversation_cache_threads
+      WHERE cocoa_thread_id = ${input.threadId}
+    `,
   });
 
   const getThreadByIdRow = SqlSchema.findOneOption({
@@ -289,7 +327,6 @@ const make = Effect.gen(function* () {
         `${selectThreadColumns}
          WHERE provider_instance_id = ?
            AND cwd = ?
-           AND archived = 0
            AND deleted_at IS NULL
            AND (preview LIKE ? ESCAPE '!' OR detail_json LIKE ? ESCAPE '!')
          ORDER BY COALESCE(provider_recency_at, provider_updated_at) DESC,
@@ -374,13 +411,30 @@ const make = Effect.gen(function* () {
 
   const completeSync: ProviderConversationCacheRepositoryShape["completeSync"] = (input) =>
     sql
-      .withTransaction(completeSyncState(input).pipe(Effect.andThen(bumpRevision)))
+      .withTransaction(
+        markUnseenProviderThreads(input).pipe(
+          Effect.andThen(completeSyncState(input)),
+          Effect.andThen(bumpRevision),
+        ),
+      )
       .pipe(Effect.mapError(mapError("ProviderConversationCacheRepository.completeSync")));
 
   const failSync: ProviderConversationCacheRepositoryShape["failSync"] = (input) =>
     sql
       .withTransaction(failSyncState(input).pipe(Effect.andThen(bumpRevision)))
       .pipe(Effect.mapError(mapError("ProviderConversationCacheRepository.failSync")));
+
+  const markProviderDeleted: ProviderConversationCacheRepositoryShape["markProviderDeleted"] = (
+    input,
+  ) =>
+    sql
+      .withTransaction(markProviderDeletedRow(input).pipe(Effect.andThen(bumpRevision)))
+      .pipe(Effect.mapError(mapError("ProviderConversationCacheRepository.markProviderDeleted")));
+
+  const purgeThread: ProviderConversationCacheRepositoryShape["purgeThread"] = (input) =>
+    sql
+      .withTransaction(purgeThreadRow(input).pipe(Effect.andThen(bumpRevision)))
+      .pipe(Effect.mapError(mapError("ProviderConversationCacheRepository.purgeThread")));
 
   const getThread: ProviderConversationCacheRepositoryShape["getThread"] = (input) =>
     getThreadRow(input).pipe(
@@ -436,6 +490,8 @@ const make = Effect.gen(function* () {
     upsertThreadDetail,
     completeSync,
     failSync,
+    markProviderDeleted,
+    purgeThread,
     getThread,
     getThreadById,
     getThreadByIdSnapshot,

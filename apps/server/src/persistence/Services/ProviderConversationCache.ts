@@ -29,6 +29,7 @@ export const ProviderConversationCacheThread = Schema.Struct({
   syncEpoch: ProviderConversationSyncEpoch,
   observedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
+  providerDeletedAt: Schema.NullOr(IsoDateTime),
 });
 export type ProviderConversationCacheThread = typeof ProviderConversationCacheThread.Type;
 
@@ -110,6 +111,12 @@ export const GetProviderConversationCacheThreadByIdInput = Schema.Struct({
 export type GetProviderConversationCacheThreadByIdInput =
   typeof GetProviderConversationCacheThreadByIdInput.Type;
 
+export const MarkProviderConversationDeletedInput = Schema.Struct({
+  threadId: ThreadId,
+  deletedAt: IsoDateTime,
+});
+export type MarkProviderConversationDeletedInput = typeof MarkProviderConversationDeletedInput.Type;
+
 export const ListProviderConversationCacheThreadsInput = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   cwd: Schema.optional(Schema.String),
@@ -155,6 +162,12 @@ export interface ProviderConversationCacheRepositoryShape {
   ) => Effect.Effect<void, ProviderConversationCacheRepositoryError>;
   readonly failSync: (
     input: FailProviderConversationSyncInput,
+  ) => Effect.Effect<void, ProviderConversationCacheRepositoryError>;
+  readonly markProviderDeleted: (
+    input: MarkProviderConversationDeletedInput,
+  ) => Effect.Effect<void, ProviderConversationCacheRepositoryError>;
+  readonly purgeThread: (
+    input: GetProviderConversationCacheThreadByIdInput,
   ) => Effect.Effect<void, ProviderConversationCacheRepositoryError>;
   readonly getThread: (
     input: GetProviderConversationCacheThreadInput,

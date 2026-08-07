@@ -51,6 +51,8 @@ import {
 import * as OrchestrationEngine from "../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderRegistry from "../../provider/Services/ProviderRegistry.ts";
+import { ProviderConversationCacheRepository } from "../../persistence/Services/ProviderConversationCache.ts";
+import { ProviderConversationAuthority } from "../../provider/Services/ProviderConversationAuthority.ts";
 import { ProviderConversationCacheSync } from "../../provider/Services/ProviderConversationCacheSync.ts";
 import { ProviderConversationProjectionQuery } from "../../provider/Services/ProviderConversationProjectionQuery.ts";
 import {
@@ -563,6 +565,70 @@ describe("Cocoa client v1 handlers", () => {
         threadId,
         turnCount: 1,
       });
+    }),
+  );
+
+  it.effect("keeps archive local and applies each destructive delete scope exactly once", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const providerCommands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
+      const purgedThreadIds = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+      const authority = ProviderConversationAuthority.of({
+        apply: (command) =>
+          Ref.update(providerCommands, (commands) => [...commands, command]).pipe(
+            Effect.as(command.type === "thread.delete"),
+          ),
+      });
+      const cache = ProviderConversationCacheRepository.of({
+        purgeThread: ({ threadId: deletedThreadId }: { readonly threadId: ThreadId }) =>
+          Ref.update(purgedThreadIds, (ids) => [...ids, deletedThreadId]),
+      } as never);
+      const handlers = yield* makeCocoaClientV1Handlers(operateSession).pipe(
+        Effect.provide(harness.layer),
+        Effect.provideService(ProviderConversationAuthority, authority),
+        Effect.provideService(ProviderConversationCacheRepository, cache),
+      );
+
+      expect(
+        yield* handlers[COCOA_CLIENT_V1_METHODS.dispatchCommand]({
+          type: "thread.archive",
+          commandId: CommandId.make("archive-local-only"),
+          threadId,
+        }).pipe(Effect.provide(harness.layer)),
+      ).toEqual({ sequence: 1 });
+      expect(yield* Ref.get(harness.dispatched)).toEqual([
+        expect.objectContaining({ type: "thread.archive", threadId }),
+      ]);
+      expect(yield* Ref.get(purgedThreadIds)).toEqual([]);
+
+      expect(
+        yield* handlers[COCOA_CLIENT_V1_METHODS.dispatchCommand]({
+          type: "thread.delete",
+          commandId: CommandId.make("delete-provider-only"),
+          threadId,
+          target: "provider",
+        }).pipe(Effect.provide(harness.layer)),
+      ).toEqual({ sequence: 5 });
+      expect(yield* Ref.get(harness.dispatched)).toHaveLength(1);
+      expect(yield* Ref.get(purgedThreadIds)).toEqual([]);
+
+      expect(
+        yield* handlers[COCOA_CLIENT_V1_METHODS.dispatchCommand]({
+          type: "thread.delete",
+          commandId: CommandId.make("delete-everywhere"),
+          threadId,
+          target: "everywhere",
+        }).pipe(Effect.provide(harness.layer)),
+      ).toEqual({ sequence: 2 });
+      expect(yield* Ref.get(harness.dispatched)).toHaveLength(2);
+      expect(yield* Ref.get(purgedThreadIds)).toEqual([threadId]);
+      expect(
+        (yield* Ref.get(providerCommands)).map((command) => [command.type, command.commandId]),
+      ).toEqual([
+        ["thread.archive", CommandId.make("archive-local-only")],
+        ["thread.delete", CommandId.make("delete-provider-only")],
+        ["thread.delete", CommandId.make("delete-everywhere")],
+      ]);
     }),
   );
 

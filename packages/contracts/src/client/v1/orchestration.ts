@@ -164,7 +164,12 @@ const threadCommand = <Type extends string>(type: Type) =>
     threadId: ThreadId,
   });
 
-const CocoaClientV1ThreadDeleteCommand = threadCommand("thread.delete");
+const CocoaClientV1ThreadDeleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.delete"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  target: Schema.optionalKey(Schema.Literals(["provider", "everywhere"])),
+});
 const CocoaClientV1ThreadArchiveCommand = threadCommand("thread.archive");
 const CocoaClientV1ThreadUnarchiveCommand = threadCommand("thread.unarchive");
 const CocoaClientV1ThreadSettleCommand = threadCommand("thread.settle");

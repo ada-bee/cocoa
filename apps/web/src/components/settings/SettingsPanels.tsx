@@ -1,6 +1,7 @@
 import {
   ArchiveIcon,
   ArchiveX,
+  EllipsisIcon,
   InfoIcon,
   LoaderIcon,
   RefreshCwIcon,
@@ -1894,7 +1895,7 @@ export function ProviderSettingsPanel() {
 
 export function ArchivedThreadsPanel() {
   const projects = useProjects();
-  const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
+  const { unarchiveThread, deleteThreadFromProvider, deleteThreadEverywhere } = useThreadActions();
   const environmentIds = useMemo(
     () => [...new Set(projects.map((project) => project.environmentId))],
     [projects],
@@ -1963,7 +1964,8 @@ export function ArchivedThreadsPanel() {
       const clicked = await api.contextMenu.show(
         [
           { id: "unarchive", label: "Unarchive" },
-          { id: "delete", label: "Delete", destructive: true },
+          { id: "delete-provider", label: "Delete from provider", destructive: true },
+          { id: "delete-everywhere", label: "Delete everywhere", destructive: true },
         ],
         position,
       );
@@ -1985,8 +1987,24 @@ export function ArchivedThreadsPanel() {
         return;
       }
 
-      if (clicked === "delete") {
-        const result = await confirmAndDeleteThread(threadRef);
+      if (clicked === "delete-provider" || clicked === "delete-everywhere") {
+        const confirmed = await api.dialogs.confirm(
+          clicked === "delete-provider"
+            ? [
+                "Delete this conversation from its provider host?",
+                "The complete Cocoa archive will remain available here.",
+              ].join("\n")
+            : [
+                "Delete this conversation everywhere?",
+                "This permanently removes the Cocoa archive and the provider copy.",
+                "This cannot be undone.",
+              ].join("\n"),
+        );
+        if (!confirmed) return;
+        const result =
+          clicked === "delete-provider"
+            ? await deleteThreadFromProvider(threadRef)
+            : await deleteThreadEverywhere(threadRef);
         if (result._tag === "Success") {
           refreshArchivedThreads();
         } else if (!isAtomCommandInterrupted(result)) {
@@ -1994,14 +2012,17 @@ export function ArchivedThreadsPanel() {
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: "Failed to delete thread",
+              title:
+                clicked === "delete-provider"
+                  ? "Failed to delete provider copy"
+                  : "Failed to delete conversation everywhere",
               description: error instanceof Error ? error.message : "An error occurred.",
             }),
           );
         }
       }
     },
-    [confirmAndDeleteThread, refreshArchivedThreads, unarchiveThread],
+    [deleteThreadEverywhere, deleteThreadFromProvider, refreshArchivedThreads, unarchiveThread],
   );
 
   return (
@@ -2078,37 +2099,55 @@ export function ArchivedThreadsPanel() {
                   </>
                 }
                 control={
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 shrink-0 cursor-pointer gap-1.5 px-2.5"
-                    onClick={() => {
-                      void (async () => {
-                        const result = await unarchiveThread(
-                          scopeThreadRef(thread.environmentId, thread.id),
-                        );
-                        if (result._tag === "Success") {
-                          refreshArchivedThreads();
-                          return;
-                        }
-                        if (!isAtomCommandInterrupted(result)) {
-                          const error = squashAtomCommandFailure(result);
-                          toastManager.add(
-                            stackedThreadToast({
-                              type: "error",
-                              title: "Failed to unarchive thread",
-                              description:
-                                error instanceof Error ? error.message : "An error occurred.",
-                            }),
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 shrink-0 cursor-pointer gap-1.5 px-2.5"
+                      onClick={() => {
+                        void (async () => {
+                          const result = await unarchiveThread(
+                            scopeThreadRef(thread.environmentId, thread.id),
                           );
-                        }
-                      })();
-                    }}
-                  >
-                    <ArchiveX className="size-3.5" />
-                    <span>Unarchive</span>
-                  </Button>
+                          if (result._tag === "Success") {
+                            refreshArchivedThreads();
+                            return;
+                          }
+                          if (!isAtomCommandInterrupted(result)) {
+                            const error = squashAtomCommandFailure(result);
+                            toastManager.add(
+                              stackedThreadToast({
+                                type: "error",
+                                title: "Failed to unarchive thread",
+                                description:
+                                  error instanceof Error ? error.message : "An error occurred.",
+                              }),
+                            );
+                          }
+                        })();
+                      }}
+                    >
+                      <ArchiveX className="size-3.5" />
+                      <span>Unarchive</span>
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon-sm"
+                      className="size-7 cursor-pointer"
+                      aria-label={`More actions for ${thread.title}`}
+                      onClick={(event) => {
+                        const bounds = event.currentTarget.getBoundingClientRect();
+                        void handleArchivedThreadContextMenu(
+                          scopeThreadRef(thread.environmentId, thread.id),
+                          { x: bounds.right, y: bounds.bottom },
+                        );
+                      }}
+                    >
+                      <EllipsisIcon className="size-3.5" />
+                    </Button>
+                  </div>
                 }
               />
             ))}

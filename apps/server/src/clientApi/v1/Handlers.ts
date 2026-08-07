@@ -54,6 +54,7 @@ import * as TerminalManager from "../../terminal/TerminalManagerService.ts";
 import { DEFAULT_RUNTIME_BUFFER_LIMITS } from "../../RuntimeBufferLimits.ts";
 import type * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import { ProviderConversationCacheRepository } from "../../persistence/Services/ProviderConversationCache.ts";
 import { requiredScopeForCocoaClientV1Method } from "./Authorization.ts";
 import { projectExecutionRequestError } from "./Execution.ts";
 import {
@@ -412,6 +413,7 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
     const providerProjections = yield* Effect.serviceOption(ProviderConversationProjectionQuery);
     const projections = Option.getOrElse(providerProjections, () => baseProjections);
     const providerCacheSync = yield* Effect.serviceOption(ProviderConversationCacheSync);
+    const providerCache = yield* Effect.serviceOption(ProviderConversationCacheRepository);
     const providerConversationAuthority = yield* Effect.serviceOption(
       ProviderConversationAuthority,
     );
@@ -465,10 +467,10 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
 
     const applyProviderConversationMutation = (command: OrchestrationCommand) => {
       return Option.isNone(providerConversationAuthority)
-        ? Effect.void
+        ? Effect.succeed(false)
         : providerConversationAuthority.value
             .apply(command)
-            .pipe(Effect.mapError(providerMutationError), Effect.asVoid);
+            .pipe(Effect.mapError(providerMutationError));
     };
 
     const dispatch = (command: Parameters<typeof normalizeDispatchCommand>[0]) =>
@@ -489,8 +491,32 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
                     Effect.orElseSucceed(() => false),
                   )
                 : false;
-            yield* applyProviderConversationMutation(normalized);
+            const providerMutationApplied = yield* applyProviderConversationMutation(normalized);
+            if (normalized.type === "thread.delete" && normalized.target === "provider") {
+              if (!providerMutationApplied) {
+                return yield* Effect.fail(
+                  requestError(
+                    "unsupported_operation",
+                    "This thread does not have a provider copy to delete.",
+                  ),
+                );
+              }
+              return { sequence: yield* orchestration.latestSequence };
+            }
             const result = yield* dispatchNormalized(normalized);
+            if (
+              normalized.type === "thread.delete" &&
+              (normalized.target ?? "everywhere") === "everywhere" &&
+              Option.isSome(providerCache)
+            ) {
+              yield* providerCache.value
+                .purgeThread({ threadId: normalized.threadId })
+                .pipe(
+                  Effect.mapError(() =>
+                    requestError("operation_failed", "Cocoa could not purge the archived history."),
+                  ),
+                );
+            }
             if (normalized.type !== "thread.archive") {
               return result;
             }

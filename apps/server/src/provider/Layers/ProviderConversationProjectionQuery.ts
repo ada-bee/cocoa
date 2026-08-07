@@ -255,13 +255,15 @@ function projectProviderHistory(
 const providerSession = (entry: ProviderConversationCacheThread): OrchestrationSession => ({
   threadId: entry.threadId,
   status:
-    entry.thread.status === "active"
-      ? "running"
-      : entry.thread.status === "idle"
-        ? "ready"
-        : entry.thread.status === "system-error"
-          ? "error"
-          : "stopped",
+    entry.providerDeletedAt !== null
+      ? "stopped"
+      : entry.thread.status === "active"
+        ? "running"
+        : entry.thread.status === "idle"
+          ? "ready"
+          : entry.thread.status === "system-error"
+            ? "error"
+            : "stopped",
   providerName: entry.thread.modelProvider.trim() === "" ? null : entry.thread.modelProvider,
   providerInstanceId: entry.providerInstanceId,
   runtimeMode: DEFAULT_RUNTIME_MODE,
@@ -334,13 +336,14 @@ function toThread(
     latestTurn: entry.detailLoaded ? history.latestTurn : (overlay?.latestTurn ?? null),
     createdAt,
     updatedAt,
-    archivedAt: entry.archived ? entry.observedAt : null,
+    archivedAt:
+      overlay === undefined ? (entry.archived ? entry.observedAt : null) : overlay.archivedAt,
     settledOverride: overlay?.settledOverride ?? null,
     settledAt: overlay?.settledAt ?? null,
     snoozedUntil: overlay?.snoozedUntil ?? null,
     snoozedAt: overlay?.snoozedAt ?? null,
     titleRegeneration: overlay?.titleRegeneration ?? null,
-    deletedAt: entry.deletedAt,
+    deletedAt: overlay === undefined ? entry.deletedAt : overlay.deletedAt,
     messages: history.messages,
     proposedPlans: history.proposedPlans,
     activities: [
@@ -407,15 +410,16 @@ export const makeProviderConversationProjectionQuery = Effect.gen(function* () {
           cache.listThreads({
             providerInstanceId: project.providerInstanceId,
             cwd: project.workspaceRoot,
-            archived,
           }),
         { concurrency: 8 },
       ).pipe(Effect.map((groups) => groups.flat()));
       const providerThreads = entries.flatMap((entry) => {
         const project = selectProject(projects, entry);
-        return project === undefined
-          ? []
-          : [toShell(toThread(entry, project, overlays.get(entry.threadId)))];
+        if (project === undefined) return [];
+        const thread = toThread(entry, project, overlays.get(entry.threadId));
+        return thread.deletedAt === null && (thread.archivedAt !== null) === archived
+          ? [toShell(thread)]
+          : [];
       });
       const providerThreadIds = new Set(providerThreads.map((thread) => thread.id));
       const transientLocalThreads = baseSnapshot.threads.filter(
@@ -485,10 +489,12 @@ export const makeProviderConversationProjectionQuery = Effect.gen(function* () {
     "ProviderConversationProjectionQuery.searchThreads",
   )(function* (input) {
     const baseShell = yield* base.getShellSnapshot();
+    const baseDetails = yield* base.getCommandReadModel();
+    const overlays = new Map(baseDetails.threads.map((thread) => [thread.id, thread]));
     const limit = input.limit ?? 50;
     const candidateLimit = Math.min(200, limit * 4);
     const candidateGroups = yield* Effect.forEach(
-      baseShell.projects,
+      baseDetails.projects.filter((project) => project.deletedAt === null),
       (project) =>
         cache
           .searchThreads({
@@ -504,6 +510,11 @@ export const makeProviderConversationProjectionQuery = Effect.gen(function* () {
     const providerMatches: Array<RankedSearchMatch> = candidateGroups.flatMap(
       ({ project, entries }) =>
         entries.flatMap((entry): ReadonlyArray<RankedSearchMatch> => {
+          const overlay = overlays.get(entry.threadId);
+          const projected = toThread(entry, project, overlay);
+          if (projected.archivedAt !== null || projected.deletedAt !== null) {
+            return [];
+          }
           const messages = projectProviderHistory(entry)
             .messages.flatMap((message) =>
               !message.streaming &&

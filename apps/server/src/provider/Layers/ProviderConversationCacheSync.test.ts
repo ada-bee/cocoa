@@ -75,7 +75,11 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
       const listCalls: Array<boolean> = [];
       const readCalls: Array<string> = [];
       const projectCommands: Array<OrchestrationCommand> = [];
-      const materializedWorkspaces = new Set<string>();
+      const materializedProjects = new Map<
+        string,
+        { readonly id: string; readonly workspaceRoot: string }
+      >();
+      const materializedThreadIds = new Set<string>();
       let providerUpdatedAt = 20;
       let readItemsView: "full" | "summary" = "full";
       const catalog: ProviderConversationCatalog = {
@@ -147,16 +151,15 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
         Effect.provideService(
           ProjectionSnapshotQuery,
           ProjectionSnapshotQuery.of({
+            getCommandReadModel: () =>
+              Effect.succeed({
+                threads: [...materializedThreadIds].map((id) => ({ id })),
+              } as never),
             getActiveProjectByWorkspaceRoot: ({
               workspaceRoot,
             }: {
               readonly workspaceRoot: string;
-            }) =>
-              Effect.succeed(
-                materializedWorkspaces.has(workspaceRoot)
-                  ? Option.some({ workspaceRoot })
-                  : Option.none(),
-              ),
+            }) => Effect.succeed(Option.fromNullishOr(materializedProjects.get(workspaceRoot))),
           } as never),
         ),
         Effect.provideService(
@@ -166,7 +169,13 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
               Effect.sync(() => {
                 projectCommands.push(command);
                 if (command.type === "project.create") {
-                  materializedWorkspaces.add(command.workspaceRoot);
+                  materializedProjects.set(command.workspaceRoot, {
+                    id: command.projectId,
+                    workspaceRoot: command.workspaceRoot,
+                  });
+                }
+                if (command.type === "thread.create") {
+                  materializedThreadIds.add(command.threadId);
                 }
                 return { sequence: projectCommands.length };
               }),
@@ -197,14 +206,29 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
         ).threadId,
         EXISTING_THREAD_ID,
       );
-      assert.equal(projectCommands.length, 1);
-      const projectCommand = projectCommands[0];
+      assert.equal(projectCommands.length, 4);
+      const projectCommand = projectCommands.find((command) => command.type === "project.create");
       assert.equal(projectCommand?.type, "project.create");
       if (projectCommand?.type === "project.create") {
         assert.equal(projectCommand.workspaceRoot, "/provider/workspace");
         assert.equal(projectCommand.title, "workspace");
         assert.isFalse(projectCommand.createWorkspaceRootIfMissing ?? true);
       }
+      assert.deepEqual(
+        projectCommands
+          .filter((command) => command.type === "thread.create")
+          .map((command) => command.threadId)
+          .toSorted(),
+        (yield* repository.listThreads({
+          providerInstanceId: INSTANCE_ID,
+        }))
+          .map((entry) => entry.threadId)
+          .toSorted(),
+      );
+      assert.lengthOf(
+        projectCommands.filter((command) => command.type === "thread.archive"),
+        1,
+      );
 
       assert.isTrue(
         Option.getOrThrow(
@@ -219,7 +243,7 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
       yield* Effect.yieldNow;
       yield* sync.drain;
       assert.deepEqual(readCalls.toSorted(), ["active-thread", "archived-thread"]);
-      assert.equal(projectCommands.length, 1);
+      assert.equal(projectCommands.length, 4);
 
       yield* sync.refreshThread(INSTANCE_ID, "active-thread");
       yield* sync.drain;

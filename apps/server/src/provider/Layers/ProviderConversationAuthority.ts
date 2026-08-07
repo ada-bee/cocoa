@@ -1,4 +1,5 @@
 import type { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -18,6 +19,7 @@ import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.t
 interface ProviderConversationTarget {
   readonly providerInstanceId: ProviderInstanceId;
   readonly providerThreadId: string;
+  readonly providerDeletedAt: string | null;
 }
 
 const fromCatalogError = (
@@ -50,6 +52,7 @@ export const makeProviderConversationAuthority = Effect.gen(function* () {
       return Option.some<ProviderConversationTarget>({
         providerInstanceId: cached.value.providerInstanceId,
         providerThreadId: cached.value.providerThreadId,
+        providerDeletedAt: cached.value.providerDeletedAt,
       });
     }
 
@@ -69,13 +72,12 @@ export const makeProviderConversationAuthority = Effect.gen(function* () {
     return Option.some<ProviderConversationTarget>({
       providerInstanceId: binding.value.providerInstanceId,
       providerThreadId: binding.value.resumeCursor.threadId,
+      providerDeletedAt: null,
     });
   });
 
   const apply: ProviderConversationAuthorityShape["apply"] = (command) => {
     if (
-      command.type !== "thread.archive" &&
-      command.type !== "thread.unarchive" &&
       command.type !== "thread.delete" &&
       !(command.type === "thread.meta.update" && command.title !== undefined) &&
       !(command.type === "thread.title.regeneration.complete" && command.title !== undefined)
@@ -100,28 +102,43 @@ export const makeProviderConversationAuthority = Effect.gen(function* () {
             Option.match({
               onNone: () => Effect.succeed(false),
               onSome: (target) =>
-                registry.getInstance(target.providerInstanceId).pipe(
-                  Effect.flatMap((instance) => {
-                    const catalog = instance?.conversationCatalog;
-                    if (!catalog) {
-                      return Effect.fail(
-                        new ProviderConversationAuthorityError({
-                          reason: "provider-unavailable",
-                          detail: "The provider conversation endpoint is unavailable.",
-                        }),
-                      );
-                    }
-                    const mutation =
-                      command.type === "thread.archive"
-                        ? catalog.archiveThread(target.providerThreadId)
-                        : command.type === "thread.unarchive"
-                          ? catalog.unarchiveThread(target.providerThreadId)
-                          : command.type === "thread.delete"
+                command.type === "thread.delete" && target.providerDeletedAt !== null
+                  ? Effect.succeed(true)
+                  : registry.getInstance(target.providerInstanceId).pipe(
+                      Effect.flatMap((instance) => {
+                        const catalog = instance?.conversationCatalog;
+                        if (!catalog) {
+                          return Effect.fail(
+                            new ProviderConversationAuthorityError({
+                              reason: "provider-unavailable",
+                              detail: "The provider conversation endpoint is unavailable.",
+                            }),
+                          );
+                        }
+                        const mutation =
+                          command.type === "thread.delete"
                             ? catalog.deleteThread(target.providerThreadId)
                             : catalog.setThreadName(target.providerThreadId, command.title!);
-                    return mutation.pipe(Effect.mapError(fromCatalogError), Effect.as(true));
-                  }),
-                ),
+                        return mutation.pipe(
+                          Effect.mapError(fromCatalogError),
+                          Effect.andThen(
+                            command.type === "thread.delete"
+                              ? DateTime.now.pipe(
+                                  Effect.map(DateTime.formatIso),
+                                  Effect.flatMap((deletedAt) =>
+                                    cache.markProviderDeleted({
+                                      threadId: command.threadId,
+                                      deletedAt,
+                                    }),
+                                  ),
+                                  Effect.mapError(identityError),
+                                )
+                              : Effect.void,
+                          ),
+                          Effect.as(true),
+                        );
+                      }),
+                    ),
             }),
           ),
         );

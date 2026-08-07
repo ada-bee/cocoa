@@ -130,6 +130,7 @@ it.layer(layer)("ProviderConversationCacheRepository", (it) => {
       assert.isTrue(retained.archived);
       assert.isTrue(retained.detailLoaded);
       assert.equal(retained.deletedAt, null);
+      assert.equal(retained.providerDeletedAt, null);
 
       const retainedAbsent = Option.getOrThrow(
         yield* repository.getThread({
@@ -138,6 +139,7 @@ it.layer(layer)("ProviderConversationCacheRepository", (it) => {
         }),
       );
       assert.equal(retainedAbsent.deletedAt, null);
+      assert.equal(retainedAbsent.providerDeletedAt, LATER);
       assert.deepEqual(
         (yield* repository.listThreads({
           providerInstanceId: INSTANCE_ID,
@@ -149,6 +151,17 @@ it.layer(layer)("ProviderConversationCacheRepository", (it) => {
       assert.equal(syncState.status, "fresh");
       assert.equal(syncState.lastSuccessAt, LATER);
       assert.isAbove((yield* repository.getMeta).revision, initialMeta.revision);
+
+      yield* repository.markProviderDeleted({ threadId: retained.threadId, deletedAt: LATER });
+      assert.equal(
+        Option.getOrThrow(yield* repository.getThreadById({ threadId: retained.threadId }))
+          .providerDeletedAt,
+        LATER,
+      );
+      yield* repository.purgeThread({ threadId: retained.threadId });
+      assert.isTrue(
+        Option.isNone(yield* repository.getThreadById({ threadId: retained.threadId })),
+      );
     }),
   );
 

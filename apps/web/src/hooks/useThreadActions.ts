@@ -222,13 +222,19 @@ export function useThreadActions() {
   );
 
   const deleteThread = useCallback(
-    async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
+    async (
+      target: ScopedThreadRef,
+      opts: {
+        deletedThreadKeys?: ReadonlySet<string>;
+        target?: "provider" | "everywhere";
+      } = {},
+    ) => {
       const resolved = resolveThreadTarget(target);
       if (!resolved) {
         // Thread not in main store (e.g. archived thread) — dispatch delete directly.
         const result = await deleteThreadMutation({
           environmentId: target.environmentId,
-          input: { threadId: target.threadId },
+          input: { threadId: target.threadId, target: opts.target ?? "everywhere" },
         });
         if (result._tag === "Success") {
           refreshArchivedThreadsForEnvironment(target.environmentId);
@@ -309,7 +315,7 @@ export function useThreadActions() {
       });
       const deleteResult = await deleteThreadMutation({
         environmentId: threadRef.environmentId,
-        input: { threadId: threadRef.threadId },
+        input: { threadId: threadRef.threadId, target: opts.target ?? "everywhere" },
       });
       if (deleteResult._tag === "Failure") {
         return deleteResult;
@@ -417,6 +423,25 @@ export function useThreadActions() {
       sidebarThreadSortOrder,
       stopThreadSession,
     ],
+  );
+
+  const deleteThreadFromProvider = useCallback(
+    async (target: ScopedThreadRef) => {
+      const result = await deleteThreadMutation({
+        environmentId: target.environmentId,
+        input: { threadId: target.threadId, target: "provider" },
+      });
+      if (result._tag === "Success") {
+        refreshArchivedThreadsForEnvironment(target.environmentId);
+      }
+      return result;
+    },
+    [deleteThreadMutation],
+  );
+
+  const deleteThreadEverywhere = useCallback(
+    (target: ScopedThreadRef) => deleteThread(target, { target: "everywhere" }),
+    [deleteThread],
   );
 
   const settleThread = useCallback(
@@ -574,6 +599,8 @@ export function useThreadActions() {
       archiveThread,
       unarchiveThread,
       deleteThread,
+      deleteThreadFromProvider,
+      deleteThreadEverywhere,
       confirmAndDeleteThread,
       settleThread,
       unsettleThread,
@@ -584,6 +611,8 @@ export function useThreadActions() {
       archiveThread,
       confirmAndDeleteThread,
       deleteThread,
+      deleteThreadEverywhere,
+      deleteThreadFromProvider,
       settleThread,
       snoozeThread,
       unarchiveThread,

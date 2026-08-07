@@ -84,7 +84,8 @@ it.effect("applies provider-owned mutations before Cocoa records local consequen
       archiveThread: (providerThreadId) =>
         Effect.sync(() => calls.push(`archive:${providerThreadId}`)).pipe(Effect.asVoid),
       unarchiveThread: () => Effect.void,
-      deleteThread: () => Effect.void,
+      deleteThread: (providerThreadId) =>
+        Effect.sync(() => calls.push(`delete:${providerThreadId}`)).pipe(Effect.asVoid),
       subscribeInvalidations: PubSub.subscribe(invalidations),
     };
     const instance = { instanceId: INSTANCE_ID, conversationCatalog: catalog } as ProviderInstance;
@@ -141,7 +142,7 @@ it.effect("applies provider-owned mutations before Cocoa records local consequen
       commandId: CommandId.make("archive-command"),
       threadId: THREAD_ID,
     };
-    assert.isTrue(yield* authority.apply(archive));
+    assert.isFalse(yield* authority.apply(archive));
     assert.isTrue(
       yield* authority.apply({
         type: "thread.meta.update",
@@ -150,7 +151,7 @@ it.effect("applies provider-owned mutations before Cocoa records local consequen
         title: "Provider title",
       }),
     );
-    assert.deepEqual(calls, ["archive:provider-thread", "name:provider-thread:Provider title"]);
+    assert.deepEqual(calls, ["name:provider-thread:Provider title"]);
 
     assert.isTrue(
       yield* authority.apply({
@@ -166,12 +167,36 @@ it.effect("applies provider-owned mutations before Cocoa records local consequen
     const callCountBeforeRetry = calls.length;
     assert.isTrue(
       yield* authority.apply({
-        type: "thread.archive",
+        type: "thread.meta.update",
         commandId: RECEIPTED_COMMAND_ID,
         threadId: THREAD_ID,
+        title: "Already applied",
       }),
     );
     assert.lengthOf(calls, callCountBeforeRetry);
+
+    assert.isTrue(
+      yield* authority.apply({
+        type: "thread.delete",
+        commandId: CommandId.make("provider-delete"),
+        threadId: THREAD_ID,
+        target: "provider",
+      }),
+    );
+    assert.strictEqual(calls.at(-1), "delete:provider-thread");
+    assert.isNotNull(
+      Option.getOrThrow(yield* repository.getThreadById({ threadId: THREAD_ID })).providerDeletedAt,
+    );
+    const callCountAfterDelete = calls.length;
+    assert.isTrue(
+      yield* authority.apply({
+        type: "thread.delete",
+        commandId: CommandId.make("provider-delete-retry"),
+        threadId: THREAD_ID,
+        target: "provider",
+      }),
+    );
+    assert.lengthOf(calls, callCountAfterDelete);
 
     assert.isFalse(
       yield* authority.apply({

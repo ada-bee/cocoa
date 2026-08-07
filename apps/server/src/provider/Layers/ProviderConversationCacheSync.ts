@@ -1,4 +1,12 @@
-import { CommandId, ProjectId, type ProviderInstanceId, type ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  DEFAULT_MODEL,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_RUNTIME_MODE,
+  ProjectId,
+  type ProviderInstanceId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -190,6 +198,8 @@ export const makeProviderConversationCacheSync = Effect.fn("ProviderConversation
             detail: `Cocoa does not have complete history for retained thread '${incomplete.providerThreadId}'.`,
           });
         }
+        const commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
+        const materializedThreadIds = new Set(commandReadModel.threads.map((thread) => thread.id));
         const workspaceRoots = new Set(cachedThreads.map((entry) => entry.thread.cwd));
         for (const workspaceRoot of workspaceRoots) {
           const existing = yield* projectionSnapshotQuery.getActiveProjectByWorkspaceRoot({
@@ -228,6 +238,45 @@ export const makeProviderConversationCacheSync = Effect.fn("ProviderConversation
                   ),
               ),
             );
+        }
+
+        for (const cachedThread of cachedThreads) {
+          if (materializedThreadIds.has(cachedThread.threadId)) continue;
+          const project = yield* projectionSnapshotQuery.getActiveProjectByWorkspaceRoot({
+            providerInstanceId,
+            workspaceRoot: cachedThread.thread.cwd,
+          });
+          if (Option.isNone(project)) {
+            return yield* new ProviderConversationCatalogError({
+              providerInstanceId,
+              operation: "project/materialize",
+              reason: "operation-failed",
+              detail: `Cocoa could not materialize a project for '${cachedThread.thread.cwd}'.`,
+            });
+          }
+          yield* orchestrationEngine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(yield* crypto.randomUUIDv4),
+            threadId: cachedThread.threadId,
+            projectId: project.value.id,
+            title:
+              cachedThread.thread.title?.trim() ||
+              cachedThread.thread.preview.trim() ||
+              "Untitled thread",
+            modelSelection: { instanceId: providerInstanceId, model: DEFAULT_MODEL },
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            branch: null,
+            worktreePath: null,
+            createdAt,
+          });
+          if (cachedThread.archived) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.archive",
+              commandId: CommandId.make(yield* crypto.randomUUIDv4),
+              threadId: cachedThread.threadId,
+            });
+          }
         }
       },
     );

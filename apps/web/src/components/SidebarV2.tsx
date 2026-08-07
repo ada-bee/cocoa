@@ -1236,10 +1236,10 @@ export default function SidebarV2() {
   const { isMobile, setOpenMobile } = useSidebar();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const autoSettleAfterDays = useClientSettings((s) => s.sidebarAutoSettleAfterDays);
-  const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
+  const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const { settleThread, unsettleThread, snoozeThread, unsnoozeThread, deleteThread } =
+  const { settleThread, unsettleThread, snoozeThread, unsnoozeThread, archiveThread } =
     useThreadActions();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
@@ -2214,7 +2214,7 @@ export default function SidebarV2() {
               : []),
             ...(titleRegenerationMenuItem ? [titleRegenerationMenuItem] : []),
             { id: "mark-unread", label: `Mark unread (${count})` },
-            { id: "delete", label: `Delete (${count})`, destructive: true },
+            { id: "archive", label: `Archive (${count})` },
           ],
           position,
         ),
@@ -2281,52 +2281,39 @@ export default function SidebarV2() {
         clearSelection();
         return;
       }
-      if (clicked.value !== "delete") return;
-      if (confirmThreadDelete) {
+      if (clicked.value !== "archive") return;
+      if (confirmThreadArchive) {
         const confirmed = await settlePromise(() =>
-          api.dialogs.confirm(
-            [
-              `Delete ${count} thread${count === 1 ? "" : "s"}?`,
-              "This permanently clears conversation history for these threads.",
-            ].join("\n"),
-          ),
+          api.dialogs.confirm(`Archive ${count} thread${count === 1 ? "" : "s"}?`),
         );
         if (confirmed._tag === "Failure" || !confirmed.value) return;
       }
-      // Grown as deletions actually land, never seeded with the whole batch:
-      // orphaned-worktree detection must only discount threads that are
-      // really gone, or the first delete would treat still-alive batch mates
-      // as deleted and remove a worktree they still point at.
-      const deletedThreadKeys = new Set<string>();
       for (const threadKey of threadKeys) {
         const thread = threadByKeyRef.current.get(threadKey);
         if (!thread) continue;
-        const result = await deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
-          deletedThreadKeys,
-        });
+        const result = await archiveThread(scopeThreadRef(thread.environmentId, thread.id));
         if (result._tag === "Failure") {
           if (!isAtomCommandInterrupted(result)) {
             const error = squashAtomCommandFailure(result);
             toastManager.add(
               stackedThreadToast({
                 type: "error",
-                title: "Failed to delete threads",
+                title: "Failed to archive threads",
                 description: error instanceof Error ? error.message : "An error occurred.",
               }),
             );
           }
           return;
         }
-        deletedThreadKeys.add(threadKey);
       }
       removeFromSelection(threadKeys);
     },
     [
       attemptSettle,
       attemptSnooze,
+      archiveThread,
       clearSelection,
-      confirmThreadDelete,
-      deleteThread,
+      confirmThreadArchive,
       markThreadUnread,
       removeFromSelection,
       serverConfigs,
@@ -2414,7 +2401,7 @@ export default function SidebarV2() {
               { id: "mark-unread", label: "Mark unread" },
               { id: "copy-path", label: "Copy path", icon: "copy" },
               ...(thread.branch ? [{ id: "copy-branch", label: "Copy branch", icon: "copy" }] : []),
-              { id: "delete", label: "Delete", destructive: true, icon: "trash" },
+              { id: "archive", label: "Archive", icon: "archive" },
             ],
             position,
           ),
@@ -2502,25 +2489,20 @@ export default function SidebarV2() {
               copyBranchToClipboard(thread.branch, { branch: thread.branch });
             }
             return;
-          case "delete": {
-            if (confirmThreadDelete) {
+          case "archive": {
+            if (confirmThreadArchive) {
               const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(
-                  [
-                    `Delete thread "${thread.title}"?`,
-                    "This permanently clears conversation history for this thread.",
-                  ].join("\n"),
-                ),
+                api.dialogs.confirm(`Archive thread "${thread.title}"?`),
               );
               if (confirmed._tag === "Failure" || !confirmed.value) return;
             }
-            const result = await deleteThread(threadRef);
+            const result = await archiveThread(threadRef);
             if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
               const error = squashAtomCommandFailure(result);
               toastManager.add(
                 stackedThreadToast({
                   type: "error",
-                  title: "Failed to delete thread",
+                  title: "Failed to archive thread",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );
@@ -2538,10 +2520,10 @@ export default function SidebarV2() {
       attemptSnooze,
       attemptUnsettle,
       attemptUnsnooze,
-      confirmThreadDelete,
+      archiveThread,
       copyBranchToClipboard,
       copyPathToClipboard,
-      deleteThread,
+      confirmThreadArchive,
       handleMultiSelectContextMenu,
       markThreadUnread,
       projectCwdByKey,
