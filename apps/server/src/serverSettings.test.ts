@@ -493,6 +493,42 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect(
+    "persists and whole-map replaces provider-scoped source-control writer selections",
+    () =>
+      Effect.gen(function* () {
+        const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+        const serverConfig = yield* ServerConfig.ServerConfig;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const instanceId = ProviderInstanceId.make("codex_writer");
+        const selection = { instanceId, model: "gpt-5.4-mini" };
+
+        const next = yield* serverSettings.updateSettings({
+          providerInstances: {
+            [instanceId]: {
+              driver: ProviderDriverKind.make("codex"),
+              enabled: true,
+              config: {},
+            },
+          },
+          sourceControlWriterModelSelections: { [instanceId]: selection },
+        });
+
+        assert.deepEqual(next.sourceControlWriterModelSelections, { [instanceId]: selection });
+        const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+        assert.deepEqual(
+          // @effect-diagnostics-next-line preferSchemaOverJson:off
+          JSON.parse(raw).sourceControlWriterModelSelections,
+          { [instanceId]: selection },
+        );
+
+        const cleared = yield* serverSettings.updateSettings({
+          sourceControlWriterModelSelections: {},
+        });
+        assert.deepEqual(cleared.sourceControlWriterModelSelections, {});
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("drops stale text generation options when resetting model selection", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;

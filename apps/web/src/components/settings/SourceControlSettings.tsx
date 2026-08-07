@@ -6,6 +6,7 @@ import type {
   BackgroundActivitySettings,
   ProviderHostId,
   ProviderInstanceId,
+  SourceControlHostingProviderKind,
   SourceControlProviderKind,
   SourceControlDiscoveryResult,
   SourceControlProviderAuth,
@@ -50,6 +51,7 @@ import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SourceControlWritingSettingsSection } from "./SourceControlWritingSettings";
 import { deriveCocoaHostConnections } from "./HostConnectionsSettings.logic";
 import {
+  buildSourceControlHostingEnabledPatch,
   buildSourceControlHostingHostDefaultPatch,
   type HostingProviderKind,
 } from "./SourceControlSettings.logic";
@@ -80,7 +82,7 @@ const HOSTING_PROVIDER_DEFAULTS = [
   { kind: "bitbucket", label: "Bitbucket" },
   { kind: "azure-devops", label: "Azure DevOps" },
 ] as const satisfies ReadonlyArray<{
-  readonly kind: Exclude<SourceControlProviderKind, "unknown">;
+  readonly kind: SourceControlHostingProviderKind;
   readonly label: string;
 }>;
 const NO_DEFAULT_HOST = "none";
@@ -377,42 +379,33 @@ function GitFetchIntervalSettings() {
     automaticGitFetchIntervalSeconds !== defaultAutomaticGitFetchIntervalSeconds;
 
   return (
-    <div className="grid gap-3">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 space-y-1">
-          <div className="flex min-w-0 items-center gap-1">
-            <span className="text-xs font-medium text-foreground">Fetch interval</span>
-            <BackgroundPolicyTooltip>
-              This interval is configured for Git only. The shared Background activity policy still
-              decides whether Git refreshes may run when the timer fires. Custom intervals appear as
-              Advanced in General settings.
-            </BackgroundPolicyTooltip>
-            <span
-              className={cn(
-                "inline-flex size-5 shrink-0 items-center justify-center transition-opacity",
-                canResetFetchInterval ? "opacity-100" : "pointer-events-none opacity-0",
-              )}
-              aria-hidden={!canResetFetchInterval}
-            >
-              {canResetFetchInterval ? (
-                <SettingResetButton
-                  label="fetch interval"
-                  onClick={() =>
-                    updateSettings(
-                      backgroundActivityOverrideSettings(settings.backgroundActivity, {
-                        automaticGitFetchInterval: undefined,
-                      }),
-                    )
-                  }
-                />
-              ) : null}
-            </span>
-          </div>
-          <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
-            Refresh remote branch status in the background. Set this to 0 seconds if Git credentials
-            or security keys should only be prompted by explicit Git actions.
-          </p>
-        </div>
+    <SettingsRow
+      title={
+        <span className="flex items-center gap-1">
+          Fetch interval
+          <BackgroundPolicyTooltip>
+            This interval is configured for Git only. The shared Background activity policy still
+            decides whether Git refreshes may run when the timer fires. Custom intervals appear as
+            Advanced in General settings.
+          </BackgroundPolicyTooltip>
+        </span>
+      }
+      description="Refresh remote branch status in the background. Set this to 0 seconds if Git credentials or security keys should only be prompted by explicit Git actions."
+      resetAction={
+        canResetFetchInterval ? (
+          <SettingResetButton
+            label="fetch interval"
+            onClick={() =>
+              updateSettings(
+                backgroundActivityOverrideSettings(settings.backgroundActivity, {
+                  automaticGitFetchInterval: undefined,
+                }),
+              )
+            }
+          />
+        ) : null
+      }
+      control={
         <div className="flex shrink-0 items-center gap-2">
           <NumberField
             value={automaticGitFetchIntervalSeconds}
@@ -436,8 +429,8 @@ function GitFetchIntervalSettings() {
           </NumberField>
           <span className="text-xs text-muted-foreground">seconds</span>
         </div>
-      </div>
-    </div>
+      }
+    />
   );
 }
 
@@ -523,6 +516,9 @@ export function SourceControlSettingsPanel() {
       ),
     );
 
+  const setHostingProviderEnabled = (kind: SourceControlHostingProviderKind, enabled: boolean) =>
+    updateSettings(buildSourceControlHostingEnabledPatch(settings, kind, enabled));
+
   return (
     <SettingsPageContainer>
       <SettingsSection
@@ -537,44 +533,53 @@ export function SourceControlSettingsPanel() {
         {HOSTING_PROVIDER_DEFAULTS.map(({ kind, label }) => {
           const selectedHostId = settings.sourceControlHostingHostDefaults[kind];
           const selectedHost = providerHosts.find((host) => host.hostId === selectedHostId);
+          const enabled = !settings.sourceControlDisabledHostingProviders.includes(kind);
           return (
             <SettingsRow
               key={kind}
               title={`${label} operations`}
               description={`Default host for ${label} API-only operations when no project-local execution is required.`}
               control={
-                providerHosts.length === 0 ? (
-                  <span className="text-xs text-muted-foreground">
-                    No provider hosts configured
-                  </span>
-                ) : (
-                  <Select
-                    value={selectedHostId ?? NO_DEFAULT_HOST}
-                    onValueChange={(value) => setDefaultHost(kind, value ?? NO_DEFAULT_HOST)}
-                  >
-                    <SelectTrigger
-                      className="w-full sm:w-56"
-                      aria-label={`Default host for ${label} operations`}
+                <div className="flex w-full items-center justify-end gap-3">
+                  {providerHosts.length === 0 ? (
+                    <span className="text-xs text-muted-foreground">
+                      No provider hosts configured
+                    </span>
+                  ) : (
+                    <Select
+                      disabled={!enabled}
+                      value={selectedHostId ?? NO_DEFAULT_HOST}
+                      onValueChange={(value) => setDefaultHost(kind, value ?? NO_DEFAULT_HOST)}
                     >
-                      <SelectValue>
-                        {selectedHost
-                          ? (selectedHost.host.displayName ??
-                            new URL(selectedHost.transport.url).hostname)
-                          : "Project host / none"}
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectPopup align="end" alignItemWithTrigger={false}>
-                      <SelectItem hideIndicator value={NO_DEFAULT_HOST}>
-                        Project host / none
-                      </SelectItem>
-                      {providerHosts.map((host) => (
-                        <SelectItem key={host.hostId} hideIndicator value={host.hostId}>
-                          {host.host.displayName ?? new URL(host.transport.url).hostname}
+                      <SelectTrigger
+                        className="w-full sm:w-56"
+                        aria-label={`Default host for ${label} operations`}
+                      >
+                        <SelectValue>
+                          {selectedHost
+                            ? (selectedHost.host.displayName ??
+                              new URL(selectedHost.transport.url).hostname)
+                            : "Project host / none"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup align="end" alignItemWithTrigger={false}>
+                        <SelectItem hideIndicator value={NO_DEFAULT_HOST}>
+                          Project host / none
                         </SelectItem>
-                      ))}
-                    </SelectPopup>
-                  </Select>
-                )
+                        {providerHosts.map((host) => (
+                          <SelectItem key={host.hostId} hideIndicator value={host.hostId}>
+                            {host.host.displayName ?? new URL(host.transport.url).hostname}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                  )}
+                  <Switch
+                    checked={enabled}
+                    onCheckedChange={(checked) => setHostingProviderEnabled(kind, Boolean(checked))}
+                    aria-label={`Enable centralized ${label} operations`}
+                  />
+                </div>
               }
             />
           );

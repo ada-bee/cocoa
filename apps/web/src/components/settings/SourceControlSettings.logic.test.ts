@@ -1,7 +1,10 @@
 import { DEFAULT_SERVER_SETTINGS, ProviderHostId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildSourceControlHostingHostDefaultPatch } from "./SourceControlSettings.logic";
+import {
+  buildSourceControlHostingEnabledPatch,
+  buildSourceControlHostingHostDefaultPatch,
+} from "./SourceControlSettings.logic";
 
 describe("source-control hosting host defaults", () => {
   it("sets one service default without replacing the others", () => {
@@ -35,5 +38,38 @@ describe("source-control hosting host defaults", () => {
     );
 
     expect(patch.sourceControlHostingHostDefaults).toEqual({ gitlab: "shared_host" });
+  });
+});
+
+describe("centralized source-control hosting toggles", () => {
+  it("disables one provider without replacing existing disabled providers", () => {
+    const patch = buildSourceControlHostingEnabledPatch(
+      { sourceControlDisabledHostingProviders: ["gitlab"] },
+      "github",
+      false,
+    );
+
+    expect(patch.sourceControlDisabledHostingProviders).toEqual(["gitlab", "github"]);
+    expect(patch.sourceControlHostingHostDefaults).toBeUndefined();
+  });
+
+  it("enables one provider without changing the others", () => {
+    const patch = buildSourceControlHostingEnabledPatch(
+      { sourceControlDisabledHostingProviders: ["github", "azure-devops"] },
+      "github",
+      true,
+    );
+
+    expect(patch.sourceControlDisabledHostingProviders).toEqual(["azure-devops"]);
+  });
+
+  it("does not duplicate an already-disabled provider", () => {
+    const patch = buildSourceControlHostingEnabledPatch(
+      { sourceControlDisabledHostingProviders: ["bitbucket"] },
+      "bitbucket",
+      false,
+    );
+
+    expect(patch.sourceControlDisabledHostingProviders).toEqual(["bitbucket"]);
   });
 });

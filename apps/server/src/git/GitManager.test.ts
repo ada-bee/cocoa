@@ -16,10 +16,19 @@ import { expect } from "vite-plus/test";
 import type {
   GitActionProgressEvent,
   GitPreparePullRequestThreadInput,
+  GitRunStackedActionInput,
+  OrchestrationProjectShell,
+  ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 
-import { GitCommandError, TextGenerationError } from "@t3tools/contracts";
+import {
+  GitCommandError,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  TextGenerationError,
+} from "@t3tools/contracts";
 import * as GitHubCli from "../sourceControl/GitHubCli.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -27,6 +36,7 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as GitHubSourceControlProvider from "../sourceControl/GitHubSourceControlProvider.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
 import * as ServerConfig from "../config.ts";
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -580,6 +590,7 @@ function runStackedAction(
     commitMessage?: string;
     featureBranch?: boolean;
     filePaths?: readonly string[];
+    target?: GitRunStackedActionInput["target"];
   },
   options?: Parameters<GitManager.GitManager["Service"]["runStackedAction"]>[1],
 ) {
@@ -611,6 +622,7 @@ function makeManager(input?: {
   textGeneration?: Partial<FakeGitTextGeneration>;
   serverSettings?: Parameters<typeof ServerSettings.layerTest>[0];
   setupScriptRunner?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"];
+  projectProviderInstanceId?: ProviderInstanceId;
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
@@ -643,7 +655,50 @@ function makeManager(input?: {
   const managerLayer = Layer.mergeAll(
     Layer.succeed(TextGeneration.TextGeneration, textGeneration),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
-      getProviders: Effect.succeed([]),
+      getProviders: Effect.succeed(
+        input?.projectProviderInstanceId === undefined
+          ? []
+          : [
+              {
+                instanceId: input.projectProviderInstanceId,
+                driver: ProviderDriverKind.make("codex"),
+                enabled: true,
+                installed: true,
+                version: null,
+                status: "ready",
+                auth: { status: "authenticated" },
+                checkedAt: "2026-08-08T00:00:00.000Z",
+                models: [
+                  {
+                    slug: "advertised-model",
+                    name: "Advertised model",
+                    isCustom: false,
+                    isDefault: true,
+                    capabilities: null,
+                  },
+                ],
+                slashCommands: [],
+                skills: [],
+              } satisfies ServerProvider,
+            ],
+      ),
+    }),
+    Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+      getProjectShellById: (projectId) =>
+        Effect.succeed(
+          input?.projectProviderInstanceId === undefined
+            ? Option.none()
+            : Option.some({
+                id: projectId,
+                providerInstanceId: input.projectProviderInstanceId,
+                title: "Git manager test project",
+                workspaceRoot: "/test/project",
+                defaultModelSelection: null,
+                scripts: [],
+                createdAt: "2026-08-08T00:00:00.000Z",
+                updatedAt: "2026-08-08T00:00:00.000Z",
+              } as OrchestrationProjectShell),
+        ),
     }),
     Layer.succeed(
       ProjectSetupScriptRunner.ProjectSetupScriptRunner,
@@ -1601,6 +1656,54 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         expect(result.failure.message).toContain("persisted project target");
       }
       expect(generationCalls).toBe(0);
+    }),
+  );
+
+  it.effect("uses the persisted project's provider-scoped source-control writer model", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      NodeFS.writeFileSync(NodePath.join(repoDir, "README.md"), "hello\nscoped writer\n");
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const projectId = ProjectId.make("writer-model-project");
+      let observedProviderInstanceId: ProviderInstanceId | undefined;
+      let observedModel: string | undefined;
+      const { manager } = yield* makeManager({
+        projectProviderInstanceId: providerInstanceId,
+        serverSettings: {
+          textGenerationModelSelections: {
+            [providerInstanceId]: { instanceId: providerInstanceId, model: "fallback-model" },
+          },
+          sourceControlWriterModelSelection: {
+            instanceId: providerInstanceId,
+            model: "legacy-writer-model",
+          },
+          sourceControlWriterModelSelections: {
+            [providerInstanceId]: {
+              instanceId: providerInstanceId,
+              model: "provider-writer-model",
+            },
+          },
+        },
+        textGeneration: {
+          generateCommitMessage: (input) =>
+            Effect.sync(() => {
+              observedProviderInstanceId = input.providerInstanceId;
+              observedModel = input.modelSelection.model;
+              return { subject: "Use provider writer", body: "" };
+            }),
+        },
+      });
+
+      const result = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "commit",
+        target: { projectId },
+      });
+
+      expect(result.commit.status).toBe("created");
+      expect(observedProviderInstanceId).toBe(providerInstanceId);
+      expect(observedModel).toBe("provider-writer-model");
     }),
   );
 

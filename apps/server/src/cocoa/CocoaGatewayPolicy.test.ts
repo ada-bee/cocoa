@@ -176,6 +176,46 @@ describe("Cocoa gateway provider policy", () => {
     );
   });
 
+  it.effect("rejects a source-control writer selection stored under another provider's key", () => {
+    const settings = validSettings();
+    return expectReason(
+      {
+        ...settings,
+        sourceControlWriterModelSelections: {
+          [ProviderInstanceId.make("macbook_air")]: {
+            instanceId: ProviderInstanceId.make("linux_dev_box"),
+            model: "gpt-5.4",
+          },
+        },
+      },
+      "invalid-model-selection",
+    );
+  });
+
+  it.effect("rejects a source-control writer selection for a disabled provider", () => {
+    const settings = validSettings();
+    const providerInstanceId = ProviderInstanceId.make("linux_dev_box");
+    return expectReason(
+      {
+        ...settings,
+        providerInstances: {
+          ...settings.providerInstances,
+          [providerInstanceId]: {
+            ...settings.providerInstances[providerInstanceId]!,
+            enabled: false,
+          },
+        },
+        sourceControlWriterModelSelections: {
+          [providerInstanceId]: {
+            instanceId: providerInstanceId,
+            model: "gpt-5.4",
+          },
+        },
+      },
+      "invalid-model-selection",
+    );
+  });
+
   it.effect("accepts an empty explicit instance map as the online onboarding state", () =>
     Effect.gen(function* () {
       const settings = decodeSettings({});

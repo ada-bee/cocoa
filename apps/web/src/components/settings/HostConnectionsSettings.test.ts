@@ -11,10 +11,12 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildAddCocoaHostSettingsPatch,
   buildRemoveCocoaHostSettingsPatch,
+  buildSourceControlWriterModelSelectionPatch,
   buildUpdateCocoaHostSettingsPatch,
   deriveCocoaHostConnections,
   parseCocoaHostPairingInput,
   readCocoaHostIconSvg,
+  readSourceControlWriterModelSelection,
   sanitizeCocoaHostIconSvg,
   withCocoaHostIconSvg,
 } from "./HostConnectionsSettings.logic";
@@ -268,6 +270,62 @@ describe("Cocoa host connections", () => {
     });
   });
 
+  it("reads a legacy source control writer only for its matching provider instance", () => {
+    const owner = ProviderInstanceId.make("codex_owner");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlWriterModelSelection: {
+        instanceId: owner,
+        model: "legacy-writer",
+      },
+    };
+
+    expect(readSourceControlWriterModelSelection(settings, owner)).toEqual({
+      instanceId: "codex_owner",
+      model: "legacy-writer",
+    });
+    expect(
+      readSourceControlWriterModelSelection(settings, ProviderInstanceId.make("codex_other")),
+    ).toBeNull();
+  });
+
+  it("writes and removes only one provider's source control writer selection", () => {
+    const owner = ProviderInstanceId.make("codex_owner");
+    const other = ProviderInstanceId.make("codex_other");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlWriterModelSelections: {
+        [other]: { instanceId: other, model: "other-writer" },
+      },
+    };
+    const enabled = buildSourceControlWriterModelSelectionPatch(settings, owner, {
+      instanceId: other,
+      model: "owner-writer",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    });
+
+    expect(enabled.sourceControlWriterModelSelections).toEqual({
+      codex_other: { instanceId: "codex_other", model: "other-writer" },
+      codex_owner: {
+        instanceId: "codex_owner",
+        model: "owner-writer",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+    });
+
+    const disabled = buildSourceControlWriterModelSelectionPatch(
+      {
+        ...settings,
+        sourceControlWriterModelSelections: enabled.sourceControlWriterModelSelections!,
+      },
+      owner,
+      null,
+    );
+    expect(disabled.sourceControlWriterModelSelections).toEqual({
+      codex_other: { instanceId: "codex_other", model: "other-writer" },
+    });
+  });
+
   it("stores only bounded inert SVG host icons", () => {
     const instance = {
       transport: transport("wss://host.test/socket", "key"),
@@ -362,6 +420,17 @@ describe("Cocoa host connections", () => {
         opencode: { driver: ProviderDriverKind.make("opencode"), hostId },
         remote_other: { driver: ProviderDriverKind.make("codex") },
       },
+      sourceControlWriterModelSelections: {
+        codex: { instanceId: ProviderInstanceId.make("codex"), model: "codex-writer" },
+        opencode: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "opencode-writer",
+        },
+        remote_other: {
+          instanceId: ProviderInstanceId.make("remote_other"),
+          model: "other-writer",
+        },
+      },
     };
     const [connection] = deriveCocoaHostConnections(settings);
     const patch = buildRemoveCocoaHostSettingsPatch(settings, connection!);
@@ -369,6 +438,9 @@ describe("Cocoa host connections", () => {
     expect(patch.providerHosts).toEqual({});
     expect(patch.providerInstances).toEqual({
       remote_other: { driver: "codex" },
+    });
+    expect(patch.sourceControlWriterModelSelections).toEqual({
+      remote_other: { instanceId: "remote_other", model: "other-writer" },
     });
   });
 

@@ -49,7 +49,11 @@ export function computeCocoaSettingsIdentity(settings: ServerSettings): string {
   const payload = canonicalize({
     schemaVersion: COCOA_SETTINGS_IDENTITY_VERSION,
     providerInstances,
+    sourceControlDisabledHostingProviders: [
+      ...settings.sourceControlDisabledHostingProviders,
+    ].sort(),
     sourceControlWriterModelSelection: settings.sourceControlWriterModelSelection,
+    sourceControlWriterModelSelections: settings.sourceControlWriterModelSelections,
     textGenerationModelSelection: settings.textGenerationModelSelection,
     textGenerationModelSelections: settings.textGenerationModelSelections,
   });

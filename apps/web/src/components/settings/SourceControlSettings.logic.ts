@@ -2,6 +2,7 @@ import type {
   ProviderHostId,
   ServerSettings,
   ServerSettingsPatch,
+  SourceControlHostingProviderKind,
   SourceControlProviderKind,
 } from "@t3tools/contracts";
 
@@ -22,4 +23,19 @@ export function buildSourceControlHostingHostDefaultPatch(
     sourceControlHostingHostDefaults[kind] = hostId;
   }
   return { sourceControlHostingHostDefaults };
+}
+
+/** Enable or disable one centralized hosting integration without changing its host selection. */
+export function buildSourceControlHostingEnabledPatch(
+  settings: Pick<ServerSettings, "sourceControlDisabledHostingProviders">,
+  kind: SourceControlHostingProviderKind,
+  enabled: boolean,
+): ServerSettingsPatch {
+  const sourceControlDisabledHostingProviders = enabled
+    ? settings.sourceControlDisabledHostingProviders.filter((candidate) => candidate !== kind)
+    : settings.sourceControlDisabledHostingProviders.includes(kind)
+      ? settings.sourceControlDisabledHostingProviders
+      : [...settings.sourceControlDisabledHostingProviders, kind];
+
+  return { sourceControlDisabledHostingProviders };
 }
