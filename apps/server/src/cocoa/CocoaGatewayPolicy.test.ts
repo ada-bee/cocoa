@@ -101,6 +101,42 @@ describe("Cocoa gateway provider policy", () => {
     }),
   );
 
+  it.effect("accepts a Codex instance bound to a first-class provider host", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({
+        providerHosts: {
+          macbook: {
+            transport: {
+              type: "cocoa-host",
+              url: "wss://macbook.test:4500",
+              key: "persisted_random_key",
+            },
+          },
+        },
+        providerInstances: {
+          codex: { driver: "codex", hostId: "macbook", config: {} },
+        },
+        textGenerationModelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      });
+
+      const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(settings);
+      expect(resolved[ProviderInstanceId.make("codex")]).toMatchObject({
+        driver: "codex",
+        hostId: "macbook",
+      });
+    }),
+  );
+
+  it.effect("rejects an instance that references a missing provider host", () => {
+    const settings = decodeSettings({
+      providerInstances: {
+        codex: { driver: "codex", hostId: "missing_host", config: {} },
+      },
+      textGenerationModelSelection: { instanceId: "codex", model: "gpt-5.4" },
+    });
+    return expectReason(settings, "missing-provider-host");
+  });
+
   it.effect("rejects a generated-text selection stored under another provider's key", () => {
     const settings = validSettings();
     return expectReason(
@@ -165,7 +201,49 @@ describe("Cocoa gateway provider policy", () => {
       }),
   );
 
-  it.effect("rejects non-Codex drivers before registry construction", () => {
+  it.effect("accepts an explicitly configured external OpenCode daemon", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({
+        providerInstances: {
+          opencode_remote: {
+            driver: "opencode",
+            config: {
+              serverUrl: "https://opencode.example.test",
+              serverPassword: "secret",
+            },
+          },
+        },
+        textGenerationModelSelection: {
+          instanceId: "opencode_remote",
+          model: "anthropic/claude-sonnet-4",
+        },
+      });
+
+      const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(settings);
+      expect(resolved[ProviderInstanceId.make("opencode_remote")]?.config).toMatchObject({
+        serverUrl: "https://opencode.example.test",
+        serverPassword: "secret",
+      });
+    }),
+  );
+
+  it.effect("rejects OpenCode without an explicit daemon URL", () => {
+    const settings = decodeSettings({
+      providerInstances: {
+        opencode_remote: {
+          driver: "opencode",
+          config: {},
+        },
+      },
+      textGenerationModelSelection: {
+        instanceId: "opencode_remote",
+        model: "anthropic/claude-sonnet-4",
+      },
+    });
+    return expectReason(settings, "missing-server-url");
+  });
+
+  it.effect("rejects unsupported drivers before registry construction", () => {
     const settings = validSettings();
     return expectReason(
       {

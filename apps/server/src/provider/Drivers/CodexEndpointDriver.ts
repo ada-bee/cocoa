@@ -53,6 +53,7 @@ import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervis
 import { makeCodexTerminalAdapter } from "../codexTerminal/CodexTerminalAdapter.ts";
 import { makeCodexVcsAdapter } from "../codexVcs/CodexVcsAdapter.ts";
 import { makeCodexWorkspaceAdapter } from "../codexWorkspace/CodexWorkspaceAdapter.ts";
+import { makeProviderHostCapabilities } from "../hostEndpoint/ProviderHostCapabilities.ts";
 import {
   checkCodexEndpointProviderStatus,
   makePendingCodexEndpointProvider,
@@ -139,6 +140,7 @@ export interface CodexEndpointDriverDependencies {
   readonly makeEndpointExecution: typeof makeCodexExecutionAdapter;
   readonly makeEndpointVcs: typeof makeCodexVcsAdapter;
   readonly makeEndpointWorkspace: typeof makeCodexWorkspaceAdapter;
+  readonly makeHostCapabilities: typeof makeProviderHostCapabilities;
   readonly checkEndpointProviderStatus: typeof checkCodexEndpointProviderStatus;
 }
 
@@ -152,6 +154,7 @@ const defaultDependencies: CodexEndpointDriverDependencies = {
   makeEndpointExecution: makeCodexExecutionAdapter,
   makeEndpointVcs: makeCodexVcsAdapter,
   makeEndpointWorkspace: makeCodexWorkspaceAdapter,
+  makeHostCapabilities: makeProviderHostCapabilities,
   checkEndpointProviderStatus: checkCodexEndpointProviderStatus,
 };
 
@@ -188,13 +191,15 @@ export const makeCodexEndpointDriver = (
     metadata: { displayName: "Codex", supportsMultipleInstances: true },
     configSchema: CodexSettings,
     defaultConfig: () => decodeCodexSettings({}),
-    create: ({ instanceId, displayName, accentColor, enabled, config }) =>
+    create: ({ instanceId, host, displayName, accentColor, enabled, config }) =>
       Effect.gen(function* () {
-        if (config.endpointTransport === undefined) {
+        const endpointTransport = host?.transport ?? config.endpointTransport;
+        if (endpointTransport === undefined) {
           return yield* new ProviderDriverError({
             driver: DRIVER_KIND,
             instanceId,
-            detail: "Cocoa Codex instances require an explicit endpoint transport.",
+            detail:
+              "Cocoa Codex instances require a resolved provider host or a legacy endpoint transport.",
           });
         }
 
@@ -212,7 +217,14 @@ export const makeCodexEndpointDriver = (
           accentColor,
           continuationGroupKey: continuationIdentity.continuationKey,
         });
-        const effectiveConfig = { ...config, enabled } satisfies CodexSettings;
+        // A first-class host owns transport configuration. The provider-local
+        // field remains a compatibility fallback for settings written before
+        // hosts were introduced.
+        const effectiveConfig = {
+          ...config,
+          endpointTransport,
+          enabled,
+        } satisfies CodexSettings;
         const maintenanceCapabilities = makeManualOnlyProviderMaintenanceCapabilities({
           provider: DRIVER_KIND,
           packageName: null,
@@ -272,7 +284,7 @@ export const makeCodexEndpointDriver = (
 
         const supervisor = yield* dependencies.makeEndpointSupervisor({
           providerInstanceId: instanceId,
-          transport: config.endpointTransport,
+          transport: endpointTransport,
           dependencies: {
             makeEndpoint: dependencies.makeEndpoint,
             makeRouter: dependencies.makeEndpointRouter,
@@ -298,24 +310,31 @@ export const makeCodexEndpointDriver = (
           effectiveConfig.endpointTerminal.enabled === false
             ? undefined
             : effectiveConfig.endpointTerminal.sandboxMode;
+        const hostCapabilities =
+          host === undefined
+            ? undefined
+            : yield* dependencies.makeHostCapabilities({ instanceId, host });
         const terminal =
           terminalSandboxMode === undefined
             ? undefined
-            : yield* dependencies.makeEndpointTerminal({
+            : (hostCapabilities?.terminal ??
+              (yield* dependencies.makeEndpointTerminal({
                 providerInstanceId: instanceId,
                 sandboxMode: terminalSandboxMode,
                 borrowConnection: supervisor.borrowConnection,
-              });
+              })));
         const workspace =
-          config.workspaceHelper === undefined
+          hostCapabilities?.workspace ??
+          (config.workspaceHelper === undefined
             ? undefined
             : dependencies.makeEndpointWorkspace({
                 providerInstanceId: instanceId,
                 helper: config.workspaceHelper,
                 borrowConnection: supervisor.borrowConnection,
-              });
+              }));
         const vcs =
-          config.endpointGitExecutablePath === undefined
+          hostCapabilities?.vcs ??
+          (config.endpointGitExecutablePath === undefined
             ? undefined
             : dependencies.makeEndpointVcs({
                 providerInstanceId: instanceId,
@@ -324,7 +343,7 @@ export const makeCodexEndpointDriver = (
                   ? {}
                   : { checkpointHelper: config.checkpointHelper }),
                 borrowConnection: supervisor.borrowConnection,
-              });
+              }));
 
         let conversationCompatibility: CodexEndpointCompatibilityMetadata | undefined;
         const nativeAdapter = yield* makeCodexAdapterCore(effectiveConfig, {

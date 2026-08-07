@@ -2,6 +2,8 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   PROVIDER_DISPLAY_NAMES,
   type ModelSelection,
+  type ProviderHostConfig,
+  type ProviderHostId,
   type ProviderInstanceConfig,
   type ProviderInstanceId,
 } from "@t3tools/contracts";
@@ -40,6 +42,7 @@ import {
 import {
   buildAddCocoaHostSettingsPatch,
   buildRemoveCocoaHostSettingsPatch,
+  buildUpdateCocoaHostSettingsPatch,
   deriveCocoaHostConnections,
   parseCocoaHostPairingInput,
   readCocoaHostIconSvg,
@@ -119,10 +122,24 @@ export function HostConnectionsSection() {
     });
   };
 
-  const removeHost = (instanceId: ProviderInstanceId) => {
-    const connection = connections.find((candidate) => candidate.instanceId === instanceId);
+  const updateHost = (hostId: ProviderHostId, next: ProviderHostConfig) => {
+    const connection = connections.find((candidate) => candidate.hostId === hostId);
+    if (!connection) return;
+    updateSettings(buildUpdateCocoaHostSettingsPatch(settings, connection, next));
+  };
+
+  const removeHost = (hostId: ProviderHostId) => {
+    const connection = connections.find((candidate) => candidate.hostId === hostId);
     if (!connection) return;
     updateSettings(buildRemoveCocoaHostSettingsPatch(settings, connection));
+    toastManager.add({
+      type: "success",
+      title: "Provider host removed",
+      description:
+        connection.bindings.length === 0
+          ? "The host connection was removed."
+          : `${connection.bindings.length} bound provider${connection.bindings.length === 1 ? " was" : "s were"} removed with it.`,
+    });
   };
 
   const updateModelPreferences = (
@@ -249,49 +266,64 @@ export function HostConnectionsSection() {
         />
       ) : (
         connections.map((connection) => {
-          const instanceId = connection.instanceId;
-          const liveProvider = providerByInstanceId.get(instanceId);
-          const entry = instanceEntries.find((candidate) => candidate.instanceId === instanceId);
+          const hostId = connection.hostId;
+          const binding = connection.codexBinding;
+          const instanceId = binding?.instanceId;
+          const instance = binding?.instance;
+          const liveProvider = instanceId ? providerByInstanceId.get(instanceId) : undefined;
+          const entry = instanceId
+            ? instanceEntries.find((candidate) => candidate.instanceId === instanceId)
+            : undefined;
           const hostName =
-            connection.instance.displayName ?? new URL(connection.transport.url).hostname;
-          const iconSvg = readCocoaHostIconSvg(connection.instance);
-          const isHostOpen = openHosts[instanceId] ?? true;
-          const preferences = settings.providerModelPreferences?.[instanceId] ?? {
+            connection.host.displayName ?? new URL(connection.transport.url).hostname;
+          const iconSvg = readCocoaHostIconSvg(connection.host);
+          const isHostOpen = openHosts[hostId] ?? true;
+          const preferences = (instanceId
+            ? settings.providerModelPreferences?.[instanceId]
+            : undefined) ?? {
             hiddenModels: [],
             modelOrder: [],
           };
           const favoriteModels = Arr.filterMap(settings.favorites ?? [], (favorite) =>
-            favorite.provider === instanceId ? Result.succeed(favorite.model) : Result.failVoid,
+            instanceId && favorite.provider === instanceId
+              ? Result.succeed(favorite.model)
+              : Result.failVoid,
           );
-          const storedDefault = settings.defaultModelSelections?.[instanceId];
-          const defaultSelection = resolveAppModelSelectionStateForInstance(
-            instanceId,
-            settings,
-            providers,
-            storedDefault,
-          );
-          const advertisedDefault = resolveAppModelSelectionStateForInstance(
-            instanceId,
-            settings,
-            providers,
-          );
+          const storedDefault = instanceId
+            ? settings.defaultModelSelections?.[instanceId]
+            : undefined;
+          const defaultSelection = instanceId
+            ? resolveAppModelSelectionStateForInstance(
+                instanceId,
+                settings,
+                providers,
+                storedDefault,
+              )
+            : null;
+          const advertisedDefault = instanceId
+            ? resolveAppModelSelectionStateForInstance(instanceId, settings, providers)
+            : null;
           const storedTextGeneration =
-            settings.textGenerationModelSelections?.[instanceId] ??
-            (settings.textGenerationModelSelection.instanceId === instanceId
-              ? settings.textGenerationModelSelection
-              : undefined);
-          const textGenerationSelection = resolveAppModelSelectionStateForInstance(
-            instanceId,
-            settings,
-            providers,
-            storedTextGeneration,
-          );
+            instanceId === undefined
+              ? undefined
+              : (settings.textGenerationModelSelections?.[instanceId] ??
+                (settings.textGenerationModelSelection.instanceId === instanceId
+                  ? settings.textGenerationModelSelection
+                  : undefined));
+          const textGenerationSelection = instanceId
+            ? resolveAppModelSelectionStateForInstance(
+                instanceId,
+                settings,
+                providers,
+                storedTextGeneration,
+              )
+            : null;
           const harnessName = liveProvider
             ? (PROVIDER_DISPLAY_NAMES[liveProvider.driver] ?? String(liveProvider.driver))
             : "Codex";
 
           return (
-            <div key={instanceId} className="rounded-xl border border-border/60 bg-card/30">
+            <div key={hostId} className="rounded-xl border border-border/60 bg-card/30">
               <div className="flex items-center gap-3 px-3 py-3 sm:px-4">
                 <span className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border/60 bg-background text-muted-foreground">
                   {iconSvg ? (
@@ -312,11 +344,15 @@ export function HostConnectionsSection() {
                   </p>
                 </div>
                 <Button
-                  aria-label={`Remove ${hostName}`}
+                  aria-label={
+                    connection.bindings.length === 0
+                      ? `Remove ${hostName}`
+                      : `Remove ${hostName} and ${connection.bindings.length} bound provider${connection.bindings.length === 1 ? "" : "s"}`
+                  }
                   size="icon-xs"
                   variant="ghost"
                   className="text-muted-foreground hover:text-destructive"
-                  onClick={() => removeHost(instanceId)}
+                  onClick={() => removeHost(hostId)}
                 >
                   <Trash2Icon />
                 </Button>
@@ -324,9 +360,7 @@ export function HostConnectionsSection() {
                   aria-label={`Toggle ${hostName} details`}
                   size="icon-xs"
                   variant="ghost"
-                  onClick={() =>
-                    setOpenHosts((current) => ({ ...current, [instanceId]: !isHostOpen }))
-                  }
+                  onClick={() => setOpenHosts((current) => ({ ...current, [hostId]: !isHostOpen }))}
                 >
                   <ChevronDownIcon className={isHostOpen ? "rotate-180" : undefined} />
                 </Button>
@@ -338,16 +372,13 @@ export function HostConnectionsSection() {
                     <span className="text-xs font-medium text-foreground">Display name</span>
                     <DraftInput
                       className="mt-1.5"
-                      value={connection.instance.displayName ?? ""}
+                      value={connection.host.displayName ?? ""}
                       placeholder={new URL(connection.transport.url).hostname}
                       spellCheck={false}
                       onCommit={(value) => {
                         const trimmed = value.trim();
-                        const { displayName: _displayName, ...rest } = connection.instance;
-                        updateInstance(
-                          instanceId,
-                          trimmed ? { ...rest, displayName: trimmed } : rest,
-                        );
+                        const { displayName: _displayName, ...rest } = connection.host;
+                        updateHost(hostId, trimmed ? { ...rest, displayName: trimmed } : rest);
                       }}
                     />
                     <span className="mt-1 block text-xs text-muted-foreground">
@@ -373,10 +404,7 @@ export function HostConnectionsSection() {
                               .text()
                               .then(sanitizeCocoaHostIconSvg)
                               .then((svg) =>
-                                updateInstance(
-                                  instanceId,
-                                  withCocoaHostIconSvg(connection.instance, svg),
-                                ),
+                                updateHost(hostId, withCocoaHostIconSvg(connection.host, svg)),
                               )
                               .catch((cause: unknown) =>
                                 toastManager.add({
@@ -394,10 +422,7 @@ export function HostConnectionsSection() {
                           size="xs"
                           variant="ghost"
                           onClick={() =>
-                            updateInstance(
-                              instanceId,
-                              withCocoaHostIconSvg(connection.instance, null),
-                            )
+                            updateHost(hostId, withCocoaHostIconSvg(connection.host, null))
                           }
                         >
                           Remove icon
@@ -413,10 +438,10 @@ export function HostConnectionsSection() {
                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                       Providers
                     </p>
-                    {entry && liveProvider ? (
+                    {instanceId && instance && entry && liveProvider ? (
                       <ProviderInstanceCard
                         instanceId={instanceId}
-                        instance={connection.instance}
+                        instance={instance}
                         driverOption={getDriverOption(liveProvider.driver)}
                         liveProvider={liveProvider}
                         presentationDisplayName={harnessName}
@@ -486,7 +511,9 @@ export function HostConnectionsSection() {
                       />
                     ) : (
                       <p className="text-xs text-muted-foreground">
-                        Waiting for this host to advertise its Codex provider.
+                        {instance
+                          ? "Waiting for this host to advertise its Codex provider."
+                          : "No Codex provider is bound to this host."}
                       </p>
                     )}
                   </div>

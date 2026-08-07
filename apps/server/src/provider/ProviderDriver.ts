@@ -23,6 +23,7 @@
  */
 import type {
   ProviderDriverKind,
+  ProviderHostConfig,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
 } from "@t3tools/contracts";
@@ -153,6 +154,8 @@ export function defaultProviderContinuationIdentity(input: {
  */
 export interface ProviderDriverCreateInput<Config> {
   readonly instanceId: ProviderInstanceId;
+  /** Resolved host config when the instance references a first-class host. */
+  readonly host?: ProviderHostConfig | undefined;
   readonly displayName: string | undefined;
   readonly accentColor?: string | undefined;
   readonly environment: ProviderInstanceEnvironment;

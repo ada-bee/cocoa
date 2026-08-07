@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { CodexSettings, ProviderInstanceId } from "@t3tools/contracts";
+import { CodexSettings, ProviderHostConfig, ProviderInstanceId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -27,6 +27,7 @@ import {
 } from "./CodexEndpointProviderSnapshot.ts";
 
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
+const decodeProviderHost = Schema.decodeSync(ProviderHostConfig);
 const INSTANCE_ID = ProviderInstanceId.make("remote_codex");
 const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
@@ -72,8 +73,9 @@ const TestLayer = ServerConfig.layerTest(
   Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
 );
 
-const createInput = (config: CodexSettings, enabled = true) => ({
+const createInput = (config: CodexSettings, enabled = true, host?: ProviderHostConfig) => ({
   instanceId: INSTANCE_ID,
+  ...(host === undefined ? {} : { host }),
   displayName: "Remote Codex",
   accentColor: undefined,
   environment: [],
@@ -159,14 +161,77 @@ it.effect("stamps pending and account-blocked endpoint snapshots with connection
 );
 
 it.layer(TestLayer)("CodexEndpointDriver", (it) => {
-  it.effect("fails closed when endpoint transport is absent", () =>
+  it.effect("fails closed only when both host and legacy endpoint transport are absent", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const error = yield* makeCodexEndpointDriver()
           .create(createInput(decodeCodexSettings({})))
           .pipe(Effect.flip);
         assert.equal(error._tag, "ProviderDriverError");
-        assert.match(error.detail, /require an explicit endpoint transport/i);
+        assert.match(
+          error.detail,
+          /require a resolved provider host or a legacy endpoint transport/i,
+        );
+      }),
+    ),
+  );
+
+  it.effect("uses the resolved host transport instead of a duplicated legacy transport", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const legacyTransport = {
+          type: "cocoa-host" as const,
+          url: "wss://legacy.example.test:4500",
+          key: "legacy_key",
+        };
+        const host = decodeProviderHost({
+          transport: {
+            type: "cocoa-host",
+            url: "wss://host.example.test:4500",
+            key: "host_key",
+          },
+        });
+        let capturedTransport: unknown;
+        const driver = makeCodexEndpointDriver({
+          makeEndpointSupervisor: ((options: { readonly transport: unknown }) => {
+            capturedTransport = options.transport;
+            return Effect.die("stop after observing endpoint transport");
+          }) as CodexEndpointDriverDependencies["makeEndpointSupervisor"],
+        });
+
+        yield* driver
+          .create(
+            createInput(decodeCodexSettings({ endpointTransport: legacyTransport }), true, host),
+          )
+          .pipe(Effect.exit);
+
+        assert.deepStrictEqual(capturedTransport, host.transport);
+        assert.notDeepEqual(capturedTransport, legacyTransport);
+      }),
+    ),
+  );
+
+  it.effect("retains provider-local endpoint transport as a legacy fallback", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const legacyTransport = {
+          type: "cocoa-host" as const,
+          url: "wss://legacy.example.test:4500",
+          key: "legacy_key",
+        };
+        let capturedTransport: unknown;
+        const driver = makeCodexEndpointDriver({
+          makeEndpointSupervisor: ((options: { readonly transport: unknown }) => {
+            capturedTransport = options.transport;
+            return Effect.die("stop after observing endpoint transport");
+          }) as CodexEndpointDriverDependencies["makeEndpointSupervisor"],
+        });
+
+        yield* driver
+          .create(createInput(decodeCodexSettings({ endpointTransport: legacyTransport })))
+          .pipe(Effect.exit);
+
+        assert.deepStrictEqual(capturedTransport, legacyTransport);
       }),
     ),
   );
@@ -196,11 +261,6 @@ it.layer(TestLayer)("CodexEndpointDriver", (it) => {
             disabledCapability as CodexEndpointDriverDependencies["makeEndpointTextGeneration"],
         });
         const config = decodeCodexSettings({
-          endpointTransport: {
-            type: "cocoa-host",
-            url: "ws://127.0.0.1:7777",
-            key: "test_host_key",
-          },
           endpointTerminal: { enabled: true, sandboxMode: "workspaceWrite" },
           endpointGitExecutablePath: "/usr/bin/git",
           workspaceHelper: {
@@ -210,7 +270,14 @@ it.layer(TestLayer)("CodexEndpointDriver", (it) => {
           },
         });
 
-        const instance = yield* driver.create(createInput(config, false));
+        const host = decodeProviderHost({
+          transport: {
+            type: "cocoa-host",
+            url: "ws://127.0.0.1:7777",
+            key: "test_host_key",
+          },
+        });
+        const instance = yield* driver.create(createInput(config, false, host));
         assert.equal(endpointCalls, 0);
         assert.equal(capabilityCalls, 0);
         assert.isFalse(instance.enabled);

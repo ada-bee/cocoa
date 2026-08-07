@@ -8,6 +8,7 @@
  */
 import {
   CodexSettings,
+  OpenCodeSettings,
   ProviderDriverKind,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
@@ -18,10 +19,12 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
+const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
 
 const ConfigRecord = Schema.Record(Schema.String, Schema.Unknown);
 const decodeConfigRecord = Schema.decodeUnknownEffect(ConfigRecord);
 const decodeCodexSettings = Schema.decodeUnknownEffect(CodexSettings);
+const decodeOpenCodeSettings = Schema.decodeUnknownEffect(OpenCodeSettings);
 
 const ALLOWED_CODEX_ENDPOINT_FIELDS = new Set([
   "checkpointHelper",
@@ -34,13 +37,21 @@ const ALLOWED_CODEX_ENDPOINT_FIELDS = new Set([
 ]);
 
 const LOCAL_PROCESS_FIELDS = new Set(["binaryPath", "homePath", "launchArgs", "shadowHomePath"]);
+const ALLOWED_OPENCODE_ENDPOINT_FIELDS = new Set([
+  "customModels",
+  "enabled",
+  "serverPassword",
+  "serverUrl",
+]);
 
 export const CocoaGatewayPolicyFailureReason = Schema.Literals([
   "checkpoint-helper-requires-endpoint-git",
   "invalid-provider-config",
   "local-process-field",
   "missing-provider-config",
+  "missing-provider-host",
   "missing-endpoint-transport",
+  "missing-server-url",
   "provider-environment-forbidden",
   "unknown-provider-field",
   "unsupported-driver",
@@ -86,8 +97,9 @@ const fail = (
 const validateInstance = Effect.fn("CocoaGatewayPolicy.validateInstance")(function* (
   providerInstanceId: string,
   instance: ProviderInstanceConfig,
+  settings: ServerSettings,
 ) {
-  if (instance.driver !== CODEX_DRIVER) {
+  if (instance.driver !== CODEX_DRIVER && instance.driver !== OPENCODE_DRIVER) {
     return yield* fail("unsupported-driver", {
       providerInstanceId,
       detail: `Driver '${instance.driver}' is not available in the Cocoa gateway profile.`,
@@ -99,6 +111,13 @@ const validateInstance = Effect.fn("CocoaGatewayPolicy.validateInstance")(functi
       providerInstanceId,
       detail:
         "Cocoa endpoint providers cannot carry process environment values; pair a Cocoa host instead.",
+    });
+  }
+
+  if (instance.hostId !== undefined && settings.providerHosts[instance.hostId] === undefined) {
+    return yield* fail("missing-provider-host", {
+      providerInstanceId,
+      detail: `Provider host '${instance.hostId}' is not configured.`,
     });
   }
 
@@ -117,38 +136,52 @@ const validateInstance = Effect.fn("CocoaGatewayPolicy.validateInstance")(functi
     ),
   );
 
+  const allowedFields =
+    instance.driver === CODEX_DRIVER
+      ? ALLOWED_CODEX_ENDPOINT_FIELDS
+      : ALLOWED_OPENCODE_ENDPOINT_FIELDS;
   for (const field of Object.keys(configRecord)) {
     if (LOCAL_PROCESS_FIELDS.has(field)) {
       return yield* fail("local-process-field", { providerInstanceId, detail: field });
     }
-    if (!ALLOWED_CODEX_ENDPOINT_FIELDS.has(field)) {
+    if (!allowedFields.has(field)) {
       return yield* fail("unknown-provider-field", { providerInstanceId, detail: field });
     }
   }
 
-  const config = yield* decodeCodexSettings(configRecord).pipe(
-    Effect.mapError(
-      (cause) =>
-        new CocoaGatewayPolicyError({
-          reason: "invalid-provider-config",
-          providerInstanceId,
-          cause,
-        }),
-    ),
-  );
-  if (config.endpointTransport === undefined) {
-    return yield* fail("missing-endpoint-transport", { providerInstanceId });
-  }
-  if (config.checkpointHelper !== undefined && config.endpointGitExecutablePath === undefined) {
-    return yield* fail("checkpoint-helper-requires-endpoint-git", {
+  const mapConfigError = (cause: unknown) =>
+    new CocoaGatewayPolicyError({
+      reason: "invalid-provider-config",
       providerInstanceId,
-      detail: "checkpointHelper requires an explicit endpointGitExecutablePath.",
+      cause,
     });
+  if (instance.driver === CODEX_DRIVER) {
+    const codexConfig = yield* decodeCodexSettings(configRecord).pipe(
+      Effect.mapError(mapConfigError),
+    );
+    if (instance.hostId === undefined && codexConfig.endpointTransport === undefined) {
+      return yield* fail("missing-endpoint-transport", { providerInstanceId });
+    }
+    if (
+      codexConfig.checkpointHelper !== undefined &&
+      codexConfig.endpointGitExecutablePath === undefined
+    ) {
+      return yield* fail("checkpoint-helper-requires-endpoint-git", {
+        providerInstanceId,
+        detail: "checkpointHelper requires an explicit endpointGitExecutablePath.",
+      });
+    }
+    return { enabled: instance.enabled ?? codexConfig.enabled } as const;
   }
 
-  return {
-    enabled: instance.enabled ?? config.enabled,
-  } as const;
+  const openCodeConfig = yield* decodeOpenCodeSettings(configRecord).pipe(
+    Effect.mapError(mapConfigError),
+  );
+  if (openCodeConfig.serverUrl.trim() === "") {
+    return yield* fail("missing-server-url", { providerInstanceId });
+  }
+
+  return { enabled: instance.enabled ?? openCodeConfig.enabled } as const;
 });
 
 const validateModelSelection = (
@@ -175,7 +208,7 @@ export const resolveCocoaGatewayProviderInstanceConfigMap = Effect.fn(
 
   const enabledByInstanceId = new Map<string, boolean>();
   for (const [providerInstanceId, instance] of instances) {
-    const validated = yield* validateInstance(providerInstanceId, instance);
+    const validated = yield* validateInstance(providerInstanceId, instance, settings);
     enabledByInstanceId.set(providerInstanceId, validated.enabled);
   }
 

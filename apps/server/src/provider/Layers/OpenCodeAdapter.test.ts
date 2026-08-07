@@ -34,10 +34,9 @@ import {
 import {
   appendOpenCodeAssistantTextDelta,
   isOpenCodeNotFound,
-  isSameOpenCodeDirectory,
-  makeOpenCodeAdapter,
   mergeOpenCodeAssistantText,
 } from "./OpenCodeAdapter.ts";
+import { isSameOpenCodeDirectory, makeOpenCodeAdapter } from "./LegacyOpenCodeAdapter.ts";
 
 // Test-local service tag so the rest of the file can keep using `yield* OpenCodeAdapter`.
 class OpenCodeAdapter extends Context.Service<OpenCodeAdapter, OpenCodeAdapterShape>()(

@@ -6,14 +6,26 @@ import * as Schema from "effect/Schema";
 import {
   deriveProviderInstanceConfigMap,
   resolveProviderInstanceConfigMap,
+  resolveProviderRegistryConfig,
 } from "./ProviderInstanceRegistryHydration.ts";
 
 const decodeSettings = Schema.decodeUnknownSync(ServerSettings);
 
 const settings = decodeSettings({
+  providerHosts: {
+    macbook: {
+      displayName: "MacBook Air",
+      transport: {
+        type: "cocoa-host",
+        url: "wss://macaroni.test:4500",
+        key: "test_host_key",
+      },
+    },
+  },
   providerInstances: {
     macbook_air: {
       driver: "codex",
+      hostId: "macbook",
       config: {
         endpointTransport: {
           type: "cocoa-host",
@@ -57,6 +69,14 @@ describe("provider instance config resolution", () => {
     Effect.gen(function* () {
       const resolved = yield* resolveProviderInstanceConfigMap(settings, "legacy");
       assert.deepEqual(resolved, deriveProviderInstanceConfigMap(settings));
+    }),
+  );
+
+  it.effect("retains the authoritative host catalog alongside resolved instances", () =>
+    Effect.gen(function* () {
+      const resolved = yield* resolveProviderRegistryConfig(settings, "cocoa-gateway");
+      assert.strictEqual(resolved.providerInstances, settings.providerInstances);
+      assert.strictEqual(resolved.providerHosts, settings.providerHosts);
     }),
   );
 

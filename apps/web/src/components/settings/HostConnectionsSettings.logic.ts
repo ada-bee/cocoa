@@ -2,6 +2,8 @@ import {
   CocoaHostTransport,
   decodeCocoaHostPairingToken,
   ProviderDriverKind,
+  type ProviderHostConfig,
+  ProviderHostId,
   ProviderInstanceId,
   type ProviderInstanceConfig,
   type ServerSettings,
@@ -14,9 +16,18 @@ const DEFAULT_CODEX_INSTANCE = ProviderInstanceId.make("codex");
 const isCocoaHostTransport = Schema.is(CocoaHostTransport);
 
 export interface CocoaHostConnection {
-  readonly instanceId: ProviderInstanceId;
-  readonly instance: ProviderInstanceConfig;
+  readonly hostId: ProviderHostId;
+  readonly host: ProviderHostConfig;
   readonly transport: CocoaHostTransport;
+  readonly bindings: ReadonlyArray<{
+    readonly instanceId: ProviderInstanceId;
+    readonly instance: ProviderInstanceConfig;
+  }>;
+  readonly codexBinding: {
+    readonly instanceId: ProviderInstanceId;
+    readonly instance: ProviderInstanceConfig;
+  } | null;
+  readonly legacy: boolean;
 }
 
 export function parseCocoaHostPairingInput(input: string): CocoaHostTransport {
@@ -51,8 +62,8 @@ function stripCocoaHostIconSvgPreamble(input: string): string {
   }
 }
 
-export function readCocoaHostIconSvg(instance: ProviderInstanceConfig): string | null {
-  const value = instance.iconSvg;
+export function readCocoaHostIconSvg(host: ProviderHostConfig): string | null {
+  const value = host.iconSvg;
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
@@ -82,28 +93,59 @@ export function sanitizeCocoaHostIconSvg(input: string): string {
 }
 
 export function withCocoaHostIconSvg(
-  instance: ProviderInstanceConfig,
+  host: ProviderHostConfig,
   svg: string | null,
-): ProviderInstanceConfig {
-  const { iconSvg: _iconSvg, ...rest } = instance;
+): ProviderHostConfig {
+  const { iconSvg: _iconSvg, ...rest } = host;
   return svg === null ? rest : { ...rest, iconSvg: svg };
 }
 
 export function deriveCocoaHostConnections(
-  settings: Pick<ServerSettings, "providerInstances">,
+  settings: Pick<ServerSettings, "providerHosts" | "providerInstances">,
 ): ReadonlyArray<CocoaHostConnection> {
-  return Object.entries(settings.providerInstances ?? {}).flatMap(([rawInstanceId, instance]) => {
+  const instances = Object.entries(settings.providerInstances ?? {}).map(
+    ([rawInstanceId, instance]) => ({
+      instanceId: ProviderInstanceId.make(rawInstanceId),
+      instance,
+    }),
+  );
+  const canonical = Object.entries(settings.providerHosts ?? {}).map(([rawHostId, host]) => {
+    const hostId = ProviderHostId.make(rawHostId);
+    const bindings = instances.filter(({ instance }) => instance.hostId === hostId);
+    return {
+      hostId,
+      host,
+      transport: host.transport,
+      bindings,
+      codexBinding: bindings.find(({ instance }) => instance.driver === CODEX_DRIVER) ?? null,
+      legacy: false,
+    } satisfies CocoaHostConnection;
+  });
+
+  const legacy = instances.flatMap(({ instanceId, instance }) => {
     if (instance.driver !== CODEX_DRIVER) return [];
+    if (instance.hostId !== undefined) return [];
     const transport = readConfig(instance.config).endpointTransport;
     if (!isCocoaHostTransport(transport)) return [];
+    const host: ProviderHostConfig = {
+      transport,
+      ...(instance.displayName === undefined ? {} : { displayName: instance.displayName }),
+      ...(instance.iconSvg === undefined ? {} : { iconSvg: instance.iconSvg }),
+      ...(instance.accentColor === undefined ? {} : { accentColor: instance.accentColor }),
+    };
+    const binding = { instanceId, instance };
     return [
       {
-        instanceId: ProviderInstanceId.make(rawInstanceId),
-        instance,
+        hostId: ProviderHostId.make(`legacy_${instanceId}`.slice(0, 64)),
+        host,
         transport,
+        bindings: [binding],
+        codexBinding: binding,
+        legacy: true,
       },
     ];
   });
+  return [...canonical, ...legacy];
 }
 
 function hostnameSlug(url: string): string {
@@ -127,35 +169,73 @@ function nextInstanceId(settings: Pick<ServerSettings, "providerInstances">, url
   }
 }
 
+function nextHostId(settings: Pick<ServerSettings, "providerHosts">, url: string): ProviderHostId {
+  const base = hostnameSlug(url);
+  const existing = new Set(Object.keys(settings.providerHosts ?? {}));
+  if (!existing.has(base)) return ProviderHostId.make(base);
+  for (let suffix = 2; ; suffix += 1) {
+    const suffixText = `_${suffix}`;
+    const candidate = `${base.slice(0, 64 - suffixText.length)}${suffixText}`;
+    if (!existing.has(candidate)) return ProviderHostId.make(candidate);
+  }
+}
+
 export function buildAddCocoaHostSettingsPatch(
-  settings: Pick<ServerSettings, "providerInstances" | "textGenerationModelSelection">,
+  settings: Pick<
+    ServerSettings,
+    "providerHosts" | "providerInstances" | "textGenerationModelSelection"
+  >,
   transport: CocoaHostTransport,
 ): ServerSettingsPatch {
   const existingHosts = deriveCocoaHostConnections(settings);
-  const isFirstHost = existingHosts.length === 0;
-  const instanceId = isFirstHost ? DEFAULT_CODEX_INSTANCE : nextInstanceId(settings, transport.url);
+  const matchingHosts = existingHosts.filter(
+    (connection) => connection.transport.url === transport.url,
+  );
+  const canonicalMatch = matchingHosts.find((connection) => !connection.legacy);
+  const legacyMatch = matchingHosts.find((connection) => connection.legacy);
+  const matchingHost = canonicalMatch ?? legacyMatch;
+  const existingCodexHosts = existingHosts.filter((connection) => connection.codexBinding !== null);
+  const isFirstHost = existingCodexHosts.length === 0;
+  const hostId = canonicalMatch?.hostId ?? nextHostId(settings, transport.url);
+  const instanceId =
+    canonicalMatch?.codexBinding?.instanceId ??
+    legacyMatch?.codexBinding?.instanceId ??
+    (isFirstHost ? DEFAULT_CODEX_INSTANCE : nextInstanceId(settings, transport.url));
   const existingInstance = settings.providerInstances?.[instanceId];
   const existingConfig = readConfig(existingInstance?.config);
   const customModels = Array.isArray(existingConfig.customModels)
     ? existingConfig.customModels.filter((model): model is string => typeof model === "string")
     : [];
   const hostname = new URL(transport.url).hostname;
+  const previousHost = matchingHost?.host;
+  const host: ProviderHostConfig = {
+    ...(previousHost?.displayName === undefined
+      ? { displayName: hostname }
+      : { displayName: previousHost.displayName }),
+    ...(previousHost?.iconSvg === undefined ? {} : { iconSvg: previousHost.iconSvg }),
+    ...(previousHost?.accentColor === undefined ? {} : { accentColor: previousHost.accentColor }),
+    transport,
+  };
 
   const patch: ServerSettingsPatch = {
+    providerHosts: {
+      ...settings.providerHosts,
+      [hostId]: host,
+    },
     providerInstances: {
       ...settings.providerInstances,
       [instanceId]: {
         driver: CODEX_DRIVER,
-        displayName: hostname,
+        hostId,
         enabled: true,
+        ...(existingInstance?.displayName === undefined
+          ? {}
+          : { displayName: existingInstance.displayName }),
         ...(existingInstance?.accentColor === undefined
           ? {}
           : { accentColor: existingInstance.accentColor }),
         ...(existingInstance?.iconSvg === undefined ? {} : { iconSvg: existingInstance.iconSvg }),
-        config: {
-          ...(customModels.length === 0 ? {} : { customModels }),
-          endpointTransport: transport,
-        },
+        config: customModels.length === 0 ? {} : { customModels },
       },
     },
   };
@@ -171,10 +251,43 @@ export function buildAddCocoaHostSettingsPatch(
   return patch;
 }
 
+export function buildUpdateCocoaHostSettingsPatch(
+  settings: Pick<
+    ServerSettings,
+    "providerHosts" | "providerInstances" | "textGenerationModelSelection"
+  >,
+  connection: CocoaHostConnection,
+  host: ProviderHostConfig,
+): ServerSettingsPatch {
+  if (!connection.legacy) {
+    return {
+      providerHosts: {
+        ...settings.providerHosts,
+        [connection.hostId]: host,
+      },
+    };
+  }
+  const migration = buildAddCocoaHostSettingsPatch(settings, connection.transport);
+  const providerHosts = migration.providerHosts ?? settings.providerHosts;
+  const providerInstances = migration.providerInstances ?? settings.providerInstances;
+  const migrated = deriveCocoaHostConnections({ providerHosts, providerInstances }).find(
+    (candidate) => !candidate.legacy && candidate.transport.url === connection.transport.url,
+  );
+  if (!migrated) throw new Error("Could not migrate the legacy provider host.");
+  return {
+    ...migration,
+    providerHosts: {
+      ...providerHosts,
+      [migrated.hostId]: host,
+    },
+  };
+}
+
 export function buildRemoveCocoaHostSettingsPatch(
   settings: Pick<
     ServerSettings,
     | "providerInstances"
+    | "providerHosts"
     | "defaultModelSelections"
     | "sourceControlWriterModelSelection"
     | "textGenerationModelSelection"
@@ -182,39 +295,53 @@ export function buildRemoveCocoaHostSettingsPatch(
   >,
   connection: CocoaHostConnection,
 ): ServerSettingsPatch {
+  const providerHosts = { ...settings.providerHosts };
+  if (!connection.legacy) delete providerHosts[connection.hostId];
   const providerInstances = { ...settings.providerInstances };
-  delete providerInstances[connection.instanceId];
+  const removedInstanceIds = new Set(connection.bindings.map(({ instanceId }) => instanceId));
+  for (const instanceId of removedInstanceIds) delete providerInstances[instanceId];
   const textGenerationModelSelections = { ...settings.textGenerationModelSelections };
   const defaultModelSelections = { ...settings.defaultModelSelections };
-  const removedDefaultSelection = defaultModelSelections[connection.instanceId] !== undefined;
-  delete defaultModelSelections[connection.instanceId];
-  const removedPerProviderSelection =
-    textGenerationModelSelections[connection.instanceId] !== undefined;
-  delete textGenerationModelSelections[connection.instanceId];
+  let removedDefaultSelection = false;
+  let removedPerProviderSelection = false;
+  for (const instanceId of removedInstanceIds) {
+    removedDefaultSelection ||= defaultModelSelections[instanceId] !== undefined;
+    removedPerProviderSelection ||= textGenerationModelSelections[instanceId] !== undefined;
+    delete defaultModelSelections[instanceId];
+    delete textGenerationModelSelections[instanceId];
+  }
   const perProviderPatch = {
     ...(removedPerProviderSelection ? { textGenerationModelSelections } : {}),
     ...(removedDefaultSelection ? { defaultModelSelections } : {}),
   };
-  const [remainingHost] = deriveCocoaHostConnections({ providerInstances });
-  if (!remainingHost) return { providerInstances, ...perProviderPatch };
+  const remainingHost = deriveCocoaHostConnections({ providerHosts, providerInstances }).find(
+    (candidate) => candidate.codexBinding !== null,
+  );
+  if (!remainingHost?.codexBinding) {
+    return { providerHosts, providerInstances, ...perProviderPatch };
+  }
+  const remainingInstanceId = remainingHost.codexBinding.instanceId;
 
-  const repointTextGeneration =
-    settings.textGenerationModelSelection.instanceId === connection.instanceId;
+  const repointTextGeneration = removedInstanceIds.has(
+    settings.textGenerationModelSelection.instanceId,
+  );
   const repointSourceControl =
-    settings.sourceControlWriterModelSelection?.instanceId === connection.instanceId;
+    settings.sourceControlWriterModelSelection !== null &&
+    removedInstanceIds.has(settings.sourceControlWriterModelSelection.instanceId);
   const textGenerationModelSelection = {
     ...settings.textGenerationModelSelection,
-    instanceId: remainingHost.instanceId,
+    instanceId: remainingInstanceId,
   };
   const sourceControlWriterModelSelection = settings.sourceControlWriterModelSelection
     ? {
         ...settings.sourceControlWriterModelSelection,
-        instanceId: remainingHost.instanceId,
+        instanceId: remainingInstanceId,
       }
     : null;
 
   if (repointTextGeneration && repointSourceControl) {
     return {
+      providerHosts,
       providerInstances,
       ...perProviderPatch,
       textGenerationModelSelection,
@@ -222,10 +349,15 @@ export function buildRemoveCocoaHostSettingsPatch(
     };
   }
   if (repointTextGeneration) {
-    return { providerInstances, ...perProviderPatch, textGenerationModelSelection };
+    return { providerHosts, providerInstances, ...perProviderPatch, textGenerationModelSelection };
   }
   if (repointSourceControl) {
-    return { providerInstances, ...perProviderPatch, sourceControlWriterModelSelection };
+    return {
+      providerHosts,
+      providerInstances,
+      ...perProviderPatch,
+      sourceControlWriterModelSelection,
+    };
   }
-  return { providerInstances, ...perProviderPatch };
+  return { providerHosts, providerInstances, ...perProviderPatch };
 }

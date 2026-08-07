@@ -18,7 +18,6 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
-import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
@@ -26,10 +25,13 @@ import * as Stream from "effect/Stream";
 import type { OpencodeClient, Part, PermissionRequest, QuestionRequest } from "@opencode-ai/sdk/v2";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
-import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import {
+  type GatewayManagedImageAttachmentError,
+  materializeGatewayManagedImageDataUrls,
+} from "../../gatewayManagedImageAttachments.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
-import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import type { ProviderEventLogger } from "./ProviderEventLoggersService.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -40,20 +42,36 @@ import {
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
   buildOpenCodePermissionRules,
-  OpenCodeRuntime,
   OpenCodeRuntimeError,
   openCodeQuestionId,
   openCodeRuntimeErrorDetail,
   parseOpenCodeModelSlug,
   runOpenCodeSdk,
-  toOpenCodeFileParts,
+  toOpenCodeDataUrlFileParts,
   toOpenCodePermissionReply,
   toOpenCodeQuestionAnswers,
+  type OpenCodeEndpointRuntimeShape,
   type OpenCodeServerConnection,
-} from "../opencodeRuntime.ts";
+} from "../OpenCodeEndpointRuntime.ts";
 import * as Option from "effect/Option";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
+
+function attachmentFailureDetail(error: GatewayManagedImageAttachmentError): string {
+  switch (error.reason) {
+    case "too-many-images":
+      return "Too many image attachments were supplied.";
+    case "invalid-image":
+      return "An image attachment is invalid.";
+    case "aggregate-too-large":
+      return "Image attachments exceed the supported size limit.";
+    case "unresolved-image":
+      return "A gateway-managed image attachment could not be resolved.";
+    case "file-mismatch":
+    case "read-failed":
+      return "A gateway-managed image attachment could not be loaded.";
+  }
+}
 
 /**
  * Version tag stamped into the OpenCode resume cursor. Bump if the cursor
@@ -143,26 +161,6 @@ export function isOpenCodeNotFound(cause: unknown): boolean {
  * only widen matches, never split them. Takes the services as arguments so
  * adapter methods stay service-free. Exported for unit testing.
  */
-export function isSameOpenCodeDirectory(
-  fileSystem: FileSystem.FileSystem,
-  path: Path.Path,
-  left: string,
-  right: string,
-): Effect.Effect<boolean> {
-  const lexicalLeft = path.resolve(left);
-  const lexicalRight = path.resolve(right);
-  if (lexicalLeft === lexicalRight) {
-    return Effect.succeed(true);
-  }
-  const canonicalize = (lexical: string) =>
-    fileSystem.realPath(lexical).pipe(Effect.orElseSucceed(() => lexical));
-  return Effect.zipWith(
-    canonicalize(lexicalLeft),
-    canonicalize(lexicalRight),
-    (canonicalLeft, canonicalRight) => canonicalLeft === canonicalRight,
-  );
-}
-
 interface OpenCodeTurnSnapshot {
   readonly id: TurnId;
   readonly items: Array<unknown>;
@@ -240,9 +238,13 @@ interface OpenCodeSessionContext {
 export interface OpenCodeAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
   readonly environment?: NodeJS.ProcessEnv;
-  readonly nativeEventLogPath?: string;
-  readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly nativeEventLogger?: ProviderEventLogger;
+  /** Endpoint adapters must never substitute the gateway process cwd for a remote workspace. */
+  readonly requireExplicitCwd?: boolean;
+  readonly sameDirectory: (left: string, right: string) => Effect.Effect<boolean>;
 }
+
+export type OpenCodeEndpointAdapterEnv = Crypto.Crypto | FileSystem.FileSystem | ServerConfig;
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -560,30 +562,18 @@ const stopOpenCodeContext = Effect.fn("stopOpenCodeContext")(function* (
   return true;
 });
 
-export function makeOpenCodeAdapter(
+export function makeOpenCodeEndpointAdapter(
   openCodeSettings: OpenCodeSettings,
-  options?: OpenCodeAdapterLiveOptions,
+  openCodeRuntime: OpenCodeEndpointRuntimeShape,
+  options: OpenCodeAdapterLiveOptions,
 ) {
   return Effect.gen(function* () {
-    const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("opencode");
+    const boundInstanceId = options.instanceId ?? ProviderInstanceId.make("opencode");
     const serverConfig = yield* ServerConfig;
-    const openCodeRuntime = yield* OpenCodeRuntime;
-    const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const sameDirectory = (left: string, right: string) =>
-      isSameOpenCodeDirectory(fileSystem, path, left, right);
-    const nativeEventLogger =
-      options?.nativeEventLogger ??
-      (options?.nativeEventLogPath !== undefined
-        ? yield* makeEventNdjsonLogger(options.nativeEventLogPath, {
-            stream: "native",
-          })
-        : undefined);
-    // Only close loggers we created. If the caller passed one in via
-    // `options.nativeEventLogger`, they own its lifecycle.
-    const managedNativeEventLogger =
-      options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
+    const crypto = yield* Crypto.Crypto;
+    const sameDirectory = options.sameDirectory;
+    const nativeEventLogger = options.nativeEventLogger;
     const runtimeEvents = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, OpenCodeSessionContext>();
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
@@ -639,13 +629,6 @@ export function makeOpenCodeAdapter(
           (context) => Effect.ignoreCause(stopOpenCodeContext(context)),
           { concurrency: "unbounded", discard: true },
         );
-        // Close the logger AFTER session teardown so any final lifecycle
-        // events emitted during shutdown still get written. `close` flushes
-        // the `Logger.batched` window and closes each per-thread
-        // `RotatingFileSink` handle owned by the logger's internal scope.
-        if (managedNativeEventLogger !== undefined) {
-          yield* managedNativeEventLogger.close();
-        }
       }).pipe(Effect.ensuring(Queue.shutdown(runtimeEvents))),
     );
 
@@ -1186,6 +1169,13 @@ export function makeOpenCodeAdapter(
 
     const startSession: OpenCodeAdapterShape["startSession"] = Effect.fn("startSession")(
       function* (input) {
+        if (options.requireExplicitCwd === true && input.cwd === undefined) {
+          return yield* new ProviderAdapterValidationError({
+            provider: PROVIDER,
+            operation: "startSession",
+            issue: "Endpoint-backed OpenCode sessions require an explicit remote cwd.",
+          });
+        }
         const binaryPath = openCodeSettings.binaryPath;
         const serverUrl = openCodeSettings.serverUrl;
         const serverPassword = openCodeSettings.serverPassword;
@@ -1438,13 +1428,23 @@ export function makeOpenCodeAdapter(
       }
 
       const text = input.input?.trim();
-      const fileParts = toOpenCodeFileParts({
+      const attachmentDataUrls = yield* materializeGatewayManagedImageDataUrls({
         attachments: input.attachments,
-        resolveAttachmentPath: (attachment) =>
-          resolveAttachmentPath({
-            attachmentsDir: serverConfig.attachmentsDir,
-            attachment,
-          }),
+        attachmentsDir: serverConfig.attachmentsDir,
+        fileSystem,
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/start",
+              detail: attachmentFailureDetail(error),
+            }),
+        ),
+      );
+      const fileParts = toOpenCodeDataUrlFileParts({
+        attachments: input.attachments,
+        dataUrls: attachmentDataUrls,
       });
       if ((!text || text.length === 0) && fileParts.length === 0) {
         return yield* new ProviderAdapterValidationError({

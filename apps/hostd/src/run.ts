@@ -1,6 +1,4 @@
-// @effect-diagnostics globalConsole:off - Pairing output must be printed directly when the standalone daemon launches.
-
-import { makeHostdConfig, type HostdConfig, type HostdConfigOverrides } from "./config.ts";
+import { type HostdConfig } from "./config.ts";
 import { encodePairingToken } from "./pairing.ts";
 import { startHostd, type RunningHostd } from "./relay.ts";
 
@@ -15,11 +13,8 @@ export const pairingTokenForConfig = (config: HostdConfig): string =>
     key: config.key,
   });
 
-export const runHostd = (overrides: HostdConfigOverrides = {}): RunningHostdWithPairing => {
-  const config = makeHostdConfig(overrides);
+export const runHostd = (config: HostdConfig): RunningHostdWithPairing => {
   const running = startHostd(config);
   const token = pairingTokenForConfig(config);
-  console.log("Pair this host from Cocoa Connections by pasting:");
-  console.log(token);
   return { ...running, token };
 };

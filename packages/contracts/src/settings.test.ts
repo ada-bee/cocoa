@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderHostId } from "./providerHost.ts";
 import {
   ClientSettingsSchema,
   ClientSettingsPatch,
@@ -172,6 +173,62 @@ describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
         providerInstances: { "1bad": { driver: "codex" } },
       }),
     ).toThrow();
+  });
+});
+
+describe("ServerSettings.providerHosts", () => {
+  it("defaults to an empty catalog for legacy settings", () => {
+    expect(DEFAULT_SERVER_SETTINGS.providerHosts).toEqual({});
+    expect(decodeServerSettings({}).providerHosts).toEqual({});
+  });
+
+  it("decodes first-class hosts and instance host references", () => {
+    const decoded = decodeServerSettings({
+      providerHosts: {
+        mac_studio: {
+          displayName: "Mac Studio",
+          iconSvg: "<svg />",
+          accentColor: "#dc2626",
+          transport: {
+            type: "cocoa-host",
+            url: "wss://mac-studio.example.test/",
+            key: "host-key",
+          },
+        },
+      },
+      providerInstances: {
+        codex_work: {
+          driver: "codex",
+          hostId: "mac_studio",
+        },
+      },
+    });
+
+    const hostId = ProviderHostId.make("mac_studio");
+    expect(decoded.providerHosts[hostId]?.displayName).toBe("Mac Studio");
+    expect(decoded.providerHosts[hostId]?.iconSvg).toBe("<svg />");
+    expect(decoded.providerHosts[hostId]?.accentColor).toBe("#dc2626");
+    expect(decoded.providerInstances[ProviderInstanceId.make("codex_work")]?.hostId).toBe(hostId);
+  });
+
+  it("treats providerHosts patches as optional whole-map replacements", () => {
+    expect(decodeServerSettingsPatch({}).providerHosts).toBeUndefined();
+
+    const patch = decodeServerSettingsPatch({
+      providerHosts: {
+        linux_build: {
+          transport: {
+            type: "cocoa-host",
+            url: "wss://linux.example.test/",
+            key: "linux-key",
+          },
+        },
+      },
+    });
+
+    expect(patch.providerHosts?.[ProviderHostId.make("linux_build")]?.transport.url).toBe(
+      "wss://linux.example.test/",
+    );
   });
 });
 

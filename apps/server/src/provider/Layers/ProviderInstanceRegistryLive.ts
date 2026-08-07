@@ -2,7 +2,8 @@
  * ProviderInstanceRegistryLive — runtime implementation of
  * `ProviderInstanceRegistry` plus its sibling mutator.
  *
- * Materializes every entry in a `ProviderInstanceConfigMap`:
+ * Materializes every entry in a `ProviderInstanceConfigMap`, resolving any
+ * `hostId` through its accompanying `ProviderHostConfigMap` first:
  *
  *   - When the entry's `driver` matches a registered driver, the registry
  *     decodes the opaque `config` envelope through `driver.configSchema`
@@ -18,6 +19,8 @@
  *   - When the entry's config fails schema decode, the registry logs and
  *     emits a shadow snapshot with the schema detail — same bucket as an
  *     unknown driver.
+ *   - When an entry references an absent host, the registry fails closed with
+ *     an unavailable shadow and never invokes the driver factory.
  *
  * Unlike the pre-Slice-D layer, the registry now holds mutable state
  * (`Ref`s + `PubSub`) and exposes an internal mutator
@@ -34,6 +37,8 @@
  */
 import {
   defaultInstanceIdForDriver,
+  type ProviderHostConfig,
+  type ProviderHostConfigMap,
   ProviderInstanceId,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
@@ -71,6 +76,7 @@ interface LiveEntry {
   readonly instance: ProviderInstance;
   readonly scope: Scope.Closeable;
   readonly entry: ProviderInstanceConfig;
+  readonly host: ProviderHostConfig | undefined;
 }
 
 /**
@@ -84,14 +90,17 @@ interface RegistryState {
 }
 
 /**
- * Structural equality on `ProviderInstanceConfig` envelopes. Used by
- * `reconcile` to skip rebuilds when settings arrive unchanged. Config
- * payloads are opaque `unknown` at the envelope layer; `Equal.equals`
- * falls back to structural equality for plain records, which matches how
- * the schema decode output is constructed.
+ * Structural equality on both the instance envelope and its resolved host.
+ * Used by `reconcile` to skip rebuilds when settings arrive unchanged and to
+ * replace only instances affected by a host edit. Config payloads are opaque
+ * `unknown` at the envelope layer; `Equal.equals` falls back to structural
+ * equality for plain records, which matches how schema output is constructed.
  */
-const entryEqual = (a: ProviderInstanceConfig, b: ProviderInstanceConfig): boolean =>
-  Equal.equals(a, b);
+const entryEqual = (
+  live: LiveEntry,
+  entry: ProviderInstanceConfig,
+  host: ProviderHostConfig | undefined,
+): boolean => Equal.equals(live.entry, entry) && Equal.equals(live.host, host);
 
 const decodedConfigEnabled = (config: unknown): boolean | undefined => {
   if (!config || typeof config !== "object" || globalThis.Array.isArray(config)) {
@@ -112,6 +121,7 @@ const buildEntry = <R>(input: {
   readonly instanceId: ProviderInstanceId;
   readonly rawInstanceId: string;
   readonly entry: ProviderInstanceConfig;
+  readonly host: ProviderHostConfig | undefined;
 }): Effect.Effect<
   | { readonly kind: "live"; readonly live: LiveEntry }
   | { readonly kind: "unavailable"; readonly snapshot: ServerProvider },
@@ -119,7 +129,20 @@ const buildEntry = <R>(input: {
   R
 > =>
   Effect.gen(function* () {
-    const { driversById, parentScope, instanceId, rawInstanceId, entry } = input;
+    const { driversById, parentScope, instanceId, rawInstanceId, entry, host } = input;
+    if (entry.hostId !== undefined && host === undefined) {
+      return {
+        kind: "unavailable" as const,
+        snapshot: yield* buildUnavailableProviderSnapshot({
+          driverKind: entry.driver,
+          instanceId,
+          displayName: entry.displayName,
+          accentColor: entry.accentColor,
+          reason: `Provider host '${entry.hostId}' referenced by instance '${rawInstanceId}' is not configured.`,
+        }),
+      };
+    }
+
     const driver = driversById.get(entry.driver);
     if (!driver) {
       return {
@@ -168,6 +191,7 @@ const buildEntry = <R>(input: {
     const createResult = yield* driver
       .create({
         instanceId,
+        host,
         displayName: entry.displayName,
         accentColor: entry.accentColor,
         environment: entry.environment ?? [],
@@ -200,6 +224,7 @@ const buildEntry = <R>(input: {
         instance: createResult.success,
         scope: childScope,
         entry,
+        host,
       },
     };
   });
@@ -212,9 +237,12 @@ const makeReconcile = <R>(input: {
   readonly state: RegistryState;
   readonly driversById: ReadonlyMap<ProviderDriverKind, AnyProviderDriver<R>>;
   readonly parentScope: Scope.Scope;
-}): ((configMap: ProviderInstanceConfigMap) => Effect.Effect<void, never, R>) => {
+}): ((
+  configMap: ProviderInstanceConfigMap,
+  providerHosts?: ProviderHostConfigMap,
+) => Effect.Effect<void, never, R>) => {
   const { state, driversById, parentScope } = input;
-  return (configMap: ProviderInstanceConfigMap) =>
+  return (configMap: ProviderInstanceConfigMap, providerHosts: ProviderHostConfigMap = {}) =>
     Effect.gen(function* () {
       const previousEntries = yield* Ref.get(state.entries);
       const previousUnavailable = yield* Ref.get(state.unavailable);
@@ -234,7 +262,9 @@ const makeReconcile = <R>(input: {
           continue;
         }
         const nextEntry = configMap[instanceId];
-        if (nextEntry !== undefined && !entryEqual(live.entry, nextEntry)) {
+        const nextHost =
+          nextEntry?.hostId === undefined ? undefined : providerHosts[nextEntry.hostId];
+        if (nextEntry !== undefined && !entryEqual(live, nextEntry, nextHost)) {
           replacedIds.add(instanceId);
         }
       }
@@ -255,6 +285,7 @@ const makeReconcile = <R>(input: {
 
       for (const [rawInstanceId, entry] of nextRaw) {
         const instanceId = ProviderInstanceId.make(rawInstanceId);
+        const host = entry.hostId === undefined ? undefined : providerHosts[entry.hostId];
         nextOrder.push(instanceId);
 
         const existing = previousEntries.get(instanceId);
@@ -270,6 +301,7 @@ const makeReconcile = <R>(input: {
           instanceId,
           rawInstanceId,
           entry,
+          host,
         });
         if (result.kind === "live") {
           builtEntries.set(instanceId, result.live);
@@ -330,6 +362,7 @@ const makeReconcile = <R>(input: {
 export const makeProviderInstanceRegistry = <R>(input: {
   readonly drivers: ReadonlyArray<AnyProviderDriver<R>>;
   readonly configMap: ProviderInstanceConfigMap;
+  readonly providerHosts?: ProviderHostConfigMap;
 }): Effect.Effect<
   {
     readonly registry: ProviderInstanceRegistryShape;
@@ -362,12 +395,14 @@ export const makeProviderInstanceRegistry = <R>(input: {
 
     const state: RegistryState = { entries, unavailable, changes };
     const reconcileWithR = makeReconcile({ state, driversById, parentScope });
-    const reconcile: ProviderInstanceRegistryMutatorShape["reconcile"] = (configMap) =>
-      reconcileWithR(configMap).pipe(Effect.provideContext(driverContext));
+    const reconcile: ProviderInstanceRegistryMutatorShape["reconcile"] = (
+      configMap,
+      providerHosts,
+    ) => reconcileWithR(configMap, providerHosts).pipe(Effect.provideContext(driverContext));
 
     // Hydrate the initial configMap synchronously so callers can read
     // `listInstances` immediately after this effect completes.
-    yield* reconcile(input.configMap);
+    yield* reconcile(input.configMap, input.providerHosts);
 
     const registry: ProviderInstanceRegistryShape = {
       getInstance: (id) => Ref.get(entries).pipe(Effect.map((map) => map.get(id)?.instance)),
@@ -414,6 +449,7 @@ export const makeProviderInstanceRegistry = <R>(input: {
 export const ProviderInstanceRegistryLayer = <R>(input: {
   readonly drivers: ReadonlyArray<AnyProviderDriver<R>>;
   readonly configMap: ProviderInstanceConfigMap;
+  readonly providerHosts?: ProviderHostConfigMap;
 }): Layer.Layer<ProviderInstanceRegistry, never, R> =>
   Layer.effect(
     ProviderInstanceRegistry,
@@ -429,6 +465,7 @@ export const ProviderInstanceRegistryLayer = <R>(input: {
 export const ProviderInstanceRegistryMutableLayer = <R>(input: {
   readonly drivers: ReadonlyArray<AnyProviderDriver<R>>;
   readonly configMap: ProviderInstanceConfigMap;
+  readonly providerHosts?: ProviderHostConfigMap;
 }): Layer.Layer<ProviderInstanceRegistry | ProviderInstanceRegistryMutator, never, R> =>
   Layer.effectContext(
     makeProviderInstanceRegistry(input).pipe(

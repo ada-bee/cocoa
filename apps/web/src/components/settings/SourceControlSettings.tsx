@@ -519,11 +519,14 @@ function EmptySourceControlDiscovery({
 export function SourceControlSettingsPanel() {
   const environmentId = usePrimaryEnvironment()?.environmentId ?? null;
   const settings = usePrimarySettings();
-  const providerHosts = useMemo(() => deriveCocoaHostConnections(settings), [settings]);
+  const providerHosts = useMemo(
+    () => deriveCocoaHostConnections(settings).filter((host) => host.codexBinding !== null),
+    [settings],
+  );
   const [selectedProviderHostId, setSelectedProviderHostId] = useState<string | null>(null);
   const selectedProviderHost =
-    providerHosts.find((host) => host.instanceId === selectedProviderHostId) ?? providerHosts[0];
-  const providerInstanceId = selectedProviderHost?.instanceId ?? null;
+    providerHosts.find((host) => host.hostId === selectedProviderHostId) ?? providerHosts[0];
+  const providerInstanceId = selectedProviderHost?.codexBinding?.instanceId ?? null;
   const discovery = useEnvironmentQuery(
     environmentId === null || providerInstanceId === null
       ? null
@@ -570,12 +573,12 @@ export function SourceControlSettingsPanel() {
               <span className="text-xs text-muted-foreground">No provider hosts configured</span>
             ) : (
               <Select
-                value={providerInstanceId ?? undefined}
+                value={selectedProviderHost?.hostId}
                 onValueChange={(value) => setSelectedProviderHostId(value)}
               >
                 <SelectTrigger className="w-full sm:w-56" aria-label="Source control provider host">
                   <SelectValue>
-                    {selectedProviderHost?.instance.displayName ??
+                    {selectedProviderHost?.host.displayName ??
                       (selectedProviderHost
                         ? new URL(selectedProviderHost.transport.url).hostname
                         : "Select a provider host")}
@@ -583,8 +586,8 @@ export function SourceControlSettingsPanel() {
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
                   {providerHosts.map((host) => (
-                    <SelectItem key={host.instanceId} hideIndicator value={host.instanceId}>
-                      {host.instance.displayName ?? new URL(host.transport.url).hostname}
+                    <SelectItem key={host.hostId} hideIndicator value={host.hostId}>
+                      {host.host.displayName ?? new URL(host.transport.url).hostname}
                     </SelectItem>
                   ))}
                 </SelectPopup>

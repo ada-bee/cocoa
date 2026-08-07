@@ -1,7 +1,7 @@
 /**
  * ProviderInstanceRegistryMutator — internal handle used by the hydration
- * layer to reconcile the live registry with a fresh
- * `ProviderInstanceConfigMap`.
+ * layer to reconcile the live registry with fresh provider-instance and
+ * provider-host maps.
  *
  * Kept separate from the public `ProviderInstanceRegistry` service tag so
  * downstream consumers (drivers, reactors, `ProviderService`) can only read
@@ -9,7 +9,8 @@
  * `ServerSettingsService.streamChanges` and applies diffs — imports this
  * tag.
  *
- * The mutator exposes a single entry point, `reconcile(configMap)`, which:
+ * The mutator exposes a single entry point,
+ * `reconcile(configMap, providerHosts)`, which:
  *
  *   1. Diffs the incoming map against the live one keyed by instance id.
  *   2. Closes the per-instance `Scope` of every removed or replaced entry
@@ -23,18 +24,18 @@
  *      the end of the batch — consumers re-pull `listInstances` /
  *      `listUnavailable`.
  *
- * `reconcile` is idempotent: calling it with an unchanged config map is a
- * no-op (no scope churn, no pubsub emission).
+ * `reconcile` is idempotent: calling it with unchanged instance and host maps
+ * is a no-op (no scope churn, no pubsub emission).
  *
  * @module provider/Services/ProviderInstanceRegistryMutator
  */
-import type { ProviderInstanceConfigMap } from "@t3tools/contracts";
+import type { ProviderHostConfigMap, ProviderInstanceConfigMap } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 
 export interface ProviderInstanceRegistryMutatorShape {
   /**
-   * Bring the live registry in line with the supplied config map. See
+   * Bring the live registry in line with the supplied instance and host maps. See
    * module docs for the add / remove / replace semantics.
    *
    * The effect never fails: individual driver `create` failures are
@@ -43,7 +44,10 @@ export interface ProviderInstanceRegistryMutatorShape {
    * `makeProviderInstanceRegistry`. This keeps settings-watcher loops from
    * erroring out on a single bad entry.
    */
-  readonly reconcile: (configMap: ProviderInstanceConfigMap) => Effect.Effect<void>;
+  readonly reconcile: (
+    configMap: ProviderInstanceConfigMap,
+    providerHosts?: ProviderHostConfigMap,
+  ) => Effect.Effect<void>;
 }
 
 export class ProviderInstanceRegistryMutator extends Context.Service<

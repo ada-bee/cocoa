@@ -1,6 +1,7 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
+  ProviderHostId,
   ProviderInstanceId,
   encodeCocoaHostPairingToken,
   type CocoaHostTransport,
@@ -10,6 +11,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildAddCocoaHostSettingsPatch,
   buildRemoveCocoaHostSettingsPatch,
+  buildUpdateCocoaHostSettingsPatch,
   deriveCocoaHostConnections,
   parseCocoaHostPairingInput,
   readCocoaHostIconSvg,
@@ -56,17 +58,19 @@ describe("Cocoa host connections", () => {
       transport("wss://host-one.example.test/socket", "first-key"),
     );
 
+    expect(patch.providerHosts?.[ProviderHostId.make("host_one_example_test")]).toMatchObject({
+      displayName: "host-one.example.test",
+      transport: {
+        type: "cocoa-host",
+        url: "wss://host-one.example.test/socket",
+        key: "first-key",
+      },
+    });
     expect(patch.providerInstances?.[ProviderInstanceId.make("codex")]).toMatchObject({
       driver: "codex",
-      displayName: "host-one.example.test",
+      hostId: "host_one_example_test",
       enabled: true,
-      config: {
-        endpointTransport: {
-          type: "cocoa-host",
-          url: "wss://host-one.example.test/socket",
-          key: "first-key",
-        },
-      },
+      config: {},
     });
     expect(patch.textGenerationModelSelection).toEqual({
       instanceId: "codex",
@@ -99,14 +103,13 @@ describe("Cocoa host connections", () => {
     const instance = patch.providerInstances?.[ProviderInstanceId.make("codex")];
 
     expect(instance).not.toHaveProperty("environment");
+    expect(instance?.hostId).toBe("host_one_example_test");
     expect(instance?.config).toEqual({
       customModels: ["gpt-custom"],
-      endpointTransport: {
-        type: "cocoa-host",
-        url: "wss://host-one.example.test/socket",
-        key: "first-key",
-      },
     });
+    expect(patch.providerHosts?.[ProviderHostId.make("host_one_example_test")]?.transport.key).toBe(
+      "first-key",
+    );
   });
 
   it("derives collision-free instance ids from later hostnames", () => {
@@ -116,6 +119,7 @@ describe("Cocoa host connections", () => {
     );
     const firstSettings = {
       ...DEFAULT_SERVER_SETTINGS,
+      providerHosts: first.providerHosts!,
       providerInstances: first.providerInstances!,
     };
     const second = buildAddCocoaHostSettingsPatch(
@@ -124,6 +128,7 @@ describe("Cocoa host connections", () => {
     );
     const secondSettings = {
       ...firstSettings,
+      providerHosts: second.providerHosts!,
       providerInstances: second.providerInstances!,
     };
     const duplicateHostname = buildAddCocoaHostSettingsPatch(
@@ -131,9 +136,35 @@ describe("Cocoa host connections", () => {
       transport("wss://host-two.example.test/other", "third-key"),
     );
 
-    expect(Object.keys(second.providerInstances!)).toContain("codex_host_two_example_test");
+    expect(Object.keys(second.providerHosts!)).toContain("host_two_example_test");
+    expect(Object.keys(duplicateHostname.providerHosts!)).toContain("host_two_example_test_2");
     expect(Object.keys(duplicateHostname.providerInstances!)).toContain(
       "codex_host_two_example_test_2",
+    );
+  });
+
+  it("updates an existing host transport without duplicating its Codex binding", () => {
+    const first = buildAddCocoaHostSettingsPatch(
+      DEFAULT_SERVER_SETTINGS,
+      transport("wss://host-one.example.test/socket", "first-key"),
+    );
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerHosts: first.providerHosts!,
+      providerInstances: first.providerInstances!,
+    };
+    const updated = buildAddCocoaHostSettingsPatch(
+      settings,
+      transport("wss://host-one.example.test/socket", "rotated-key"),
+    );
+
+    expect(Object.keys(updated.providerHosts!)).toEqual(["host_one_example_test"]);
+    expect(Object.keys(updated.providerInstances!)).toEqual(["codex"]);
+    expect(
+      updated.providerHosts?.[ProviderHostId.make("host_one_example_test")]?.transport.key,
+    ).toBe("rotated-key");
+    expect(updated.providerInstances?.[ProviderInstanceId.make("codex")]?.hostId).toBe(
+      "host_one_example_test",
     );
   });
 
@@ -144,15 +175,20 @@ describe("Cocoa host connections", () => {
     );
     const settings = {
       ...DEFAULT_SERVER_SETTINGS,
+      providerHosts: added.providerHosts!,
       providerInstances: added.providerInstances!,
     };
     const [connection] = deriveCocoaHostConnections(settings);
     const removed = buildRemoveCocoaHostSettingsPatch(settings, connection!);
 
     expect(removed.providerInstances).toEqual({});
-    expect(deriveCocoaHostConnections({ providerInstances: removed.providerInstances! })).toEqual(
-      [],
-    );
+    expect(removed.providerHosts).toEqual({});
+    expect(
+      deriveCocoaHostConnections({
+        providerHosts: removed.providerHosts!,
+        providerInstances: removed.providerInstances!,
+      }),
+    ).toEqual([]);
   });
 
   it("repoints selected model roles when their host is removed and another remains", () => {
@@ -162,6 +198,7 @@ describe("Cocoa host connections", () => {
     );
     const withFirst = {
       ...DEFAULT_SERVER_SETTINGS,
+      providerHosts: first.providerHosts!,
       providerInstances: first.providerInstances!,
     };
     const second = buildAddCocoaHostSettingsPatch(
@@ -170,6 +207,7 @@ describe("Cocoa host connections", () => {
     );
     const settings = {
       ...withFirst,
+      providerHosts: second.providerHosts!,
       providerInstances: second.providerInstances!,
       textGenerationModelSelection: {
         instanceId: ProviderInstanceId.make("codex"),
@@ -232,8 +270,7 @@ describe("Cocoa host connections", () => {
 
   it("stores only bounded inert SVG host icons", () => {
     const instance = {
-      driver: ProviderDriverKind.make("codex"),
-      config: { endpointTransport: transport("wss://host.test/socket", "key") },
+      transport: transport("wss://host.test/socket", "key"),
     };
     const svg = sanitizeCocoaHostIconSvg(
       '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>',
@@ -246,6 +283,93 @@ describe("Cocoa host connections", () => {
     expect(() =>
       sanitizeCocoaHostIconSvg('<svg><image href="https://example.test/icon.png"/></svg>'),
     ).toThrow();
+  });
+
+  it("derives canonical hosts first and keeps a narrow legacy endpoint fallback", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerHosts: {
+        mac_studio: {
+          displayName: "Mac Studio",
+          transport: transport("wss://mac-studio.test/socket", "new-key"),
+        },
+      },
+      providerInstances: {
+        codex: {
+          driver: ProviderDriverKind.make("codex"),
+          hostId: ProviderHostId.make("mac_studio"),
+        },
+        codex_legacy: {
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Old host",
+          config: { endpointTransport: transport("wss://old-host.test/socket", "old-key") },
+        },
+      },
+    };
+
+    const [canonical, legacy] = deriveCocoaHostConnections(settings);
+    expect(canonical).toMatchObject({
+      hostId: "mac_studio",
+      host: { displayName: "Mac Studio" },
+      codexBinding: { instanceId: "codex" },
+      legacy: false,
+    });
+    expect(legacy).toMatchObject({
+      hostId: "legacy_codex_legacy",
+      host: { displayName: "Old host" },
+      codexBinding: { instanceId: "codex_legacy" },
+      legacy: true,
+    });
+  });
+
+  it("migrates a legacy connection when its host appearance is edited", () => {
+    const legacyTransport = transport("wss://old-host.test/socket", "old-key");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        codex: {
+          driver: ProviderDriverKind.make("codex"),
+          config: { endpointTransport: legacyTransport },
+        },
+      },
+    };
+    const [legacy] = deriveCocoaHostConnections(settings);
+    const patch = buildUpdateCocoaHostSettingsPatch(settings, legacy!, {
+      displayName: "Renamed host",
+      transport: legacyTransport,
+    });
+
+    expect(patch.providerHosts?.[ProviderHostId.make("old_host_test")]?.displayName).toBe(
+      "Renamed host",
+    );
+    expect(patch.providerInstances?.[ProviderInstanceId.make("codex")]?.hostId).toBe(
+      "old_host_test",
+    );
+    expect(patch.providerInstances?.[ProviderInstanceId.make("codex")]?.config).not.toHaveProperty(
+      "endpointTransport",
+    );
+  });
+
+  it("explicitly removes every provider bound to a deleted host", () => {
+    const hostId = ProviderHostId.make("shared_host");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerHosts: {
+        shared_host: { transport: transport("wss://shared.test/socket", "key") },
+      },
+      providerInstances: {
+        codex: { driver: ProviderDriverKind.make("codex"), hostId },
+        opencode: { driver: ProviderDriverKind.make("opencode"), hostId },
+        remote_other: { driver: ProviderDriverKind.make("codex") },
+      },
+    };
+    const [connection] = deriveCocoaHostConnections(settings);
+    const patch = buildRemoveCocoaHostSettingsPatch(settings, connection!);
+
+    expect(patch.providerHosts).toEqual({});
+    expect(patch.providerInstances).toEqual({
+      remote_other: { driver: "codex" },
+    });
   });
 
   it("accepts and removes standard SVG preambles", () => {

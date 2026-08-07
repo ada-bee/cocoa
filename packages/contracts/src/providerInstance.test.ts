@@ -8,6 +8,7 @@ import {
   ProviderInstanceId,
   ProviderInstanceRef,
 } from "./providerInstance.ts";
+import { ProviderHostId } from "./providerHost.ts";
 
 const decodeProviderDriverKind = Schema.decodeUnknownSync(ProviderDriverKind);
 const decodeProviderInstanceId = Schema.decodeUnknownSync(ProviderInstanceId);
@@ -89,9 +90,28 @@ describe("ProviderInstanceConfig", () => {
   it("accepts a minimal config envelope for a driver", () => {
     const decoded = decodeProviderInstanceConfig({ driver: "codex" });
     expect(decoded.driver).toBe("codex");
+    expect(decoded.hostId).toBeUndefined();
     expect(decoded.displayName).toBeUndefined();
     expect(decoded.enabled).toBeUndefined();
     expect(decoded.config).toBeUndefined();
+  });
+
+  it("links an instance to a normalized provider host id", () => {
+    const decoded = decodeProviderInstanceConfig({
+      driver: "codex",
+      hostId: "  mac_studio  ",
+    });
+
+    expect(decoded.hostId).toBe(ProviderHostId.make("mac_studio"));
+  });
+
+  it("rejects an invalid provider host id", () => {
+    expect(() =>
+      decodeProviderInstanceConfig({
+        driver: "codex",
+        hostId: "1host",
+      }),
+    ).toThrow();
   });
 
   it("preserves driver-opaque config payloads verbatim", () => {

@@ -1,8 +1,9 @@
 /**
  * ProviderInstanceRegistryHydration — derive a `ProviderInstanceConfigMap`
- * from `ServerSettings` and keep `ProviderInstanceRegistry` in sync with it.
+ * from `ServerSettings`, pair it with the authoritative provider-host catalog,
+ * and keep `ProviderInstanceRegistry` in sync with both.
  *
- * The server still reads two shapes:
+ * The server reads three relevant shapes:
  *
  *   1. `settings.providerInstances` — the new driver-agnostic map the
  *      registry expects. Keyed by `ProviderInstanceId`, values are
@@ -11,6 +12,8 @@
  *      fields (`providers.codex`, `providers.claudeAgent`, …). These are
  *      the source of truth for every deployment that hasn't been migrated
  *      yet to an explicit `providerInstances` entry.
+ *   3. `settings.providerHosts` — the first-class host catalog used to resolve
+ *      each explicit instance's optional `hostId` before driver creation.
  *
  * This module bridges (2) into (1) and wires the resulting map into a
  * mutable registry. For every built-in driver whose id is not already
@@ -43,6 +46,7 @@
  */
 import {
   defaultInstanceIdForDriver,
+  type ProviderHostConfigMap,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
   ServerSettings,
@@ -115,6 +119,23 @@ export const resolveProviderInstanceConfigMap = (
     ? resolveCocoaGatewayProviderInstanceConfigMap(settings)
     : Effect.succeed(deriveProviderInstanceConfigMap(settings));
 
+export interface ResolvedProviderRegistryConfig {
+  readonly providerInstances: ProviderInstanceConfigMap;
+  readonly providerHosts: ProviderHostConfigMap;
+}
+
+/** Resolve the instance catalog while retaining its authoritative host catalog. */
+export const resolveProviderRegistryConfig = (
+  settings: ServerSettings,
+  runtimeProfile: ServerConfig.RuntimeProfile,
+) =>
+  resolveProviderInstanceConfigMap(settings, runtimeProfile).pipe(
+    Effect.map((providerInstances) => ({
+      providerInstances,
+      providerHosts: settings.providerHosts,
+    })),
+  );
+
 /**
  * Layer that consumes `ProviderInstanceRegistryMutator` and forks a
  * settings-watcher fiber. The fiber's lifetime is tied to the enclosing
@@ -133,8 +154,10 @@ const settingsWatcherLive = (runtimeProfile: ServerConfig.RuntimeProfile) =>
       const serverSettings = yield* ServerSettingsService;
       yield* serverSettings.streamChanges.pipe(
         Stream.runForEach((next) =>
-          resolveProviderInstanceConfigMap(next, runtimeProfile).pipe(
-            Effect.flatMap(mutator.reconcile),
+          resolveProviderRegistryConfig(next, runtimeProfile).pipe(
+            Effect.flatMap((resolved) =>
+              mutator.reconcile(resolved.providerInstances, resolved.providerHosts),
+            ),
             Effect.catchCause((cause) =>
               Effect.logWarning(
                 "ProviderInstanceRegistry rejected a settings reload; retaining current instances",
@@ -180,16 +203,17 @@ const makeProviderInstanceRegistryHydrationLive = <R>(
         runtimeProfile === "cocoa-gateway"
           ? yield* serverSettings.getSettings.pipe(Effect.orDie)
           : yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => undefined));
-      const initialConfigMap =
+      const initialConfig: ResolvedProviderRegistryConfig =
         initialSettings === undefined
-          ? ({} as ProviderInstanceConfigMap)
-          : yield* resolveProviderInstanceConfigMap(initialSettings, runtimeProfile).pipe(
+          ? { providerInstances: {}, providerHosts: {} }
+          : yield* resolveProviderRegistryConfig(initialSettings, runtimeProfile).pipe(
               Effect.orDie,
             );
 
       const mutableLayer = ProviderInstanceRegistryMutableLayer({
         drivers,
-        configMap: initialConfigMap,
+        configMap: initialConfig.providerInstances,
+        providerHosts: initialConfig.providerHosts,
       });
 
       return settingsWatcherLive(runtimeProfile).pipe(Layer.provideMerge(mutableLayer));

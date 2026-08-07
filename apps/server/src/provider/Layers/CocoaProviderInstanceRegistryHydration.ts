@@ -18,7 +18,9 @@ const settingsWatcherLive = Layer.effectDiscard(
     yield* serverSettings.streamChanges.pipe(
       Stream.runForEach((next) =>
         resolveCocoaGatewayProviderInstanceConfigMap(next).pipe(
-          Effect.flatMap(mutator.reconcile),
+          Effect.flatMap((providerInstances) =>
+            mutator.reconcile(providerInstances, next.providerHosts),
+          ),
           Effect.catchCause((cause) =>
             Effect.logWarning(
               "Cocoa provider registry rejected a settings reload; retaining current instances",
@@ -47,6 +49,7 @@ export const CocoaProviderInstanceRegistryHydrationLive: Layer.Layer<
     const mutableLayer = ProviderInstanceRegistryMutableLayer({
       drivers: COCOA_GATEWAY_DRIVERS,
       configMap: initialConfigMap,
+      providerHosts: initialSettings.providerHosts,
     });
     return settingsWatcherLive.pipe(Layer.provideMerge(mutableLayer));
   }),

@@ -13,6 +13,7 @@ import { CodexEndpointTransport, CodexGitExecutablePath } from "./codexEndpoint.
 import { CodexWorkspaceHelperConfig } from "./codexWorkspaceHelper.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderHostConfigMap } from "./providerHost.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -667,6 +668,10 @@ export const ServerSettings = Schema.Struct({
     grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  // First-class provider-host catalog. Legacy settings omit this field and
+  // decode to an empty catalog; instances without hostId remain valid until
+  // the runtime's compatibility migration assigns their historical endpoint.
+  providerHosts: ProviderHostConfigMap.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
   // are `ProviderInstanceConfig` envelopes. The driver-specific config blob
   // is `Schema.Unknown` at this layer so envelopes with unknown drivers
@@ -823,6 +828,8 @@ export const ServerSettingsPatch = Schema.Struct({
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
     }),
   ),
+  // Whole-map replacement, matching providerInstances patch semantics.
+  providerHosts: Schema.optionalKey(ProviderHostConfigMap),
   // Whole-map replacement for the new instance config. Patching individual
   // entries is intentionally out of scope: the map is small, and partial
   // patches risk leaving driver-specific config in a half-merged state.

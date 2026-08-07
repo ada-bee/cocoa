@@ -223,8 +223,14 @@ const CocoaRepositoryMutationLayerLive = RepositoryMutationService.layer.pipe(
   Layer.provide(CocoaProjectRepositoryLayerLive),
 );
 
+const CocoaTextGenerationLayerLive = TextGeneration.layer.pipe(
+  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
+);
+
 const CocoaRepositoryGitActionLayerLive = RepositoryGitActionService.layer.pipe(
   Layer.provide(CocoaProjectRepositoryLayerLive),
+  Layer.provide(OrchestrationLayerLive),
+  Layer.provide(CocoaTextGenerationLayerLive),
 );
 
 const CocoaRepositoryStatusLayerLive = RepositoryStatusBroadcaster.layer.pipe(
@@ -235,10 +241,6 @@ const CocoaCheckpointingLayerLive = CheckpointDiffQuery.layer.pipe(
   Layer.provide(CocoaProjectRepositoryLayerLive),
   Layer.provide(OrchestrationLayerLive),
   Layer.provide(ProviderCheckpointOperationLayerLive),
-);
-
-const CocoaTextGenerationLayerLive = TextGeneration.layer.pipe(
-  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
 );
 
 const CocoaProjectSetupScriptRunnerLayerLive = ProjectSetupScriptRunner.layer.pipe(
@@ -258,6 +260,9 @@ const CocoaRuntimeBaseFoundationLive = CocoaReactorLayerLive.pipe(
   Layer.provideMerge(ProviderConversationCacheRepositoryLayerLive),
   Layer.provideMerge(ProviderConversationCacheSyncLayerLive),
   Layer.provideMerge(ProviderConversationProjectionQueryLayerLive),
+  // Routes and startup consume the base projection service directly. Keep it
+  // exported even though provider-aware projections wrap it for Cocoa reads.
+  Layer.provideMerge(OrchestrationLayerLive),
   Layer.provideMerge(ProviderConversationAuthorityLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(Keybindings.layer),

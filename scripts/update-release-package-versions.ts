@@ -48,6 +48,7 @@ export class ReleaseGitHubOutputWriteError extends Schema.TaggedErrorClass<Relea
 
 export const releasePackageFiles = [
   "apps/server/package.json",
+  "apps/hostd/package.json",
   "apps/desktop/package.json",
   "apps/web/package.json",
   "packages/cocoa-client/package.json",

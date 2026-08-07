@@ -36,6 +36,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ProviderHostId } from "./providerHost.ts";
 
 const PROVIDER_SLUG_MAX_CHARS = 64;
 /**
@@ -123,6 +124,8 @@ export type ProviderInstanceEnvironment = typeof ProviderInstanceEnvironment.Typ
  */
 export const ProviderInstanceConfig = Schema.Struct({
   driver: ProviderDriverKind,
+  /** Host that owns this provider process. Absent on legacy settings. */
+  hostId: Schema.optionalKey(ProviderHostId),
   displayName: Schema.optional(TrimmedNonEmptyString),
   // Transitional host presentation while Cocoa lifts endpoint transport into
   // a first-class ProviderHost contract. Render only through an image URL.

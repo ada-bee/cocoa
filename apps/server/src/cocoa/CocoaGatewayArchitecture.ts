@@ -191,6 +191,13 @@ export const COCOA_GATEWAY_TRANSITIVE_CALLSITE_MANIFEST = [
     rationale: "Reads gateway-managed turn attachments for transfer to Codex.",
   },
   {
+    sourcePath: "provider/Layers/OpenCodeAdapter.ts",
+    specifier: "effect/FileSystem",
+    capability: "local-project-filesystem",
+    classification: "gateway-attachment-storage",
+    rationale: "Reads gateway-managed turn attachments for transfer to OpenCode as data URLs.",
+  },
+  {
     sourcePath: "provider/Layers/ProviderRegistry.ts",
     specifier: "effect/FileSystem",
     capability: "local-project-filesystem",
@@ -224,5 +231,12 @@ export const COCOA_GATEWAY_TRANSITIVE_CALLSITE_MANIFEST = [
     capability: "local-project-filesystem",
     classification: "gateway-attachment-storage",
     rationale: "Reads gateway-managed prompt attachments before endpoint transfer.",
+  },
+  {
+    sourcePath: "textGeneration/OpenCodeEndpointTextGeneration.ts",
+    specifier: "effect/FileSystem",
+    capability: "local-project-filesystem",
+    classification: "gateway-attachment-storage",
+    rationale: "Reads gateway-managed prompt attachments for transfer to OpenCode as data URLs.",
   },
 ] as const satisfies ReadonlyArray<CocoaGatewayArchitectureClassification>;

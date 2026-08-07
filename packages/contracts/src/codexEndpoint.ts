@@ -2,8 +2,8 @@
  * Transport configuration for Cocoa-managed Codex app-server endpoints.
  *
  * The gateway reaches Codex only through a Cocoa host daemon. The pairing
- * token is a portable, deliberately non-secret bootstrap value emitted by
- * `cocoa-hostd`; it contains everything the gateway needs to reconnect.
+ * token is a portable bootstrap value emitted by `cocoa-hostd`; it contains
+ * a bearer credential and must be handled as a secret.
  *
  * @module codexEndpoint
  */
@@ -80,7 +80,7 @@ const WebSocketUrl = TrimmedNonEmptyString.check(
   }),
 );
 
-/** An intentionally non-secret bearer capability printed by `cocoa-hostd`. */
+/** A secret bearer capability printed by `cocoa-hostd`. */
 export const CocoaHostKey = TrimmedNonEmptyString.check(
   Schema.isMaxLength(MAX_HOST_KEY_CHARS),
   Schema.makeFilter((value) =>

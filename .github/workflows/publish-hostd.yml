@@ -1,0 +1,142 @@
+name: Publish cocoa-hostd binaries
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: publish-hostd-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.3.13
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - darwin-arm64
+          - darwin-x64
+          - linux-arm64
+          - linux-x64
+          - windows-x64
+    steps:
+      - name: Check out release
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Set up Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@cocoa/hostd...
+
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and checksum standalone binary
+        shell: bash
+        run: |
+          bun scripts/hostd-release.ts build \
+            --root "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/hostd-release" \
+            --version "${{ steps.release.outputs.version }}" \
+            --target "${{ matrix.target }}" \
+            --source-revision "${{ steps.release.outputs.revision }}"
+
+      - name: Verify staged checksum
+        shell: bash
+        run: |
+          binary="$(find "$RUNNER_TEMP/hostd-release" -maxdepth 1 -type f ! -name '*.sha256' ! -name '*.json' -print -quit)"
+          bun scripts/hostd-release.ts verify \
+            --binary "$binary" \
+            --checksum "$binary.sha256"
+
+      - name: Upload staged artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: cocoa-hostd-${{ matrix.target }}
+          path: ${{ runner.temp }}/hostd-release/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Attach binaries to release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cocoa-hostd-*
+          path: ${{ runner.temp }}/hostd-release
+          merge-multiple: true
+
+      - name: Verify complete release set
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/hostd-release"
+          expected_targets=(darwin-arm64 darwin-x64 linux-arm64 linux-x64 windows-x64)
+          for target in "${expected_targets[@]}"; do
+            binary="$(find . -maxdepth 1 -type f -name "cocoa-hostd-*-${target}*" ! -name '*.sha256' ! -name '*.json' -print -quit)"
+            test -n "$binary"
+            sha256sum --check "${binary}.sha256"
+          done
+          cat ./*.sha256 | sort -k2 > SHA256SUMS
+
+      - name: Attach immutable assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${{ github.event.release.tag_name }}"
+          existing_dir="$RUNNER_TEMP/hostd-existing"
+          mkdir -p "$existing_dir"
+          upload_assets=()
+          for asset in "$RUNNER_TEMP"/hostd-release/*; do
+            asset_name="$(basename "$asset")"
+            if gh release download "$release_tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$asset_name" \
+              --dir "$existing_dir" 2>/dev/null; then
+              if ! cmp -s "$asset" "$existing_dir/$asset_name"; then
+                echo "Release asset '$asset_name' already exists with different content; refusing to overwrite." >&2
+                exit 1
+              fi
+              echo "Release asset '$asset_name' already exists with identical content; skipping."
+            else
+              upload_assets+=("$asset")
+            fi
+          done
+          if ((${#upload_assets[@]} == 0)); then
+            echo "No new release assets to upload."
+            exit 0
+          fi
+          gh release upload "$release_tag" \
+            "${upload_assets[@]}" \
+            --repo "$GITHUB_REPOSITORY"
