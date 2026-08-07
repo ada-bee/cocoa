@@ -88,6 +88,8 @@ export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabi
 export const ExecutionEnvironmentDescriptor = Schema.Struct({
   environmentId: EnvironmentId,
   label: TrimmedNonEmptyString,
+  /** Canonical externally reachable origin advertised by Cocoa gateways. */
+  publicUrl: Schema.optionalKey(TrimmedNonEmptyString),
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
   capabilities: ExecutionEnvironmentCapabilities,

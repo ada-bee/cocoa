@@ -12,6 +12,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as LogLevel from "effect/LogLevel";
 import * as Path from "effect/Path";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
 export const DEFAULT_PORT = 3773;
@@ -73,6 +74,12 @@ export class ServerConfig extends Context.Service<
     readonly runtimeProfile?: RuntimeProfile;
     /** Public build identifier baked into Cocoa deployment artifacts. */
     readonly buildIdentity?: string;
+    /** Canonical externally reachable Cocoa origin, when configured. */
+    readonly cocoaPublicUrl?: string;
+    /** Reusable bootstrap secret exchanged for per-client sessions. */
+    readonly cocoaPassword?: Redacted.Redacted<string>;
+    /** Whether the process generated the Cocoa password at startup. */
+    readonly cocoaPasswordGenerated?: boolean;
     readonly port: number;
     readonly host: string | undefined;
     readonly cwd: string;

@@ -13,12 +13,14 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
+import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
 import * as AuthPairingLinks from "../persistence/AuthPairingLinks.ts";
+import { timingSafeEqualUtf8 } from "./utils.ts";
 
 export interface BootstrapGrant {
   readonly method: ServerAuthBootstrapMethod;
@@ -265,6 +267,7 @@ const PAIRING_TOKEN_REJECTION_LIMIT =
 export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const config = yield* ServerConfig.ServerConfig;
+  const cocoaPassword = config.cocoaPassword ? Redacted.value(config.cocoaPassword) : undefined;
   const pairingLinks = yield* AuthPairingLinks.AuthPairingLinkRepository;
   const seededGrantsRef = yield* Ref.make(new Map<string, StoredBootstrapGrant>());
   const changesPubSub = yield* PubSub.unbounded<BootstrapCredentialChange>();
@@ -437,6 +440,14 @@ export const make = Effect.gen(function* () {
   const consume: PairingGrantStore["Service"]["consume"] = Effect.fn("PairingGrantStore.consume")(
     function* (credential, input) {
       const now = yield* DateTime.now;
+      if (cocoaPassword !== undefined && timingSafeEqualUtf8(credential, cocoaPassword)) {
+        return {
+          method: "one-time-token",
+          scopes: AuthAdministrativeScopes,
+          subject: "cocoa-password",
+          expiresAt: DateTime.add(now, { hours: 24 }),
+        } satisfies BootstrapGrant;
+      }
       const seededResult: ConsumeResult = yield* Ref.modify(
         seededGrantsRef,
         (current): readonly [ConsumeResult, Map<string, StoredBootstrapGrant>] => {

@@ -4,6 +4,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
@@ -13,7 +14,9 @@ import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as PairingGrantStore from "./PairingGrantStore.ts";
 
 const makeServerConfigLayer = (
-  overrides?: Partial<Pick<ServerConfig.ServerConfig["Service"], "desktopBootstrapToken">>,
+  overrides?: Partial<
+    Pick<ServerConfig.ServerConfig["Service"], "desktopBootstrapToken" | "cocoaPassword">
+  >,
 ) =>
   Layer.effect(
     ServerConfig.ServerConfig,
@@ -29,7 +32,9 @@ const makeServerConfigLayer = (
   );
 
 const makePairingGrantStoreLayer = (
-  overrides?: Partial<Pick<ServerConfig.ServerConfig["Service"], "desktopBootstrapToken">>,
+  overrides?: Partial<
+    Pick<ServerConfig.ServerConfig["Service"], "desktopBootstrapToken" | "cocoaPassword">
+  >,
 ) =>
   PairingGrantStore.layer.pipe(
     Layer.provide(SqlitePersistenceMemory),
@@ -164,6 +169,23 @@ it.layer(NodeServices.layer)("PairingGrantStore.layer", (it) => {
           desktopBootstrapToken: "desktop-bootstrap-token",
         }),
       ),
+    ),
+  );
+
+  it.effect("exchanges the Cocoa password repeatedly without persisting it as a pairing link", () =>
+    Effect.gen(function* () {
+      const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
+      const first = yield* bootstrapCredentials.consume("foobar123");
+      const second = yield* bootstrapCredentials.consume("foobar123");
+      const links = yield* bootstrapCredentials.listActive();
+
+      expect(first.method).toBe("one-time-token");
+      expect(first.subject).toBe("cocoa-password");
+      expect(first.scopes).toContain("access:write");
+      expect(second.subject).toBe("cocoa-password");
+      expect(links).toEqual([]);
+    }).pipe(
+      Effect.provide(makePairingGrantStoreLayer({ cocoaPassword: Redacted.make("foobar123") })),
     ),
   );
 

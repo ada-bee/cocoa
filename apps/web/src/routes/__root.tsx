@@ -15,6 +15,7 @@ import { resolveServerBackedAppDisplayName } from "../branding.logic";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
 import { SlowRpcRequestToastCoordinator } from "../components/SlowRpcRequestToastCoordinator";
+import { DesktopGatewayOnboarding } from "../components/auth/DesktopGatewayOnboarding";
 import { ThemeEditorHost } from "../components/settings/ThemeEditorHost";
 import { Button } from "../components/ui/button";
 import {
@@ -33,10 +34,12 @@ import {
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import { configureClientTracing } from "../observability/clientTracing";
+import { resolveInitialServerAuthGateState } from "../environments/primary";
 import { shellEnvironment } from "../state/shell";
 import { useAtomValue } from "@effect/atom-react";
 import { useAtomCommand } from "../state/use-atom-command";
 import { usePrimaryEnvironment } from "../state/environments";
+import { environmentCatalog } from "../connection/catalog";
 import {
   primaryServerConfigAtom,
   primaryServerConfigEventAtom,
@@ -49,6 +52,13 @@ import {
 } from "../components/KeybindingsUpdateToast.logic";
 
 export const Route = createRootRoute({
+  beforeLoad: async () => {
+    const authGateState =
+      window.desktopBridge === undefined
+        ? await resolveInitialServerAuthGateState()
+        : ({ status: "authenticated" } as const);
+    return { authGateState };
+  },
   component: RootRouteView,
   errorComponent: RootRouteErrorView,
   head: () => ({
@@ -58,6 +68,9 @@ export const Route = createRootRoute({
 
 function RootRouteView() {
   const pathname = useLocation({ select: (location) => location.pathname });
+  const connectionCatalog = useAtomValue(environmentCatalog.catalogValueAtom);
+  const { authGateState } = Route.useRouteContext();
+  const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -68,13 +81,30 @@ function RootRouteView() {
     };
   }, [pathname]);
 
-  if (pathname === "/connect" || pathname.startsWith("/connect/")) {
+  if (pathname === "/pair" || pathname === "/connect" || pathname.startsWith("/connect/")) {
     return (
       <>
         <DocumentTitleSync />
         <Outlet />
       </>
     );
+  }
+
+  if (authGateState.status !== "authenticated") {
+    return (
+      <>
+        <DocumentTitleSync />
+        <Outlet />
+      </>
+    );
+  }
+
+  if (
+    window.desktopBridge !== undefined &&
+    connectionCatalog.isReady &&
+    connectionCatalog.entries.size === 0
+  ) {
+    return <DesktopGatewayOnboarding />;
   }
 
   const appShell = (
@@ -91,9 +121,9 @@ function RootRouteView() {
         <DocumentTitleSync />
         <GlassAppearanceSync />
         <FontAppearanceSync />
-        <AuthenticatedTracingBootstrap />
+        {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
         <SlowRpcRequestToastCoordinator />
-        <EventRouter />
+        {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {appShell}
         {/* Above the router: a theme draft is judged by walking the app, so the
             editor has to survive navigation away from settings. */}

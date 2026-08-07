@@ -134,7 +134,7 @@ try {
   await Bun.write(
     NodePath.join(consumerRoot, "index.ts"),
     `import { COCOA_CLIENT_PROTOCOL_VERSION, supportsCocoaCapability, type CocoaClientConnectOptions } from "@brbc/cocoa-client";
-const options: CocoaClientConnectOptions = { baseUrl: "https://cocoa.example" };
+const options: CocoaClientConnectOptions = { baseUrl: "https://cocoa.example", bearerToken: "token" };
 if (COCOA_CLIENT_PROTOCOL_VERSION !== 1 || !supportsCocoaCapability(["orchestration.core"], "orchestration.core") || options.baseUrl.length === 0) throw new Error("consumer failed");
 `,
   );
