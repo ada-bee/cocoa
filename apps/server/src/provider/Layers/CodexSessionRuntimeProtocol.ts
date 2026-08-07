@@ -7,7 +7,7 @@ export function buildCodexSessionInitializeParams(): CodexSchema.V1InitializePar
   return {
     clientInfo: {
       name: "t3code_desktop",
-      title: "T3 Code Desktop",
+      title: "Cocoa Code Desktop",
       version: packageJson.version,
     },
     capabilities: {

@@ -28,7 +28,7 @@ export type ServerSelfUpdateMethod = typeof ServerSelfUpdateMethod.Type;
 
 /** What update path a client should offer for a server: one of the RPC
     self-update methods above, or "desktop-managed" when the backend's
-    version belongs to the T3 Code desktop app supervising it. */
+    version belongs to the Cocoa Code desktop app supervising it. */
 export const ServerSelfUpdateCapability = Schema.Literals([
   "boot-service",
   "respawn",

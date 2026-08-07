@@ -37,7 +37,7 @@ describe("desktop window IPC", () => {
     Effect.gen(function* () {
       assert.isTrue(yield* getWindowFullscreenState.handler());
       assert.deepInclude(yield* getAppBranding.handler(), {
-        baseName: "T3 Code",
+        baseName: "Cocoa Code",
         stageLabel: "Alpha",
       });
     }).pipe(Effect.provide(Layer.mergeAll(windowLayer, environmentLayer))),
