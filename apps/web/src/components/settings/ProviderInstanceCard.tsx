@@ -30,12 +30,7 @@ import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
-import {
-  PROVIDER_STATUS_STYLES,
-  getProviderSummary,
-  getProviderVersionLabel,
-  type ProviderStatusKey,
-} from "./providerStatus";
+import { getProviderSummary, getProviderVersionLabel } from "./providerStatus";
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -396,12 +391,6 @@ export function ProviderInstanceCard({
   onModelOrderChange,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
-  // The server-reported status wins when present; otherwise fall back to
-  // "disabled"/"warning" based on the local `enabled` flag so the dot
-  // reflects the persisted intent even before the first probe completes.
-  const statusKey: ProviderStatusKey =
-    (liveProvider?.status as ProviderStatusKey | undefined) ?? (enabled ? "warning" : "disabled");
-  const statusStyle = PROVIDER_STATUS_STYLES[statusKey];
   const rawSummary = getProviderSummary(liveProvider);
   const authEmail = liveProvider?.auth.email;
   const hasAuthenticatedEmail =
@@ -491,26 +480,16 @@ export function ProviderInstanceCard({
       displayName={displayName}
       accentColor={accentColor}
       showBadge={Boolean(accentColor)}
-      statusDotClassName={statusStyle.dot}
       indicatorBackground="var(--card)"
       className="size-5"
       iconClassName="size-4 text-foreground/80"
       badgeClassName="right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3 px-0.5 text-[7px]"
     />
   ) : FallbackIconComponent ? (
-    <span className="relative inline-flex size-5 shrink-0 items-center justify-center">
+    <span className="inline-flex size-5 shrink-0 items-center justify-center">
       <FallbackIconComponent className="size-4 text-foreground/80" aria-hidden />
-      <span
-        className={cn(
-          "pointer-events-none absolute -left-0.5 -top-0.5 size-2 rounded-full ring-2 ring-card",
-          statusStyle.dot,
-        )}
-        aria-hidden
-      />
     </span>
-  ) : (
-    <span className={cn("size-2 shrink-0 rounded-full", statusStyle.dot)} />
-  );
+  ) : null;
 
   const titleHeadNode = (
     <>

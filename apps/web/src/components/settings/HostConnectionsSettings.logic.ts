@@ -34,6 +34,22 @@ function readConfig(value: unknown): Readonly<Record<string, unknown>> {
 }
 
 const HOST_ICON_MAX_BYTES = 64 * 1024;
+const SVG_XML_DECLARATION = /^<\?xml(?:\s+[^?]*)?\?>/iu;
+const SVG_COMMENT = /^<!--[\s\S]*?-->/u;
+const SVG_DOCTYPE =
+  /^<!DOCTYPE\s+svg(?:\s+(?:PUBLIC\s+(?:"[^"]*"|'[^']*')\s+(?:"[^"]*"|'[^']*')|SYSTEM\s+(?:"[^"]*"|'[^']*')))?\s*>/iu;
+
+function stripCocoaHostIconSvgPreamble(input: string): string {
+  let remaining = input;
+  for (;;) {
+    const preamble =
+      remaining.match(SVG_XML_DECLARATION) ??
+      remaining.match(SVG_COMMENT) ??
+      remaining.match(SVG_DOCTYPE);
+    if (!preamble) return remaining;
+    remaining = remaining.slice(preamble[0].length).trimStart();
+  }
+}
 
 export function readCocoaHostIconSvg(instance: ProviderInstanceConfig): string | null {
   const value = instance.iconSvg;
@@ -46,12 +62,13 @@ export function readCocoaHostIconSvg(instance: ProviderInstanceConfig): string |
  * executable content, external fetches, and embedded documents.
  */
 export function sanitizeCocoaHostIconSvg(input: string): string {
-  const svg = input.trim();
+  const boundedInput = input.trim();
+  if (new TextEncoder().encode(boundedInput).byteLength > HOST_ICON_MAX_BYTES) {
+    throw new Error("Host icons must be 64 KB or smaller.");
+  }
+  const svg = stripCocoaHostIconSvgPreamble(boundedInput);
   if (!/^<svg(?:\s|>)/iu.test(svg) || !/<\/svg>$/iu.test(svg)) {
     throw new Error("Choose a complete SVG file.");
-  }
-  if (new TextEncoder().encode(svg).byteLength > HOST_ICON_MAX_BYTES) {
-    throw new Error("Host icons must be 64 KB or smaller.");
   }
   if (
     /<(?:script|foreignObject|iframe|object|embed|audio|video)\b/iu.test(svg) ||
