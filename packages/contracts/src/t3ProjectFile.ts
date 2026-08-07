@@ -3,7 +3,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { ProjectScriptIcon } from "./orchestration.ts";
 
-/** File name of the checked-in T3 project file, resolved at the workspace root. */
+/** Legacy-compatible file name for Cocoa Code project configuration. */
 export const T3_PROJECT_FILE_NAME = "t3.json";
 
 /** Public URL of the published JSON Schema for {@link T3ProjectFile}. */
@@ -76,12 +76,13 @@ export const T3ProjectFile = Schema.Struct({
   scripts: Schema.optionalKey(
     Schema.Array(T3ProjectFileScript)
       .annotate({
-        description: "Project scripts shared with everyone who opens this repository in Cocoa Code.",
+        description:
+          "Project scripts shared with everyone who opens this repository in Cocoa Code.",
       })
       .check(Schema.isMaxLength(T3_PROJECT_FILE_MAX_SCRIPTS)),
   ),
 }).annotate({
-  title: "T3 project file",
+  title: "Cocoa Code project file",
   description:
     "Checked-in project configuration for Cocoa Code (t3.json at the repository root). See https://t3.codes for documentation.",
 });

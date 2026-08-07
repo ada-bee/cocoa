@@ -168,6 +168,14 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
     runCliWithRuntime(["--no-log-websocket-events", "--version"]),
   );
 
+  it.effect("does not expose retired cloud commands", () =>
+    Effect.gen(function* () {
+      const { output } = yield* captureStdout(runCli(["--help"], makeCli()));
+
+      assert.notInclude(output, "connect");
+    }),
+  );
+
   it.effect("rejects invalid log-level casing before launching the server", () =>
     Effect.gen(function* () {
       const error = yield* runCliWithRuntime(["--log-level", "Debug"]).pipe(Effect.flip);
