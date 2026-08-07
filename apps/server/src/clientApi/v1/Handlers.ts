@@ -40,6 +40,12 @@ import {
 } from "../../orchestration/Errors.ts";
 import * as OrchestrationEngine from "../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderConversationProjectionQuery } from "../../provider/Services/ProviderConversationProjectionQuery.ts";
+import { ProviderConversationCacheSync } from "../../provider/Services/ProviderConversationCacheSync.ts";
+import {
+  ProviderConversationAuthority,
+  type ProviderConversationAuthorityError,
+} from "../../provider/Services/ProviderConversationAuthority.ts";
 import { CheckpointRevertGate } from "../../orchestration/Services/CheckpointRevertGate.ts";
 import * as ProviderRegistry from "../../provider/Services/ProviderRegistry.ts";
 import * as ProjectExecution from "../../project/ProjectExecution.ts";
@@ -402,7 +408,13 @@ const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.AuthenticatedSession) =>
   Effect.gen(function* () {
-    const projections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+    const baseProjections = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+    const providerProjections = yield* Effect.serviceOption(ProviderConversationProjectionQuery);
+    const projections = Option.getOrElse(providerProjections, () => baseProjections);
+    const providerCacheSync = yield* Effect.serviceOption(ProviderConversationCacheSync);
+    const providerConversationAuthority = yield* Effect.serviceOption(
+      ProviderConversationAuthority,
+    );
     const orchestration = yield* OrchestrationEngine.OrchestrationEngineService;
     const checkpointRevertGate = yield* CheckpointRevertGate;
     const diffs = yield* CheckpointDiffQuery.CheckpointDiffQuery;
@@ -434,6 +446,31 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
         ),
       );
 
+    const providerMutationError = (
+      error: ProviderConversationAuthorityError,
+    ): CocoaClientV1RequestError => ({
+      code:
+        error.reason === "provider-unavailable"
+          ? "provider_unavailable"
+          : error.reason === "unsupported"
+            ? "unsupported_operation"
+            : error.reason === "protocol"
+              ? "protocol_incompatible"
+              : "operation_failed",
+      message: "The provider could not apply the conversation change.",
+      ...(error.reason === "provider-unavailable" || error.reason === "operation-failed"
+        ? { retryable: true as const }
+        : {}),
+    });
+
+    const applyProviderConversationMutation = (command: OrchestrationCommand) => {
+      return Option.isNone(providerConversationAuthority)
+        ? Effect.void
+        : providerConversationAuthority.value
+            .apply(command)
+            .pipe(Effect.mapError(providerMutationError), Effect.asVoid);
+    };
+
     const dispatch = (command: Parameters<typeof normalizeDispatchCommand>[0]) =>
       withNormalizedDispatchCommand(
         command,
@@ -452,6 +489,7 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
                     Effect.orElseSucceed(() => false),
                   )
                 : false;
+            yield* applyProviderConversationMutation(normalized);
             const result = yield* dispatchNormalized(normalized);
             if (normalized.type !== "thread.archive") {
               return result;
@@ -491,8 +529,35 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
     }) =>
       Effect.gen(function* () {
         const buffer = yield* attachLiveBuffer(orchestration.streamDomainEvents);
+        const cacheChanges = Option.isSome(providerCacheSync)
+          ? yield* providerCacheSync.value.subscribeChanges
+          : null;
 
-        if (input.afterSequence !== undefined) {
+        const withCacheSnapshots = (
+          stream: Stream.Stream<CocoaClientV1ShellStreamItem, CocoaClientV1RequestError>,
+        ) =>
+          cacheChanges === null
+            ? stream
+            : Stream.merge(
+                stream,
+                Stream.fromSubscription(cacheChanges).pipe(
+                  Stream.mapEffect(() =>
+                    projections.getShellSnapshot().pipe(
+                      Effect.map(
+                        (snapshot): CocoaClientV1ShellStreamItem => ({
+                          kind: "snapshot",
+                          snapshot: projectShellSnapshot(snapshot),
+                        }),
+                      ),
+                      Effect.mapError(() =>
+                        internalError("Failed to refresh the provider conversation cache."),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+
+        if (input.afterSequence !== undefined && Option.isNone(providerProjections)) {
           const head = yield* orchestration.latestSequence;
           const gap = head - input.afterSequence;
           if (gap >= 0 && gap <= COCOA_CLIENT_V1_RESUME_MAX_GAP) {
@@ -501,7 +566,9 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
               gap === 0
                 ? Stream.empty
                 : shellEvents(orchestration.readEvents(input.afterSequence, gap), projections);
-            return Stream.concat(replay, shellLiveTail(buffer, head, projections));
+            return withCacheSnapshots(
+              Stream.concat(replay, shellLiveTail(buffer, head, projections)),
+            );
           }
         }
 
@@ -513,12 +580,14 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
             ),
           );
         yield* markSynchronized(buffer, input.requestCompletionMarker);
-        return Stream.concat(
-          Stream.make({
-            kind: "snapshot",
-            snapshot: projectShellSnapshot(snapshot),
-          } satisfies CocoaClientV1ShellStreamItem),
-          shellLiveTail(buffer, snapshot.snapshotSequence, projections),
+        return withCacheSnapshots(
+          Stream.concat(
+            Stream.make({
+              kind: "snapshot",
+              snapshot: projectShellSnapshot(snapshot),
+            } satisfies CocoaClientV1ShellStreamItem),
+            shellLiveTail(buffer, snapshot.snapshotSequence, projections),
+          ),
         );
       });
 
@@ -529,8 +598,40 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
     }) =>
       Effect.gen(function* () {
         const buffer = yield* attachLiveBuffer(orchestration.streamDomainEvents);
+        const cacheChanges = Option.isSome(providerCacheSync)
+          ? yield* providerCacheSync.value.subscribeChanges
+          : null;
 
-        if (input.afterSequence !== undefined) {
+        const withCacheSnapshots = (
+          stream: Stream.Stream<CocoaClientV1ThreadStreamItem, CocoaClientV1RequestError>,
+        ) =>
+          cacheChanges === null
+            ? stream
+            : Stream.merge(
+                stream,
+                Stream.fromSubscription(cacheChanges).pipe(
+                  Stream.mapEffect(() =>
+                    projections.getThreadDetailSnapshot(input.threadId).pipe(
+                      Effect.map(
+                        Option.map(
+                          (snapshot): CocoaClientV1ThreadStreamItem => ({
+                            kind: "snapshot",
+                            snapshot: projectThreadSnapshot(snapshot),
+                          }),
+                        ),
+                      ),
+                      Effect.mapError(() =>
+                        internalError("Failed to refresh the provider conversation thread."),
+                      ),
+                    ),
+                  ),
+                  Stream.filterMap((item) =>
+                    Option.isSome(item) ? Result.succeed(item.value) : Result.failVoid,
+                  ),
+                ),
+              );
+
+        if (input.afterSequence !== undefined && Option.isNone(providerProjections)) {
           const head = yield* orchestration.latestSequence;
           const gap = head - input.afterSequence;
           if (gap >= 0 && gap <= COCOA_CLIENT_V1_RESUME_MAX_GAP) {
@@ -539,7 +640,9 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
               gap === 0
                 ? Stream.empty
                 : threadEvents(orchestration.readEvents(input.afterSequence, gap), input.threadId);
-            return Stream.concat(replay, threadLiveTail(buffer, head, input.threadId));
+            return withCacheSnapshots(
+              Stream.concat(replay, threadLiveTail(buffer, head, input.threadId)),
+            );
           }
         }
 
@@ -552,12 +655,14 @@ export const makeCocoaClientV1Handlers = (session: EnvironmentAuth.Authenticated
           );
         }
         yield* markSynchronized(buffer, input.requestCompletionMarker);
-        return Stream.concat(
-          Stream.make({
-            kind: "snapshot",
-            snapshot: projectThreadSnapshot(snapshot.value),
-          } satisfies CocoaClientV1ThreadStreamItem),
-          threadLiveTail(buffer, snapshot.value.snapshotSequence, input.threadId),
+        return withCacheSnapshots(
+          Stream.concat(
+            Stream.make({
+              kind: "snapshot",
+              snapshot: projectThreadSnapshot(snapshot.value),
+            } satisfies CocoaClientV1ThreadStreamItem),
+            threadLiveTail(buffer, snapshot.value.snapshotSequence, input.threadId),
+          ),
         );
       });
 

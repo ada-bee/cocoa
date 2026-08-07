@@ -19,7 +19,9 @@ remote Codex app-server daemon(s)
 workspace, Git, shell, and tools on the Codex host
 ```
 
-- The gateway owns the durable database, event-sourced orchestration, projections, provider normalization, authentication, and client API.
+- Provider endpoints are authoritative for conversation catalogs, thread lifecycle metadata, and conversation history. Cocoa must route provider-owned mutations to the endpoint before recording local consequences.
+- The gateway database caches provider conversations through both endpoint-event invalidation and periodic full reconciliation. Cache epochs/revisions are distinct from orchestration event sequences; a failed sweep keeps stale history and never asserts deletions.
+- The gateway durably owns Cocoa-only overlays and journals: projects, settle/snooze state, runtime bindings, dispatch receipts, checkpoint state, authentication, and client API state. Event-sourced orchestration is not an independent source of provider conversation history.
 - Codex is the first-class provider. Other provider integrations may remain in history, but do not preserve feature parity or add new dependencies for them.
 - Provider processes are always external. The gateway must not install, discover, spawn, or supervise a local agent CLI.
 - A Codex provider instance is a configured network endpoint. It supplies conversations as well as normalized filesystem, process, terminal, and VCS operations.

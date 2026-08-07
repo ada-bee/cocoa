@@ -49,10 +49,15 @@ export type CodexEndpointVersionRelation = "older" | "baseline" | "newer" | "unk
 export type CodexEndpointNativeMethod =
   | "thread/start"
   | "thread/resume"
+  | "thread/list"
   | "turn/start"
   | "turn/interrupt"
   | "thread/read"
   | "thread/rollback"
+  | "thread/archive"
+  | "thread/unarchive"
+  | "thread/delete"
+  | "thread/name/set"
   | "command/exec"
   | "command/exec/write"
   | "command/exec/resize"
@@ -63,12 +68,16 @@ export type CodexEndpointNativeMethodAvailability = "available" | "unavailable";
 export interface CodexEndpointNativeCapabilities {
   /** The minimum native conversation primitives Cocoa requires from every ready generation. */
   readonly conversation: true;
+  /** Provider-native enumeration plus full thread reads. Required for authoritative history. */
+  readonly conversationCatalog?: boolean;
   readonly conversationRead: boolean;
+  /** Provider-native title, archive, unarchive, and delete mutations. */
+  readonly conversationMutations?: boolean;
   readonly checkedConversationRollback: boolean;
   readonly commandExec: boolean;
   readonly commandExecControl: boolean;
   readonly methods: Readonly<
-    Record<CodexEndpointNativeMethod, CodexEndpointNativeMethodAvailability>
+    Partial<Record<CodexEndpointNativeMethod, CodexEndpointNativeMethodAvailability>>
   >;
 }
 
@@ -172,12 +181,17 @@ export const evaluateCodexEndpointVersion = (
 const REQUIRED_METHOD_PROBES = [
   ["thread/start", { cwd: false }],
   ["thread/resume", { threadId: false }],
+  ["thread/list", { cursor: false }],
   ["turn/start", { threadId: false, input: false }],
   ["turn/interrupt", { threadId: false, turnId: false }],
+  ["thread/read", { threadId: false }],
+  ["thread/archive", { threadId: false }],
+  ["thread/unarchive", { threadId: false }],
+  ["thread/delete", { threadId: false }],
+  ["thread/name/set", { threadId: false, name: false }],
 ] as const satisfies ReadonlyArray<readonly [CodexEndpointNativeMethod, unknown]>;
 
 const OPTIONAL_METHOD_PROBES = [
-  ["thread/read", { threadId: false }],
   ["thread/rollback", { threadId: false, numTurns: false }],
   ["command/exec", { command: false }],
   ["command/exec/write", { processId: false }],
@@ -257,12 +271,13 @@ const probeNativeCapabilities = Effect.fn("CodexEndpointConnection.probeNativeCa
       ]),
     ) as Record<CodexEndpointNativeMethod, CodexEndpointNativeMethodAvailability>;
     const available = (method: CodexEndpointNativeMethod) => methods[method] === "available";
-    const conversationRead = available("thread/read");
     const commandExec = available("command/exec");
     return {
       conversation: true,
-      conversationRead,
-      checkedConversationRollback: conversationRead && available("thread/rollback"),
+      conversationCatalog: true,
+      conversationRead: true,
+      conversationMutations: true,
+      checkedConversationRollback: available("thread/rollback"),
       commandExec,
       commandExecControl:
         commandExec &&

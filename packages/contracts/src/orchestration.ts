@@ -469,6 +469,10 @@ export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
 export const OrchestrationShellSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
+  /** Identity of the rebuildable provider-conversation cache generation. */
+  cacheEpoch: Schema.optionalKey(Schema.String),
+  /** Monotonic revision within `cacheEpoch`; independent of orchestration events. */
+  cacheRevision: Schema.optionalKey(NonNegativeInt),
   projects: Schema.Array(OrchestrationProjectShell),
   threads: Schema.Array(OrchestrationThreadShell),
   updatedAt: IsoDateTime,
@@ -549,6 +553,8 @@ export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThr
 
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
+  cacheEpoch: Schema.optionalKey(Schema.String),
+  cacheRevision: Schema.optionalKey(NonNegativeInt),
   thread: OrchestrationThread,
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;

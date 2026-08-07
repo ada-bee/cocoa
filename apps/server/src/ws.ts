@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import {
@@ -81,6 +82,9 @@ import {
 } from "./orchestration/Errors.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderConversationProjectionQuery } from "./provider/Services/ProviderConversationProjectionQuery.ts";
+import { ProviderConversationCacheSync } from "./provider/Services/ProviderConversationCacheSync.ts";
+import { ProviderConversationAuthority } from "./provider/Services/ProviderConversationAuthority.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -302,7 +306,20 @@ const makeWsRpcLayer = (
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
       const hostPlatform = yield* HostProcessPlatform;
-      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+      const baseProjectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+      const providerProjectionSnapshotQuery = yield* Effect.serviceOption(
+        ProviderConversationProjectionQuery,
+      );
+      const projectionSnapshotQuery = Option.getOrElse(
+        providerProjectionSnapshotQuery,
+        () => baseProjectionSnapshotQuery,
+      );
+      const providerConversationCacheSync = yield* Effect.serviceOption(
+        ProviderConversationCacheSync,
+      );
+      const providerConversationAuthority = yield* Effect.serviceOption(
+        ProviderConversationAuthority,
+      );
       const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
       const checkpointRevertGate = yield* CheckpointRevertGate;
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
@@ -946,6 +963,23 @@ const makeWsRpcLayer = (
         );
       };
 
+      const applyProviderConversationMutation = (command: OrchestrationCommand) => {
+        if (Option.isNone(providerConversationAuthority)) return Effect.void;
+        return providerConversationAuthority.value.apply(command).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestrationDispatchCommandError({
+                message: "The provider could not apply the conversation change.",
+                code: "dispatch_failed",
+                retryable:
+                  cause.reason === "provider-unavailable" || cause.reason === "operation-failed",
+                cause,
+              }),
+          ),
+          Effect.asVoid,
+        );
+      };
+
       const loadServerConfig = Effect.gen(function* () {
         const keybindingsConfig = yield* keybindings.loadConfigState;
         const providers = yield* providerRegistry.getProviders;
@@ -1008,6 +1042,7 @@ const makeWsRpcLayer = (
                             Effect.orElseSucceed(() => false),
                           )
                       : false;
+                  yield* applyProviderConversationMutation(normalizedCommand);
                   const result = yield* dispatchNormalizedCommand(normalizedCommand);
                   if (normalizedCommand.type === "thread.archive") {
                     if (shouldStopSessionAfterArchive) {
@@ -1139,6 +1174,9 @@ const makeWsRpcLayer = (
               const bufferedLiveStream = coalesceShellLiveStream(
                 streamClientLiveBuffer(liveBuffer),
               );
+              const cacheChanges = Option.isSome(providerConversationCacheSync)
+                ? yield* providerConversationCacheSync.value.subscribeChanges
+                : null;
 
               const loadSnapshot = projectionSnapshotQuery.getShellSnapshot().pipe(
                 Effect.tapError((cause) =>
@@ -1156,7 +1194,7 @@ const makeWsRpcLayer = (
               // Offer the completion marker into the same queue as live events.
               // Anything buffered while snapshot/replay work was in flight is
               // therefore delivered before the client is told it is synchronized.
-              const synchronizedThenLive =
+              const orchestrationSynchronizedThenLive =
                 input.requestCompletionMarker === true
                   ? Stream.concat(
                       Stream.fromEffect(
@@ -1170,6 +1208,16 @@ const makeWsRpcLayer = (
                       bufferedLiveStream,
                     )
                   : bufferedLiveStream;
+              const synchronizedThenLive =
+                cacheChanges === null
+                  ? orchestrationSynchronizedThenLive
+                  : Stream.merge(
+                      orchestrationSynchronizedThenLive,
+                      Stream.fromSubscription(cacheChanges).pipe(
+                        Stream.mapEffect(() => loadSnapshot),
+                        Stream.map((snapshot) => ({ kind: "snapshot" as const, snapshot })),
+                      ),
+                    );
 
               // When the client already holds a shell snapshot (cached, or loaded
               // over HTTP) it passes that snapshot's sequence, and we resume by
@@ -1177,7 +1225,10 @@ const makeWsRpcLayer = (
               // projects/threads list over the socket. If the client is too far
               // behind, we fall back to a fresh snapshot instead of an unbounded
               // replay (see below).
-              if (input.afterSequence !== undefined) {
+              if (
+                input.afterSequence !== undefined &&
+                Option.isNone(providerProjectionSnapshotQuery)
+              ) {
                 const afterSequence = input.afterSequence;
                 const headSequence = yield* orchestrationEngine.latestSequence;
                 const replayGap = headSequence - afterSequence;
@@ -1279,6 +1330,38 @@ const makeWsRpcLayer = (
                 ),
               );
               const bufferedLiveStream = streamClientLiveBuffer(liveBuffer);
+              const cacheChanges = Option.isSome(providerConversationCacheSync)
+                ? yield* providerConversationCacheSync.value.subscribeChanges
+                : null;
+              const withCacheSnapshots = (
+                stream: Stream.Stream<OrchestrationThreadStreamItem, OrchestrationGetSnapshotError>,
+              ) =>
+                cacheChanges === null
+                  ? stream
+                  : Stream.merge(
+                      stream,
+                      Stream.fromSubscription(cacheChanges).pipe(
+                        Stream.mapEffect(() =>
+                          projectionSnapshotQuery.getThreadDetailSnapshot(input.threadId).pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new OrchestrationGetSnapshotError({
+                                  message: `Failed to refresh thread ${input.threadId}`,
+                                  cause,
+                                }),
+                            ),
+                          ),
+                        ),
+                        Stream.filterMap((value) =>
+                          Option.isSome(value)
+                            ? Result.succeed<OrchestrationThreadStreamItem>({
+                                kind: "snapshot",
+                                snapshot: projectThreadDetailSnapshot(value.value),
+                              })
+                            : Result.failVoid,
+                        ),
+                      ),
+                    );
 
               // When the client already loaded the snapshot over HTTP it passes
               // that snapshot's sequence, and we resume the live subscription by
@@ -1302,7 +1385,10 @@ const makeWsRpcLayer = (
               // databases. A truncated replay would silently drop this thread's
               // events, so past the gap cap we reset the client with a fresh
               // thread snapshot instead, exactly like subscribeShell above.
-              if (input.afterSequence !== undefined) {
+              if (
+                input.afterSequence !== undefined &&
+                Option.isNone(providerProjectionSnapshotQuery)
+              ) {
                 const afterSequence = input.afterSequence;
                 const headSequence = yield* orchestrationEngine.latestSequence;
                 const replayGap = headSequence - afterSequence;
@@ -1334,7 +1420,7 @@ const makeWsRpcLayer = (
                           bufferedLiveStream,
                         )
                       : bufferedLiveStream;
-                  return Stream.concat(catchUpStream, afterCatchUp);
+                  return withCacheSnapshots(Stream.concat(catchUpStream, afterCatchUp));
                 }
                 // Gap too large (or cursor ahead of authoritative state): fall
                 // through to the snapshot path so the client converges from a
@@ -1369,12 +1455,14 @@ const makeWsRpcLayer = (
                       bufferedLiveStream,
                     )
                   : bufferedLiveStream;
-              return Stream.concat(
-                Stream.make({
-                  kind: "snapshot" as const,
-                  snapshot: projectThreadDetailSnapshot(snapshot.value),
-                }),
-                afterSnapshot,
+              return withCacheSnapshots(
+                Stream.concat(
+                  Stream.make({
+                    kind: "snapshot" as const,
+                    snapshot: projectThreadDetailSnapshot(snapshot.value),
+                  }),
+                  afterSnapshot,
+                ),
               );
             }),
             { "rpc.aggregate": "orchestration" },

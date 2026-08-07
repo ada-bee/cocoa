@@ -25,6 +25,7 @@ layer("Cocoa migrations", (it) => {
         [4, "CheckpointRevertSagas"],
         [5, "CheckpointRevertIntents"],
         [6, "CheckpointRevertIntentActiveThread"],
+        [7, "ProviderConversationCache"],
       ]);
 
       yield* sql`
@@ -51,6 +52,7 @@ layer("Cocoa migrations", (it) => {
         { migrationId: 4, name: "CheckpointRevertSagas" },
         { migrationId: 5, name: "CheckpointRevertIntents" },
         { migrationId: 6, name: "CheckpointRevertIntentActiveThread" },
+        { migrationId: 7, name: "ProviderConversationCache" },
       ]);
     }),
   );

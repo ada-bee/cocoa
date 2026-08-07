@@ -21,7 +21,9 @@ import { ThreadDeletionReactorLive } from "../orchestration/Layers/ThreadDeletio
 import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
 import { CheckpointRevertIntentRepositoryLive } from "../persistence/Layers/CheckpointRevertIntents.ts";
 import { CheckpointRevertSagaRepositoryLive } from "../persistence/Layers/CheckpointRevertSagas.ts";
+import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { PostTurnCheckpointIntentRepositoryLive } from "../persistence/Layers/PostTurnCheckpointIntents.ts";
+import { ProviderConversationCacheRepositoryLive } from "../persistence/Layers/ProviderConversationCache.ts";
 import { ProjectionCheckpointRepositoryLive } from "../persistence/Layers/ProjectionCheckpoints.ts";
 import { ProviderCheckpointOperationRepositoryLive } from "../persistence/Layers/ProviderCheckpointOperations.ts";
 import { cocoaLayerConfig as SqlitePersistenceLayerLive } from "../persistence/Layers/SqliteCore.ts";
@@ -39,6 +41,9 @@ import * as RepositoryStatusBroadcaster from "../project/RepositoryStatusBroadca
 import { ProviderAdapterRegistryLive } from "../provider/Layers/ProviderAdapterRegistry.ts";
 import * as ProviderEventLoggers from "../provider/Layers/ProviderEventLoggersService.ts";
 import { ProviderGenerationRecoveryReactorLive } from "../provider/Layers/ProviderGenerationRecoveryReactor.ts";
+import { ProviderConversationCacheSyncLive } from "../provider/Layers/ProviderConversationCacheSync.ts";
+import { ProviderConversationProjectionQueryLive } from "../provider/Layers/ProviderConversationProjectionQuery.ts";
+import { ProviderConversationAuthorityLive } from "../provider/Layers/ProviderConversationAuthority.ts";
 import { CocoaProviderInstanceRegistryHydrationLive } from "../provider/Layers/CocoaProviderInstanceRegistryHydration.ts";
 import { ProviderRegistryLive } from "../provider/Layers/ProviderRegistry.ts";
 import { ProviderServiceLive } from "../provider/Layers/ProviderService.ts";
@@ -85,6 +90,32 @@ const CocoaProjectRepositoryLayerLive = ProjectRepository.layer.pipe(
 
 const ProviderCheckpointOperationLayerLive = ProviderCheckpointOperationRepositoryLive.pipe(
   Layer.provide(PersistenceLayerLive),
+);
+
+const ProviderConversationCacheRepositoryLayerLive = ProviderConversationCacheRepositoryLive.pipe(
+  Layer.provide(PersistenceLayerLive),
+);
+
+const OrchestrationCommandReceiptRepositoryLayerLive =
+  OrchestrationCommandReceiptRepositoryLive.pipe(Layer.provide(PersistenceLayerLive));
+
+const ProviderConversationCacheSyncLayerLive = ProviderConversationCacheSyncLive.pipe(
+  Layer.provide(ProviderConversationCacheRepositoryLayerLive),
+  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
+  Layer.provide(ProviderSessionDirectoryLayerLive),
+);
+
+const ProviderConversationProjectionQueryLayerLive = ProviderConversationProjectionQueryLive.pipe(
+  Layer.provide(OrchestrationLayerLive),
+  Layer.provide(ProviderConversationCacheRepositoryLayerLive),
+  Layer.provide(ProviderConversationCacheSyncLayerLive),
+);
+
+const ProviderConversationAuthorityLayerLive = ProviderConversationAuthorityLive.pipe(
+  Layer.provide(ProviderConversationCacheRepositoryLayerLive),
+  Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
+  Layer.provide(ProviderSessionDirectoryLayerLive),
+  Layer.provide(OrchestrationCommandReceiptRepositoryLayerLive),
 );
 
 const CheckpointCoordinatorLayerLive = CheckpointCoordinatorLive.pipe(
@@ -202,10 +233,14 @@ const CocoaBackgroundLayerLive = BackgroundPolicy.layer.pipe(
   Layer.provide(ServerSettingsLayerLive),
 );
 
-const CocoaRuntimeBaseDependenciesLive = CocoaReactorLayerLive.pipe(
+const CocoaRuntimeBaseFoundationLive = CocoaReactorLayerLive.pipe(
   Layer.provideMerge(ServerSettingsLayerLive),
   Layer.provideMerge(CocoaCheckpointingLayerLive),
   Layer.provideMerge(ProviderRuntimeLayerLive),
+  Layer.provideMerge(ProviderConversationCacheRepositoryLayerLive),
+  Layer.provideMerge(ProviderConversationCacheSyncLayerLive),
+  Layer.provideMerge(ProviderConversationProjectionQueryLayerLive),
+  Layer.provideMerge(ProviderConversationAuthorityLayerLive),
   Layer.provideMerge(PersistenceLayerLive),
   Layer.provideMerge(Keybindings.layer),
   Layer.provideMerge(ProviderRegistryLive),
@@ -214,6 +249,9 @@ const CocoaRuntimeBaseDependenciesLive = CocoaReactorLayerLive.pipe(
   Layer.provideMerge(CocoaWorkspaceAccessLayerLive),
   Layer.provideMerge(CocoaProjectExecutionLayerLive),
   Layer.provideMerge(CocoaProjectRepositoryLayerLive),
+);
+
+const CocoaRuntimeBaseDependenciesLive = CocoaRuntimeBaseFoundationLive.pipe(
   Layer.provideMerge(CocoaRepositoryReadLayerLive),
   Layer.provideMerge(CocoaRepositoryStatusLayerLive),
   Layer.provideMerge(CocoaProjectTerminalLayerLive),

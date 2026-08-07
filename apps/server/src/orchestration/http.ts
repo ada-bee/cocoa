@@ -18,13 +18,25 @@ import {
 } from "../auth/http.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
+import { ProviderConversationProjectionQuery } from "../provider/Services/ProviderConversationProjectionQuery.ts";
+import { ProviderConversationAuthority } from "../provider/Services/ProviderConversationAuthority.ts";
 
 export const orchestrationHttpApiLayer = HttpApiBuilder.group(
   EnvironmentHttpApi,
   "orchestration",
   Effect.fnUntraced(function* (handlers) {
-    const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const baseProjectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const providerProjectionSnapshotQuery = yield* Effect.serviceOption(
+      ProviderConversationProjectionQuery,
+    );
+    const projectionSnapshotQuery = Option.getOrElse(
+      providerProjectionSnapshotQuery,
+      () => baseProjectionSnapshotQuery,
+    );
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const providerConversationAuthority = yield* Effect.serviceOption(
+      ProviderConversationAuthority,
+    );
 
     return handlers
       .handle(
@@ -86,13 +98,15 @@ export const orchestrationHttpApiLayer = HttpApiBuilder.group(
           return yield* withNormalizedDispatchCommand(
             args.payload,
             (normalizedCommand) =>
-              orchestrationEngine
-                .dispatch(normalizedCommand)
-                .pipe(
-                  Effect.catch((cause) =>
-                    failEnvironmentInternal("orchestration_dispatch_failed", cause),
-                  ),
+              (Option.isSome(providerConversationAuthority)
+                ? providerConversationAuthority.value.apply(normalizedCommand).pipe(Effect.asVoid)
+                : Effect.void
+              ).pipe(
+                Effect.andThen(orchestrationEngine.dispatch(normalizedCommand)),
+                Effect.catch((cause) =>
+                  failEnvironmentInternal("orchestration_dispatch_failed", cause),
                 ),
+              ),
             { cleanupAttachmentsOnSuccess: (result) => result.deduplicated === true },
           ).pipe(
             Effect.catchTag("OrchestrationDispatchCommandError", () =>

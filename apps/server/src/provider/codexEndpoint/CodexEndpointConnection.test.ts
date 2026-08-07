@@ -67,7 +67,7 @@ const completeHandshake = Effect.fn("CodexEndpointConnectionTest.completeHandsha
   );
   const initialized = yield* decodeJson(yield* Queue.take(transport.output));
   const probes: Array<unknown> = [];
-  for (let index = 0; index < 10; index += 1) {
+  for (let index = 0; index < 15; index += 1) {
     const probe = yield* decodeJson(yield* Queue.take(transport.output));
     probes.push(probe);
     const request = probe as {
@@ -130,7 +130,7 @@ describe("CodexEndpointConnection", () => {
         },
       });
       assert.deepEqual(handshake.initialized, { method: "initialized" });
-      assert.lengthOf(handshake.probes, 10);
+      assert.lengthOf(handshake.probes, 15);
       assert.equal(connection.identity.providerInstanceId, PROVIDER_INSTANCE_ID);
       assert.deepEqual(connection.compatibility, {
         userAgent: "codex_cli_rs/0.146.0 extra-data",
@@ -141,17 +141,24 @@ describe("CodexEndpointConnection", () => {
         versionRelation: "baseline",
         capabilities: {
           conversation: true,
+          conversationCatalog: true,
           conversationRead: true,
+          conversationMutations: true,
           checkedConversationRollback: true,
           commandExec: true,
           commandExecControl: true,
           methods: {
             "thread/start": "available",
             "thread/resume": "available",
+            "thread/list": "available",
             "turn/start": "available",
             "turn/interrupt": "available",
             "thread/read": "available",
             "thread/rollback": "available",
+            "thread/archive": "available",
+            "thread/unarchive": "available",
+            "thread/delete": "available",
+            "thread/name/set": "available",
             "command/exec": "available",
             "command/exec/write": "available",
             "command/exec/resize": "available",
@@ -249,11 +256,11 @@ describe("CodexEndpointConnection", () => {
 
       const malformedOptional = yield* makeInMemoryTransport();
       yield* completeHandshake(malformedOptional, "codex_cli_rs/0.146.0", {
-        "thread/read": "malformed",
+        "thread/rollback": "malformed",
         "command/exec": "malformed",
       }).pipe(Effect.forkScoped);
       const connection = yield* makeConnection(malformedOptional);
-      assert.equal(connection.compatibility.capabilities?.conversationRead, false);
+      assert.equal(connection.compatibility.capabilities?.conversationRead, true);
       assert.equal(connection.compatibility.capabilities?.checkedConversationRollback, false);
       assert.equal(connection.compatibility.capabilities?.commandExec, false);
       assert.equal(connection.compatibility.capabilities?.commandExecControl, false);

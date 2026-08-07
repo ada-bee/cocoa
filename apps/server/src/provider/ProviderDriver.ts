@@ -37,6 +37,7 @@ import type { ProviderTerminalAdapter } from "./ProviderTerminalAdapter.ts";
 import type { ProviderExecutionAdapter } from "./ProviderExecutionAdapter.ts";
 import type { ProviderVcsAdapter } from "./ProviderVcsAdapter.ts";
 import type { ProviderWorkspaceAdapter } from "./ProviderWorkspaceAdapter.ts";
+import type { ProviderConversationCatalog } from "./ProviderConversationCatalog.ts";
 import type { ProviderAdapterShape } from "./Services/ProviderAdapter.ts";
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
 
@@ -88,6 +89,8 @@ export interface ProviderInstance {
   readonly generationLifecycle?: ProviderInstanceGenerationLifecycle;
   readonly snapshot: ServerProviderShape;
   readonly adapter: ProviderAdapterShape<ProviderAdapterError>;
+  /** Provider-native durable thread catalog. Required by the Cocoa gateway. */
+  readonly conversationCatalog?: ProviderConversationCatalog | undefined;
   /** Optional provider-host workspace access, permanently scoped to this instance. */
   readonly workspace?: ProviderWorkspaceAdapter | undefined;
   /** Optional provider-host interactive terminal access, permanently scoped to this instance. */

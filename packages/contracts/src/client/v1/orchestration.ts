@@ -402,6 +402,8 @@ export type CocoaClientV1ThreadShell = typeof CocoaClientV1ThreadShell.Type;
 
 export const CocoaClientV1ShellSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
+  cacheEpoch: Schema.optionalKey(Schema.String),
+  cacheRevision: Schema.optionalKey(NonNegativeInt),
   projects: Schema.Array(CocoaClientV1ProjectShell),
   threads: Schema.Array(CocoaClientV1ThreadShell),
   updatedAt: IsoDateTime,
@@ -520,6 +522,8 @@ export type CocoaClientV1Thread = typeof CocoaClientV1Thread.Type;
 
 export const CocoaClientV1ThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
+  cacheEpoch: Schema.optionalKey(Schema.String),
+  cacheRevision: Schema.optionalKey(NonNegativeInt),
   thread: CocoaClientV1Thread,
 });
 export type CocoaClientV1ThreadDetailSnapshot = typeof CocoaClientV1ThreadDetailSnapshot.Type;

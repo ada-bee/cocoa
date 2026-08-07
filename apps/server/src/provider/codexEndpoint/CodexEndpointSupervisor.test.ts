@@ -38,6 +38,7 @@ const TRANSPORT = {
 const ROUTER = {
   registerSession: () => Effect.die("unused"),
   registerInternalOperation: () => Effect.die("unused"),
+  subscribeNotifications: Effect.never,
 } as CodexEndpointRouter;
 
 const transientOpenError = (label: string) =>

@@ -319,6 +319,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           const router = {
             registerSession: () => Effect.die("unused"),
             registerInternalOperation: () => Effect.die("unused"),
+            subscribeNotifications: Effect.never,
           } as CodexEndpointRouter;
 
           const adapter = {
@@ -985,6 +986,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         const router = {
           registerSession: () => Effect.die("unused"),
           registerInternalOperation: () => Effect.die("unused"),
+          subscribeNotifications: Effect.never,
         } as CodexEndpointRouter;
         const adapter = { stopAll: () => Effect.void } as unknown as CodexAdapterShape;
         let transientCalls = 0;
@@ -1096,6 +1098,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
         const router = {
           registerSession: () => Effect.die("unused"),
           registerInternalOperation: () => Effect.die("unused"),
+          subscribeNotifications: Effect.never,
         } as CodexEndpointRouter;
 
         const driver = makeCodexDriver({

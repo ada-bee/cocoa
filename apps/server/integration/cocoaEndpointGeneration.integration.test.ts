@@ -663,6 +663,7 @@ it.layer(DriverTestLayer)("CodexDriver real supervisor boundary", (it) => {
             Effect.succeed({
               registerSession: () => Effect.die("unused"),
               registerInternalOperation: () => Effect.die("unused"),
+              subscribeNotifications: Effect.never,
             } as CodexEndpointRouter)) as CodexDriverDependencies["makeEndpointRouter"],
           makeAdapter: ((_config: CodexSettings, _options?: CodexAdapterLiveOptions) =>
             Effect.succeed(nativeAdapter)) as CodexDriverDependencies["makeAdapter"],

@@ -40,6 +40,7 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderConversationAuthority } from "../../provider/Services/ProviderConversationAuthority.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -336,6 +337,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const providerConversationAuthority = yield* Effect.serviceOption(ProviderConversationAuthority);
   const providerRegistry = yield* ProviderRegistry;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
@@ -943,12 +945,16 @@ const make = Effect.gen(function* () {
           return;
         }
 
-        yield* orchestrationEngine.dispatch({
+        const renameCommand = {
           type: "thread.meta.update",
           commandId: yield* serverCommandId("thread-title-rename"),
           threadId: input.threadId,
           title: generated.title,
-        });
+        } as const;
+        if (Option.isSome(providerConversationAuthority)) {
+          yield* providerConversationAuthority.value.apply(renameCommand);
+        }
+        yield* orchestrationEngine.dispatch(renameCommand);
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("provider command reactor failed to generate or rename thread title", {
@@ -1027,13 +1033,17 @@ const make = Effect.gen(function* () {
     readonly requestId: CommandId;
     readonly title?: string;
   }) {
-    yield* orchestrationEngine.dispatch({
+    const completionCommand = {
       type: "thread.title.regeneration.complete",
       commandId: yield* serverCommandId("thread-title-regeneration-complete"),
       threadId: input.threadId,
       requestId: input.requestId,
       ...(input.title !== undefined ? { title: input.title } : {}),
-    });
+    } as const;
+    if (Option.isSome(providerConversationAuthority)) {
+      yield* providerConversationAuthority.value.apply(completionCommand);
+    }
+    yield* orchestrationEngine.dispatch(completionCommand);
   });
   const findInterruptedThreadTitleRegenerations = Effect.fn(
     "findInterruptedThreadTitleRegenerations",

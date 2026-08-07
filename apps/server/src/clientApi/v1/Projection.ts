@@ -252,6 +252,8 @@ export const projectShellSnapshot = (
   snapshot: OrchestrationShellSnapshot,
 ): CocoaClientV1ShellSnapshot => ({
   snapshotSequence: snapshot.snapshotSequence,
+  ...(snapshot.cacheEpoch === undefined ? {} : { cacheEpoch: snapshot.cacheEpoch }),
+  ...(snapshot.cacheRevision === undefined ? {} : { cacheRevision: snapshot.cacheRevision }),
   projects: snapshot.projects.map(projectProjectShell),
   threads: snapshot.threads.map(projectThreadShell),
   updatedAt: snapshot.updatedAt,
@@ -261,6 +263,8 @@ export const projectThreadSnapshot = (
   snapshot: OrchestrationThreadDetailSnapshot,
 ): CocoaClientV1ThreadDetailSnapshot => ({
   snapshotSequence: snapshot.snapshotSequence,
+  ...(snapshot.cacheEpoch === undefined ? {} : { cacheEpoch: snapshot.cacheEpoch }),
+  ...(snapshot.cacheRevision === undefined ? {} : { cacheRevision: snapshot.cacheRevision }),
   thread: projectThread(snapshot.thread),
 });
 

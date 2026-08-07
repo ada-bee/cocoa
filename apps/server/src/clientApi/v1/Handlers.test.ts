@@ -51,6 +51,8 @@ import {
 import * as OrchestrationEngine from "../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderRegistry from "../../provider/Services/ProviderRegistry.ts";
+import { ProviderConversationCacheSync } from "../../provider/Services/ProviderConversationCacheSync.ts";
+import { ProviderConversationProjectionQuery } from "../../provider/Services/ProviderConversationProjectionQuery.ts";
 import {
   ProjectExecution,
   ProjectExecutionCapabilityUnavailableError,
@@ -355,7 +357,7 @@ const makeHarness = (options: HarnessOptions = {}) =>
         Layer.provide(NodeServices.layer),
       ),
     );
-    return { live, latest, dispatched, layer };
+    return { live, latest, dispatched, projections, layer };
   });
 
 describe("Cocoa client v1 handlers", () => {
@@ -747,6 +749,62 @@ describe("Cocoa client v1 handlers", () => {
           "thread-upserted",
           "synchronized",
         ]);
+      }),
+    ),
+  );
+
+  it.effect("replaces provider-backed shell state when the cache revision changes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const revisions = yield* Ref.make(0);
+        const cacheChanges = yield* PubSub.unbounded<void>();
+        const providerProjections = ProviderConversationProjectionQuery.of({
+          ...harness.projections,
+          getShellSnapshot: () =>
+            Ref.updateAndGet(revisions, (revision) => revision + 1).pipe(
+              Effect.map((cacheRevision) => ({
+                ...shellSnapshot,
+                cacheEpoch: "cache-epoch",
+                cacheRevision,
+              })),
+            ),
+        });
+        const cacheSync = ProviderConversationCacheSync.of({
+          start: () => Effect.void,
+          refreshInstance: () => Effect.void,
+          refreshThread: () => Effect.void,
+          drain: Effect.void,
+          subscribeChanges: PubSub.subscribe(cacheChanges),
+        });
+        const handlers = yield* makeCocoaClientV1Handlers(readSession).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              harness.layer,
+              Layer.succeed(ProviderConversationProjectionQuery, providerProjections),
+              Layer.succeed(ProviderConversationCacheSync, cacheSync),
+            ),
+          ),
+        );
+        const firstSnapshot = yield* Deferred.make<void>();
+        const collecting = yield* handlers[COCOA_CLIENT_V1_METHODS.subscribeShell]({
+          afterSequence: shellSnapshot.snapshotSequence,
+        }).pipe(
+          Stream.tap((item) =>
+            item.kind === "snapshot" ? Deferred.succeed(firstSnapshot, undefined) : Effect.void,
+          ),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.timeout("2 seconds"),
+          Effect.forkChild,
+        );
+        yield* Deferred.await(firstSnapshot);
+        yield* PubSub.publish(cacheChanges, undefined);
+        const items = Array.from(yield* Fiber.join(collecting));
+        expect(items.map((item) => item.kind)).toEqual(["snapshot", "snapshot"]);
+        expect(
+          items.map((item) => (item.kind === "snapshot" ? item.snapshot.cacheRevision : null)),
+        ).toEqual([1, 2]);
       }),
     ),
   );

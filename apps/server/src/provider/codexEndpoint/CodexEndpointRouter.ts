@@ -11,6 +11,7 @@
  */
 import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -177,6 +178,16 @@ export interface CodexEndpointRouter {
   readonly registerInternalOperation: (input: {
     readonly callbacks: CodexEndpointRouteCallbacks;
   }) => Effect.Effect<CodexEndpointInternalOperationRegistration, never, Scope.Scope>;
+  /**
+   * Subscribe to every decoded provider notification before Cocoa-session
+   * routing. Catalog synchronization uses this as an invalidation stream for
+   * provider threads that have never been opened through this gateway.
+   */
+  readonly subscribeNotifications: Effect.Effect<
+    PubSub.Subscription<CodexEndpointNotification>,
+    never,
+    Scope.Scope
+  >;
 }
 
 function normalizeCapacity(value: number | undefined, fallback: number, minimum: number): number {
@@ -280,7 +291,7 @@ function requestRoutingError(
 export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(function* (
   client: CodexEndpointRouterClient,
   options: CodexEndpointRouterOptions = {},
-): Effect.fn.Return<CodexEndpointRouter> {
+): Effect.fn.Return<CodexEndpointRouter, never, Scope.Scope> {
   const unboundNotificationBacklogCapacity = normalizeCapacity(
     options.unboundNotificationBacklogCapacity,
     DEFAULT_UNBOUND_NOTIFICATION_BACKLOG_CAPACITY,
@@ -302,6 +313,8 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
     0,
   );
   const routingLock = yield* Semaphore.make(1);
+  const notifications = yield* PubSub.unbounded<CodexEndpointNotification>();
+  yield* Effect.addFinalizer(() => PubSub.shutdown(notifications));
   const state: RouterState = {
     sessions: new Map(),
     internalOperations: new Set(),
@@ -395,6 +408,7 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
           ...makeNotification(method, params),
           known: true,
         };
+        yield* PubSub.publish(notifications, makeNotification(method, params));
         const nativeThreadId = readNotificationThreadId(notification);
         if (nativeThreadId === undefined) return;
         const parentNativeThreadId = readThreadStartedParentId(notification);
@@ -685,5 +699,9 @@ export const makeCodexEndpointRouter = Effect.fn("CodexEndpointRouter.make")(fun
     },
   );
 
-  return { registerSession, registerInternalOperation };
+  return {
+    registerSession,
+    registerInternalOperation,
+    subscribeNotifications: PubSub.subscribe(notifications),
+  };
 });

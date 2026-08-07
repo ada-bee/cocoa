@@ -42,6 +42,7 @@ import {
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
 import * as CodexEndpointFactory from "../codexEndpoint/CodexEndpointFactory.ts";
+import { makeCodexConversationCatalog } from "../codexEndpoint/CodexConversationCatalog.ts";
 import type {
   CodexEndpointCompatibilityMetadata,
   CodexEndpointCompatibilityError,
@@ -277,6 +278,10 @@ export const makeCodexEndpointDriver = (
             makeRouter: dependencies.makeEndpointRouter,
           },
         });
+        const conversationCatalogRuntime = yield* makeCodexConversationCatalog({
+          providerInstanceId: instanceId,
+          borrowConnection: supervisor.borrowConnection,
+        });
         const endpointTextGeneration = yield* dependencies.makeEndpointTextGeneration({
           providerInstanceId: instanceId,
           borrowRoutedConnection: supervisor.borrowRoutedConnection,
@@ -385,6 +390,7 @@ export const makeCodexEndpointDriver = (
         } satisfies ProviderInstance["adapter"];
 
         const supervisorChanges = yield* supervisor.subscribeChanges;
+        const catalogSupervisorChanges = yield* supervisor.subscribeChanges;
         const generationChanges = yield* Effect.acquireRelease(
           PubSub.unbounded<ProviderInstanceGenerationState>(),
           PubSub.shutdown,
@@ -516,6 +522,34 @@ export const makeCodexEndpointDriver = (
           }),
           Effect.forkScoped,
         );
+        yield* Stream.fromSubscription(catalogSupervisorChanges).pipe(
+          Stream.runForEach((state) =>
+            conversationCatalogRuntime.invalidateCatalog.pipe(
+              Effect.andThen(
+                state._tag !== "Ready"
+                  ? Effect.void
+                  : Effect.scoped(
+                      supervisor.borrowRoutedConnection.pipe(
+                        Effect.flatMap((borrowed) => borrowed.router.subscribeNotifications),
+                        Effect.flatMap((subscription) =>
+                          Stream.fromSubscription(subscription).pipe(
+                            Stream.runForEach(conversationCatalogRuntime.ingestNotification),
+                          ),
+                        ),
+                      ),
+                    ),
+              ),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Codex conversation catalog notification bridge failed", {
+                  providerInstanceId: instanceId,
+                  supervisorState: state._tag,
+                  cause,
+                }),
+              ),
+            ),
+          ),
+          Effect.forkScoped,
+        );
 
         return {
           instanceId,
@@ -528,6 +562,7 @@ export const makeCodexEndpointDriver = (
           generationLifecycle,
           snapshot,
           adapter,
+          conversationCatalog: conversationCatalogRuntime.catalog,
           get workspace() {
             return workspace !== undefined &&
               conversationCompatibility?.capabilities?.commandExec === true

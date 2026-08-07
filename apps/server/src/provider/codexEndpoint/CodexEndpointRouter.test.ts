@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
+import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
@@ -162,6 +163,25 @@ it.effect("isolates notifications for two Cocoa sessions", () =>
     assert.equal(yield* Queue.take(secondNotifications), "native-thread-2");
     assert.equal(yield* Queue.size(firstNotifications), 0);
     assert.equal(yield* Queue.size(secondNotifications), 0);
+  }),
+);
+
+it.effect("publishes unbound provider notifications to catalog subscribers", () =>
+  Effect.gen(function* () {
+    const fake = makeFakeClient();
+    const router = yield* makeCodexEndpointRouter(fake.client);
+    const subscription = yield* router.subscribeNotifications;
+
+    yield* fake.emitNotification("thread/status/changed", {
+      threadId: "provider-owned-thread",
+      status: { type: "idle" },
+    });
+
+    const notification = yield* PubSub.take(subscription);
+    assert.equal(notification.method, "thread/status/changed");
+    if (notification.method === "thread/status/changed") {
+      assert.equal(notification.params.threadId, "provider-owned-thread");
+    }
   }),
 );
 
