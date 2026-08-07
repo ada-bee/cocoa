@@ -562,6 +562,12 @@ export const ServerSettings = Schema.Struct({
       }),
     ),
   ),
+  // Instance-owned defaults for generated text. The singular selection above
+  // remains as a compatibility fallback for settings written by older Cocoa
+  // clients; new clients read and write this map per provider instance.
+  textGenerationModelSelections: Schema.optionalKey(
+    Schema.Record(ProviderInstanceId, ModelSelection),
+  ),
   sourceControlWritingStyle: SourceControlWritingStyleSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
@@ -709,6 +715,10 @@ export const ServerSettingsPatch = Schema.Struct({
   newWorktreesStartFromOrigin: Schema.optionalKey(Schema.Boolean),
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  // Whole-map replacement, matching `providerInstances` patch semantics.
+  textGenerationModelSelections: Schema.optionalKey(
+    Schema.Record(ProviderInstanceId, ModelSelection),
+  ),
   sourceControlWritingStyle: Schema.optionalKey(
     Schema.Struct({
       mode: Schema.optionalKey(SourceControlWritingStyleMode),

@@ -259,6 +259,30 @@ export function resolveAppModelSelectionForInstance(
   );
 }
 
+export function resolveAppModelSelectionStateForInstance(
+  instanceId: ProviderInstanceId,
+  settings: UnifiedSettings,
+  providers: ReadonlyArray<ServerProvider>,
+  selection?: ModelSelection,
+): ModelSelection | null {
+  const entry = deriveProviderInstanceEntries(providers).find(
+    (candidate) => candidate.instanceId === instanceId,
+  );
+  if (!entry) return null;
+
+  const selectedModel = selection?.instanceId === instanceId ? selection.model : null;
+  const model = resolveAppModelSelectionForInstance(instanceId, settings, providers, selectedModel);
+  if (!model) return null;
+
+  const { modelOptionsForDispatch } = getComposerProviderState({
+    provider: entry.driverKind,
+    model,
+    models: entry.models,
+    modelOptions: selection?.instanceId === instanceId ? selection.options : undefined,
+  });
+  return createModelSelection(instanceId, model, modelOptionsForDispatch);
+}
+
 /**
  * Instance-keyed model options map. Each configured instance gets its own
  * option list so the model picker can show the same driver's built-in and

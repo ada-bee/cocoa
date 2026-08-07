@@ -178,6 +178,16 @@ describe("Cocoa host connections", () => {
         model: "writer-model",
         options: [{ id: "reasoningEffort", value: "medium" }] as const,
       },
+      textGenerationModelSelections: {
+        codex: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "per-provider-model",
+        },
+        codex_host_two_example_test: {
+          instanceId: ProviderInstanceId.make("codex_host_two_example_test"),
+          model: "remaining-model",
+        },
+      },
     };
     const [firstConnection] = deriveCocoaHostConnections(settings);
 
@@ -192,6 +202,12 @@ describe("Cocoa host connections", () => {
       instanceId: "codex_host_two_example_test",
       model: "writer-model",
       options: [{ id: "reasoningEffort", value: "medium" }],
+    });
+    expect(removed.textGenerationModelSelections).toEqual({
+      codex_host_two_example_test: {
+        instanceId: "codex_host_two_example_test",
+        model: "remaining-model",
+      },
     });
   });
 });

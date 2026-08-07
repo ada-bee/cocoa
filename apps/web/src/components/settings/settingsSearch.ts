@@ -4,7 +4,7 @@ export type SettingsPath =
   | "/settings/keybindings"
   | "/settings/providers"
   | "/settings/source-control"
-  | "/settings/connections"
+  | "/settings/clients"
   | "/settings/beta"
   | "/settings/archived";
 
@@ -25,7 +25,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/keybindings": "Keybindings",
   "/settings/providers": "Providers",
   "/settings/source-control": "Source Control",
-  "/settings/connections": "Connections",
+  "/settings/clients": "Clients",
   "/settings/beta": "Beta",
   "/settings/archived": "Archive",
 };
@@ -113,8 +113,9 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "text-generation-model",
-    title: "Text generation model",
-    to: "/settings/general",
+    title: "Text generation models",
+    to: "/settings/providers",
+    targetId: "providers",
   },
   {
     id: "diagnostics",
@@ -128,7 +129,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "providers",
-    title: "Providers",
+    title: "Provider models",
     to: "/settings/providers",
   },
   {
@@ -139,7 +140,12 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "remote-environments",
     title: "Cocoa hosts",
-    to: "/settings/connections",
+    to: "/settings/providers",
+  },
+  {
+    id: "clients",
+    title: "Clients",
+    to: "/settings/clients",
   },
   {
     id: "sidebar-v2",

@@ -51,6 +51,7 @@ export function computeCocoaSettingsIdentity(settings: ServerSettings): string {
     providerInstances,
     sourceControlWriterModelSelection: settings.sourceControlWriterModelSelection,
     textGenerationModelSelection: settings.textGenerationModelSelection,
+    textGenerationModelSelections: settings.textGenerationModelSelections,
   });
   return `sha256:${NodeCrypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex")}`;
 }

@@ -73,7 +73,7 @@ export function deriveProviderSettingsFields(
   definition: ProviderClientDefinition,
 ): ReadonlyArray<ProviderSettingsFieldModel> {
   // Cocoa's Codex instances are configured exclusively by pasting a cocoa-hostd
-  // pairing token in Settings -> Connections. The retained Codex schema still
+  // pairing token in Settings -> Providers. The retained Codex schema still
   // carries upstream local-process fields for persisted-data compatibility;
   // they must not become a second connection/configuration surface here.
   if (definition.value === "codex") return [];

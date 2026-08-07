@@ -241,6 +241,12 @@ describe("ServerSettingsPatch string normalization", () => {
     const patch = decodeServerSettingsPatch({
       addProjectBaseDirectory: "  ~/Development  ",
       textGenerationModelSelection: { model: "  gpt-5.4-mini  " },
+      textGenerationModelSelections: {
+        codex_personal: {
+          instanceId: "codex_personal",
+          model: "  gpt-5.4-title  ",
+        },
+      },
       observability: {
         otlpTracesUrl: "  http://localhost:4318/v1/traces  ",
       },
@@ -262,6 +268,9 @@ describe("ServerSettingsPatch string normalization", () => {
 
     expect(patch.addProjectBaseDirectory).toBe("~/Development");
     expect(patch.textGenerationModelSelection?.model).toBe("gpt-5.4-mini");
+    expect(
+      patch.textGenerationModelSelections?.[ProviderInstanceId.make("codex_personal")]?.model,
+    ).toBe("gpt-5.4-title");
     expect(patch.observability?.otlpTracesUrl).toBe("http://localhost:4318/v1/traces");
     expect(patch.providers?.codex?.binaryPath).toBe("/opt/homebrew/bin/codex");
     expect(patch.providers?.codex?.homePath).toBe("~/.codex");

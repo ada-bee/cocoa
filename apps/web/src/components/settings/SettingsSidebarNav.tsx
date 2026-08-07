@@ -14,7 +14,7 @@ import {
   FlaskConicalIcon,
   GitBranchIcon,
   KeyboardIcon,
-  Link2Icon,
+  MonitorSmartphoneIcon,
   PaletteIcon,
   SearchIcon,
   Settings2Icon,
@@ -50,7 +50,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/keybindings": KeyboardIcon,
   "/settings/providers": BotIcon,
   "/settings/source-control": GitBranchIcon,
-  "/settings/connections": Link2Icon,
+  "/settings/clients": MonitorSmartphoneIcon,
   "/settings/beta": FlaskConicalIcon,
   "/settings/archived": ArchiveIcon,
 };

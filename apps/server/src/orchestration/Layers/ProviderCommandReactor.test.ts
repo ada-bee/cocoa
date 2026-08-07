@@ -176,6 +176,7 @@ describe("ProviderCommandReactor", () => {
     readonly preStartProviderInFlight?: boolean;
     readonly readAuthoritativeConversation?: ProviderServiceShape["readAuthoritativeConversation"];
     readonly revertBlocked?: boolean;
+    readonly serverSettings?: Parameters<typeof ServerSettingsService.layerTest>[0];
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -438,7 +439,7 @@ describe("ProviderCommandReactor", () => {
           generateThreadTitle,
         }),
       ),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(ServerSettingsService.layerTest(input?.serverSettings)),
       Layer.provideMerge(
         Layer.mock(ProjectWorkspace.ProjectWorkspace)({
           validateRoot: validateWorkspaceRoot,
@@ -1409,7 +1410,19 @@ describe("ProviderCommandReactor", () => {
       ProviderInstanceId.make("codex_remote"),
       "gpt-5-owned",
     );
-    const harness = await createHarness({ threadModelSelection: ownedModelSelection });
+    const configuredTitleSelection = createModelSelection(
+      ownedModelSelection.instanceId,
+      "gpt-5-title",
+      [{ id: "reasoningEffort", value: "low" }],
+    );
+    const harness = await createHarness({
+      threadModelSelection: ownedModelSelection,
+      serverSettings: {
+        textGenerationModelSelections: {
+          [ownedModelSelection.instanceId]: configuredTitleSelection,
+        },
+      },
+    });
     const now = "2026-01-01T00:00:00.000Z";
     const seededTitle = "Please investigate reconnect failures after restar...";
     harness.generateThreadTitle.mockReturnValue(Effect.succeed({ title: "Generated title" }));
@@ -1445,7 +1458,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
       providerInstanceId: ownedModelSelection.instanceId,
       message: "Please investigate reconnect failures after restarting the session.",
-      modelSelection: ownedModelSelection,
+      modelSelection: configuredTitleSelection,
     });
 
     await waitFor(async () => {

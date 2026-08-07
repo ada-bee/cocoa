@@ -155,7 +155,8 @@ describe("vendored libghostty-vt WebAssembly", () => {
         : trampolineResult.instance;
     const table = main.exports.__indirect_function_table as WebAssembly.Table;
     const callbackIndex = table.length;
-    table.grow(1, trampoline.exports.ghostty_write_pty as CallableFunction);
+    table.grow(1);
+    table.set(callbackIndex, trampoline.exports.ghostty_write_pty as CallableFunction);
     const call = (name: string, ...args: number[]) => (main.exports[name] as WasmFunction)(...args);
     const options = call("ghostty_wasm_alloc_u8_array", 8);
     const optionsView = new DataView(memory.buffer, options, 8);

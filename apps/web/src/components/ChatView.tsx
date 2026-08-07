@@ -2001,9 +2001,9 @@ function ChatViewContent(props: ChatViewProps) {
               <Button
                 size="xs"
                 variant="outline"
-                onClick={() => void navigate({ to: "/settings/connections" })}
+                onClick={() => void navigate({ to: "/settings/providers" })}
               >
-                Connections
+                Providers
               </Button>
             </>
           ),

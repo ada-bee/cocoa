@@ -117,14 +117,22 @@ export function buildAddCocoaHostSettingsPatch(
 export function buildRemoveCocoaHostSettingsPatch(
   settings: Pick<
     ServerSettings,
-    "providerInstances" | "sourceControlWriterModelSelection" | "textGenerationModelSelection"
+    | "providerInstances"
+    | "sourceControlWriterModelSelection"
+    | "textGenerationModelSelection"
+    | "textGenerationModelSelections"
   >,
   connection: CocoaHostConnection,
 ): ServerSettingsPatch {
   const providerInstances = { ...settings.providerInstances };
   delete providerInstances[connection.instanceId];
+  const textGenerationModelSelections = { ...settings.textGenerationModelSelections };
+  const removedPerProviderSelection =
+    textGenerationModelSelections[connection.instanceId] !== undefined;
+  delete textGenerationModelSelections[connection.instanceId];
+  const perProviderPatch = removedPerProviderSelection && { textGenerationModelSelections };
   const [remainingHost] = deriveCocoaHostConnections({ providerInstances });
-  if (!remainingHost) return { providerInstances };
+  if (!remainingHost) return { providerInstances, ...perProviderPatch };
 
   const repointTextGeneration =
     settings.textGenerationModelSelection.instanceId === connection.instanceId;
@@ -142,9 +150,18 @@ export function buildRemoveCocoaHostSettingsPatch(
     : null;
 
   if (repointTextGeneration && repointSourceControl) {
-    return { providerInstances, textGenerationModelSelection, sourceControlWriterModelSelection };
+    return {
+      providerInstances,
+      ...perProviderPatch,
+      textGenerationModelSelection,
+      sourceControlWriterModelSelection,
+    };
   }
-  if (repointTextGeneration) return { providerInstances, textGenerationModelSelection };
-  if (repointSourceControl) return { providerInstances, sourceControlWriterModelSelection };
-  return { providerInstances };
+  if (repointTextGeneration) {
+    return { providerInstances, ...perProviderPatch, textGenerationModelSelection };
+  }
+  if (repointSourceControl) {
+    return { providerInstances, ...perProviderPatch, sourceControlWriterModelSelection };
+  }
+  return { providerInstances, ...perProviderPatch };
 }

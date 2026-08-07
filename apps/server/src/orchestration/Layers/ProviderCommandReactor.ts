@@ -26,6 +26,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
+import { resolveTextGenerationModelSelectionForProvider } from "@t3tools/shared/serverSettings";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { makeBaselineCheckpointIdentity } from "../../checkpointing/CheckpointIds.ts";
@@ -923,12 +924,12 @@ const make = Effect.gen(function* () {
     }) {
       const attachments = input.attachments ?? [];
       yield* Effect.gen(function* () {
-        const { textGenerationModelSelection: configuredModelSelection } =
-          yield* serverSettingsService.getSettings;
-        const modelSelection =
-          configuredModelSelection.instanceId === input.providerInstanceId
-            ? configuredModelSelection
-            : input.fallbackModelSelection;
+        const settings = yield* serverSettingsService.getSettings;
+        const modelSelection = resolveTextGenerationModelSelectionForProvider(
+          settings,
+          input.providerInstanceId,
+          input.fallbackModelSelection,
+        );
 
         const generated = yield* textGeneration.generateThreadTitle({
           providerInstanceId: input.providerInstanceId,
@@ -997,12 +998,12 @@ const make = Effect.gen(function* () {
     if (!cwd) {
       return { _tag: "Completed", title: undefined } as const;
     }
-    const { textGenerationModelSelection: configuredModelSelection } =
-      yield* serverSettingsService.getSettings;
-    const modelSelection =
-      configuredModelSelection.instanceId === project.providerInstanceId
-        ? configuredModelSelection
-        : thread.modelSelection;
+    const settings = yield* serverSettingsService.getSettings;
+    const modelSelection = resolveTextGenerationModelSelectionForProvider(
+      settings,
+      project.providerInstanceId,
+      thread.modelSelection,
+    );
     const generated = yield* textGeneration.generateThreadTitle({
       providerInstanceId: project.providerInstanceId,
       cwd,

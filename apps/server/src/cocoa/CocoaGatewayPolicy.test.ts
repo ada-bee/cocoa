@@ -101,6 +101,22 @@ describe("Cocoa gateway provider policy", () => {
     }),
   );
 
+  it.effect("rejects a generated-text selection stored under another provider's key", () => {
+    const settings = validSettings();
+    return expectReason(
+      {
+        ...settings,
+        textGenerationModelSelections: {
+          [ProviderInstanceId.make("macbook_air")]: {
+            instanceId: ProviderInstanceId.make("linux_dev_box"),
+            model: "gpt-5.4",
+          },
+        },
+      },
+      "invalid-model-selection",
+    );
+  });
+
   it.effect("accepts an empty explicit instance map as the online onboarding state", () =>
     Effect.gen(function* () {
       const settings = decodeSettings({});

@@ -15,6 +15,7 @@ import {
   normalizePersistedServerSettingString,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
+  resolveTextGenerationModelSelectionForProvider,
 } from "./serverSettings.ts";
 
 describe("serverSettings helpers", () => {
@@ -142,6 +143,48 @@ describe("serverSettings helpers", () => {
       instanceId: "opencode",
       model: "openai/gpt-5",
     });
+  });
+
+  it("replaces the per-provider text generation map atomically", () => {
+    const firstInstance = ProviderInstanceId.make("codex_one");
+    const secondInstance = ProviderInstanceId.make("codex_two");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelections: {
+        [firstInstance]: createModelSelection(firstInstance, "gpt-one"),
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        textGenerationModelSelections: {
+          [secondInstance]: createModelSelection(secondInstance, "gpt-two"),
+        },
+      }).textGenerationModelSelections,
+    ).toEqual({
+      [secondInstance]: { instanceId: secondInstance, model: "gpt-two" },
+    });
+  });
+
+  it("resolves generated text within the owning provider instance", () => {
+    const owner = ProviderInstanceId.make("codex_remote");
+    const fallback = createModelSelection(owner, "thread-model");
+    const perProvider = createModelSelection(owner, "title-model");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      textGenerationModelSelections: { [owner]: perProvider },
+    };
+
+    expect(resolveTextGenerationModelSelectionForProvider(settings, owner, fallback)).toBe(
+      perProvider,
+    );
+    expect(
+      resolveTextGenerationModelSelectionForProvider(
+        settings,
+        ProviderInstanceId.make("codex_other"),
+        fallback,
+      ),
+    ).toBe(fallback);
   });
 
   it("accepts array-based text generation selection patches", () => {

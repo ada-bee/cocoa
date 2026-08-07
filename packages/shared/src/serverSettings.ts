@@ -3,6 +3,7 @@ import {
   isProviderAvailable,
   type ModelSelection,
   type ProviderDriverKind,
+  type ProviderInstanceId,
   type ServerProvider,
   ServerSettings,
   type ServerSettingsPatch,
@@ -61,6 +62,25 @@ export function resolveSourceControlWriterModelSelection(
   return provider?.enabled === true && isProviderAvailable(provider)
     ? selection
     : settings.textGenerationModelSelection;
+}
+
+/**
+ * Resolve generated-text configuration inside the provider that owns the
+ * operation. Older settings only have the singular selection, so it remains
+ * a fallback when it points at the same instance.
+ */
+export function resolveTextGenerationModelSelectionForProvider(
+  settings: ServerSettings,
+  providerInstanceId: ProviderInstanceId,
+  fallback: ModelSelection,
+): ModelSelection {
+  const configured = settings.textGenerationModelSelections?.[providerInstanceId];
+  if (configured?.instanceId === providerInstanceId) {
+    return configured;
+  }
+  return settings.textGenerationModelSelection.instanceId === providerInstanceId
+    ? settings.textGenerationModelSelection
+    : fallback;
 }
 
 export interface PersistedServerObservabilitySettings {
@@ -186,6 +206,9 @@ export function applyServerSettingsPatch(
       : {}),
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
+      : {}),
+    ...(patch.textGenerationModelSelections !== undefined
+      ? { textGenerationModelSelections: patch.textGenerationModelSelections }
       : {}),
     ...(patch.sourceControlWriterModelSelection !== undefined
       ? { sourceControlWriterModelSelection: patch.sourceControlWriterModelSelection }

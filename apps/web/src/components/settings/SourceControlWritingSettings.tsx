@@ -170,7 +170,7 @@ export function SourceControlWritingSettingsSection() {
 
       <SettingsRow
         title="Source control writer model"
-        description="Optional model override for change descriptions, change request titles and descriptions, and branch or bookmark names. Off uses the global text generation model."
+        description="Optional model override for change descriptions, change request titles and descriptions, and branch or bookmark names."
         control={
           <div className="flex flex-wrap items-center justify-end gap-2">
             {usesDedicatedModel ? (

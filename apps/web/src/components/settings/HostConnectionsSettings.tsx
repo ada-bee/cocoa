@@ -31,6 +31,14 @@ function providerStatusLabel(status: string | undefined): string {
 }
 
 export function HostConnectionsSettings() {
+  return (
+    <SettingsPageContainer>
+      <HostConnectionsSection />
+    </SettingsPageContainer>
+  );
+}
+
+export function HostConnectionsSection() {
   const settings = usePrimarySettings();
   const updateSettings = useUpdatePrimarySettings();
   const providers = useAtomValue(primaryServerProvidersAtom);
@@ -65,67 +73,63 @@ export function HostConnectionsSettings() {
   };
 
   return (
-    <SettingsPageContainer>
-      <SettingsSection
-        {...searchableSetting("remote-environments")}
-        icon={<ServerIcon className="size-4" />}
+    <SettingsSection
+      {...searchableSetting("remote-environments")}
+      icon={<ServerIcon className="size-4" />}
+    >
+      <SettingsRow
+        title="Add host"
+        description="Paste the pairing token printed by cocoa-hostd. The token is saved by this gateway, which remains the only service your clients connect to."
       >
-        <SettingsRow
-          title="Add host"
-          description="Paste the pairing token printed by cocoa-hostd. The token is saved by this gateway, which remains the only service your clients connect to."
-        >
-          <div className="grid gap-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-            <Input
-              aria-label="Cocoa host pairing token"
-              nativeInput
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              placeholder="cocoa-host-v1:…"
-              value={pairingToken}
-              onChange={(event) => setPairingToken(event.currentTarget.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") addHost();
-              }}
-            />
-            <Button disabled={pairingToken.trim().length === 0} onClick={addHost}>
-              Add host
-            </Button>
-          </div>
-          {error ? <p className="pb-2 text-xs text-destructive">{error}</p> : null}
-        </SettingsRow>
-
-        {connections.length === 0 ? (
-          <SettingsRow
-            title="No Cocoa hosts"
-            description="Start cocoa-hostd on a Codex machine, then paste its printed pairing token above."
+        <div className="grid gap-2 py-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <Input
+            aria-label="Cocoa host pairing token"
+            nativeInput
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            placeholder="cocoa-host-v1:…"
+            value={pairingToken}
+            onChange={(event) => setPairingToken(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") addHost();
+            }}
           />
-        ) : (
-          connections.map((connection) => {
-            const provider = providerByInstanceId.get(connection.instanceId);
-            return (
-              <SettingsRow
-                key={connection.instanceId}
-                title={
-                  connection.instance.displayName ?? new URL(connection.transport.url).hostname
-                }
-                description={connection.transport.url}
-                status={providerStatusLabel(provider?.status)}
-                control={
-                  <Button
-                    aria-label={`Remove ${connection.instance.displayName ?? connection.instanceId}`}
-                    size="icon-xs"
-                    variant="ghost"
-                    onClick={() => removeHost(connection.instanceId)}
-                  >
-                    <Trash2Icon />
-                  </Button>
-                }
-              />
-            );
-          })
-        )}
-      </SettingsSection>
-    </SettingsPageContainer>
+          <Button disabled={pairingToken.trim().length === 0} onClick={addHost}>
+            Add host
+          </Button>
+        </div>
+        {error ? <p className="pb-2 text-xs text-destructive">{error}</p> : null}
+      </SettingsRow>
+
+      {connections.length === 0 ? (
+        <SettingsRow
+          title="No Cocoa hosts"
+          description="Start cocoa-hostd on a Codex machine, then paste its printed pairing token above."
+        />
+      ) : (
+        connections.map((connection) => {
+          const provider = providerByInstanceId.get(connection.instanceId);
+          return (
+            <SettingsRow
+              key={connection.instanceId}
+              title={connection.instance.displayName ?? new URL(connection.transport.url).hostname}
+              description={connection.transport.url}
+              status={providerStatusLabel(provider?.status)}
+              control={
+                <Button
+                  aria-label={`Remove ${connection.instance.displayName ?? connection.instanceId}`}
+                  size="icon-xs"
+                  variant="ghost"
+                  onClick={() => removeHost(connection.instanceId)}
+                >
+                  <Trash2Icon />
+                </Button>
+              }
+            />
+          );
+        })
+      )}
+    </SettingsSection>
   );
 }

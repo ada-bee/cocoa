@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   searchableSetting,
   searchSettings,
+  SETTINGS_SECTION_LABELS,
   SETTINGS_SEARCH_ITEMS,
   type SettingsSearchItem,
 } from "./settingsSearch";
@@ -16,7 +17,7 @@ const ITEMS: ReadonlyArray<SettingsSearchItem> = [
   {
     id: "network-access",
     title: "Network access",
-    to: "/settings/connections",
+    to: "/settings/clients",
   },
   {
     id: "providers",
@@ -82,6 +83,23 @@ describe("searchSettings", () => {
       id: "environment-identification",
       to: "/settings/appearance",
       targetId: "appearance",
+    });
+  });
+
+  it("separates provider hosts from frontend clients", () => {
+    expect(SETTINGS_SECTION_LABELS["/settings/clients"]).toBe("Clients");
+    expect(searchSettings("Cocoa hosts")[0]).toMatchObject({
+      id: "remote-environments",
+      to: "/settings/providers",
+    });
+    expect(searchSettings("Clients")[0]).toMatchObject({
+      id: "clients",
+      to: "/settings/clients",
+    });
+    expect(searchSettings("Text generation models")[0]).toMatchObject({
+      id: "text-generation-model",
+      to: "/settings/providers",
+      targetId: "providers",
     });
   });
 });

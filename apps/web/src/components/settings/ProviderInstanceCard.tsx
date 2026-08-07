@@ -314,7 +314,7 @@ interface ProviderInstanceCardProps {
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
   /**
    * Host-backed Cocoa instances are paired and removed only from Settings ->
-   * Connections. Their lifecycle and runtime transport must not acquire a
+   * Providers. Their lifecycle and runtime transport must not acquire a
    * second editing surface in the provider-details card.
    */
   readonly connectionManaged?: boolean;
@@ -333,6 +333,8 @@ interface ProviderInstanceCardProps {
    * omit it.
    */
   readonly headerAction?: ReactNode | undefined;
+  /** Provider-owned generated-text model control, supplied by the settings panel. */
+  readonly textGenerationModelControl?: ReactNode | undefined;
   readonly hiddenModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
   readonly modelOrder: ReadonlyArray<string>;
@@ -376,6 +378,7 @@ export function ProviderInstanceCard({
   connectionManaged = false,
   onDelete,
   headerAction,
+  textGenerationModelControl,
   hiddenModels,
   favoriteModels,
   modelOrder,
@@ -653,6 +656,22 @@ export function ProviderInstanceCard({
                 ) : null}
               </>
             )}
+
+            {textGenerationModelControl ? (
+              <div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-foreground">Text generation model</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Used for generated thread titles owned by this provider.
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                    {textGenerationModelControl}
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             {driverOption !== undefined ? (
               <ProviderModelsSection

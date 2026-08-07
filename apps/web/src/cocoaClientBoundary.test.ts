@@ -6,6 +6,8 @@ import mainSource from "./main.tsx?raw";
 import platformSource from "./connection/platform.ts?raw";
 import sidebarSource from "./components/Sidebar.tsx?raw";
 import commandPaletteSource from "./components/CommandPalette.tsx?raw";
+import sidebarChromeSource from "./components/sidebar/SidebarChrome.tsx?raw";
+import clientsSettingsSource from "./components/settings/ClientsSettings.tsx?raw";
 import hostConnectionsSettingsSource from "./components/settings/HostConnectionsSettings.tsx?raw";
 import addProviderInstanceDialogSource from "./components/settings/AddProviderInstanceDialog.tsx?raw";
 import providerSettingsFormSource from "./components/settings/ProviderSettingsForm.tsx?raw";
@@ -16,6 +18,7 @@ import settingsSearchSource from "./components/settings/settingsSearch.ts?raw";
 import primaryHttpLayerSource from "./environments/primary/httpLayer.ts?raw";
 import runtimeSource from "./lib/runtime.ts?raw";
 import connectionsRouteSource from "./routes/settings.connections.tsx?raw";
+import clientsRouteSource from "./routes/settings.clients.tsx?raw";
 
 const cocoaClientRoots = [
   mainSource,
@@ -23,6 +26,8 @@ const cocoaClientRoots = [
   platformSource,
   sidebarSource,
   commandPaletteSource,
+  sidebarChromeSource,
+  clientsSettingsSource,
   hostConnectionsSettingsSource,
   providerStatusSource,
   settingsSearchSource,
@@ -30,6 +35,7 @@ const cocoaClientRoots = [
   primaryHttpLayerSource,
   runtimeSource,
   connectionsRouteSource,
+  clientsRouteSource,
 ].join("\n");
 
 describe("Cocoa web client boundary", () => {
@@ -58,14 +64,19 @@ describe("Cocoa web client boundary", () => {
     ]) {
       expect(cocoaClientRoots).not.toContain(forbidden);
     }
-    expect(connectionsRouteSource).toContain("HostConnectionsSettings");
+    expect(connectionsRouteSource).toContain('redirect({ to: "/settings/clients"');
+    expect(clientsRouteSource).toContain("ClientsSettings");
+    expect(clientsSettingsSource).toContain("primaryAuthAccessAtom");
     expect(hostConnectionsSettingsSource).toContain("useUpdatePrimarySettings");
     expect(hostConnectionsSettingsSource).not.toContain("new WebSocket");
     expect(settingsPanelsSource).toContain("deriveCocoaHostConnections");
+    expect(settingsPanelsSource).toContain("HostConnectionsSection");
     expect(settingsPanelsSource).not.toContain("AddProviderInstanceDialog");
     expect(providerSettingsFormSource).toContain('definition.value === "codex"');
     expect(settingsPanelsSource).toContain("connectionManaged");
     expect(providerInstanceCardSource).toContain("connectionManaged ? null");
+    expect(sidebarChromeSource).toContain("CocoaWordmark");
+    expect(sidebarChromeSource).not.toContain("T3Wordmark");
   });
 
   it("keeps host pairing as the only Cocoa provider creation surface", () => {
