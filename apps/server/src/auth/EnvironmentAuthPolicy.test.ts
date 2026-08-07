@@ -153,4 +153,43 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
       ),
     ),
   );
+
+  it.effect("advertises no client authentication only for an explicit Cocoa gateway mode", () =>
+    Effect.gen(function* () {
+      const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
+      const descriptor = yield* policy.getDescriptor();
+
+      expect(descriptor.policy).toBe("unsafe-no-auth");
+      expect(descriptor.bootstrapMethods).toEqual([]);
+      expect(descriptor.sessionMethods).toEqual([]);
+    }).pipe(
+      Effect.provide(
+        makeEnvironmentAuthPolicyLayer({
+          runtimeProfile: "cocoa-gateway",
+          clientAuthMode: "none",
+          mode: "web",
+          host: "0.0.0.0",
+        }),
+      ),
+    ),
+  );
+
+  it.effect("does not disable authentication for the legacy runtime profile", () =>
+    Effect.gen(function* () {
+      const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
+      const descriptor = yield* policy.getDescriptor();
+
+      expect(descriptor.policy).toBe("remote-reachable");
+      expect(descriptor.bootstrapMethods).toEqual(["one-time-token"]);
+    }).pipe(
+      Effect.provide(
+        makeEnvironmentAuthPolicyLayer({
+          runtimeProfile: "legacy",
+          clientAuthMode: "none",
+          mode: "web",
+          host: "0.0.0.0",
+        }),
+      ),
+    ),
+  );
 });

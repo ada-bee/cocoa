@@ -11,7 +11,7 @@ import {
   type AuthEnvironmentScope,
   type AuthPairingLink,
   type AuthPairingCredentialResult,
-  type AuthSessionId,
+  AuthSessionId,
   type AuthSessionState,
   type ServerAuthDescriptor,
   type ServerAuthSessionMethod,
@@ -36,6 +36,8 @@ import { verifyRequestDpopProof } from "./dpop.ts";
 
 export const DEFAULT_SESSION_SUBJECT = "cli-issued-session";
 export const INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT = "administrative-bootstrap";
+export const UNSAFE_NO_AUTH_SESSION_SUBJECT = "unsafe-no-auth";
+export const UNSAFE_NO_AUTH_SESSION_ID = AuthSessionId.make("unsafe-no-auth");
 
 export interface IssuedPairingLink {
   readonly id: string;
@@ -560,6 +562,18 @@ export const make = Effect.gen(function* () {
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const crypto = yield* Crypto.Crypto;
   const descriptor = yield* policy.getDescriptor();
+  const clientAuthDisabled = descriptor.policy === "unsafe-no-auth";
+  const unsafeNoAuthSession: AuthenticatedSession = {
+    sessionId: UNSAFE_NO_AUTH_SESSION_ID,
+    subject: UNSAFE_NO_AUTH_SESSION_SUBJECT,
+    method: "bearer-access-token",
+    scopes: AuthAdministrativeScopes,
+  };
+  const unsafeNoAuthSessionState: AuthSessionState = {
+    authenticated: true,
+    auth: descriptor,
+    scopes: AuthAdministrativeScopes,
+  };
 
   const authenticateToken = (
     token: string,
@@ -591,6 +605,9 @@ export const make = Effect.gen(function* () {
   const authenticateRequest = (
     request: HttpServerRequest.HttpServerRequest,
   ): Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError> => {
+    if (clientAuthDisabled) {
+      return Effect.succeed(unsafeNoAuthSession);
+    }
     const cookieToken = request.cookies[sessions.cookieName];
     const bearerToken = parseBearerToken(request);
     const dpopToken = parseDpopToken(request);
@@ -631,25 +648,27 @@ export const make = Effect.gen(function* () {
   };
 
   const getSessionState: EnvironmentAuth["Service"]["getSessionState"] = (request) =>
-    authenticateRequest(request).pipe(
-      Effect.map(
-        (session) =>
-          ({
-            authenticated: true,
-            auth: descriptor,
-            scopes: session.scopes,
-            sessionMethod: session.method,
-            ...(session.expiresAt ? { expiresAt: DateTime.toUtc(session.expiresAt) } : {}),
-          }) satisfies AuthSessionState,
-      ),
-      Effect.catchIf(isServerAuthCredentialError, () =>
-        Effect.succeed({
-          authenticated: false,
-          auth: descriptor,
-        } satisfies AuthSessionState),
-      ),
-      Effect.withSpan("EnvironmentAuth.getSessionState"),
-    );
+    (clientAuthDisabled
+      ? Effect.succeed(unsafeNoAuthSessionState)
+      : authenticateRequest(request).pipe(
+          Effect.map(
+            (session) =>
+              ({
+                authenticated: true,
+                auth: descriptor,
+                scopes: session.scopes,
+                sessionMethod: session.method,
+                ...(session.expiresAt ? { expiresAt: DateTime.toUtc(session.expiresAt) } : {}),
+              }) satisfies AuthSessionState,
+          ),
+          Effect.catchIf(isServerAuthCredentialError, () =>
+            Effect.succeed({
+              authenticated: false,
+              auth: descriptor,
+            } satisfies AuthSessionState),
+          ),
+        )
+    ).pipe(Effect.withSpan("EnvironmentAuth.getSessionState"));
 
   const createBrowserSession: EnvironmentAuth["Service"]["createBrowserSession"] = (
     credential,
@@ -908,29 +927,41 @@ export const make = Effect.gen(function* () {
     );
 
   const issueStartupPairingUrl: EnvironmentAuth["Service"]["issueStartupPairingUrl"] = (baseUrl) =>
-    issueStartupPairingCredential().pipe(
-      Effect.map((issued) => {
-        const url = new URL(baseUrl);
-        url.pathname = "/pair";
-        url.searchParams.delete("token");
-        url.hash = new URLSearchParams([["token", issued.credential]]).toString();
-        return url.toString();
-      }),
-      Effect.withSpan("EnvironmentAuth.issueStartupPairingUrl"),
-    );
+    (clientAuthDisabled
+      ? Effect.succeed(baseUrl)
+      : issueStartupPairingCredential().pipe(
+          Effect.map((issued) => {
+            const url = new URL(baseUrl);
+            url.pathname = "/pair";
+            url.searchParams.delete("token");
+            url.hash = new URLSearchParams([["token", issued.credential]]).toString();
+            return url.toString();
+          }),
+        )
+    ).pipe(Effect.withSpan("EnvironmentAuth.issueStartupPairingUrl"));
 
   const issueWebSocketTicket: EnvironmentAuth["Service"]["issueWebSocketTicket"] = (session) =>
-    sessions.issueWebSocketToken(session.sessionId).pipe(
-      Effect.mapError((cause) => new ServerAuthWebSocketTokenIssueError({ cause })),
-      Effect.map(
-        (issued) =>
-          ({
-            ticket: issued.token,
-            expiresAt: DateTime.toUtc(issued.expiresAt),
-          }) satisfies AuthWebSocketTicketResult,
-      ),
-      Effect.withSpan("EnvironmentAuth.issueWebSocketTicket"),
-    );
+    (clientAuthDisabled
+      ? DateTime.now.pipe(
+          Effect.map(
+            (now) =>
+              ({
+                ticket: "unsafe-no-auth",
+                expiresAt: DateTime.toUtc(DateTime.add(now, { hours: 1 })),
+              }) satisfies AuthWebSocketTicketResult,
+          ),
+        )
+      : sessions.issueWebSocketToken(session.sessionId).pipe(
+          Effect.mapError((cause) => new ServerAuthWebSocketTokenIssueError({ cause })),
+          Effect.map(
+            (issued) =>
+              ({
+                ticket: issued.token,
+                expiresAt: DateTime.toUtc(issued.expiresAt),
+              }) satisfies AuthWebSocketTicketResult,
+          ),
+        )
+    ).pipe(Effect.withSpan("EnvironmentAuth.issueWebSocketTicket"));
 
   const authenticateHttpRequest: EnvironmentAuth["Service"]["authenticateHttpRequest"] = (
     request,
@@ -939,6 +970,9 @@ export const make = Effect.gen(function* () {
 
   const authenticateWebSocketUpgrade: EnvironmentAuth["Service"]["authenticateWebSocketUpgrade"] =
     Effect.fn("EnvironmentAuth.authenticateWebSocketUpgrade")(function* (request) {
+      if (clientAuthDisabled) {
+        return unsafeNoAuthSession;
+      }
       const requestUrl = HttpServerRequest.toURL(request);
       if (Option.isSome(requestUrl)) {
         const websocketTicket = requestUrl.value.searchParams.get(WEBSOCKET_TICKET_QUERY_PARAM);

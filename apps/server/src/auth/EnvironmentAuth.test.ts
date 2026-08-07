@@ -58,6 +58,40 @@ const requestMetadata = {
 };
 
 it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
+  it.effect("grants the Cocoa no-auth principal without a client credential", () =>
+    Effect.gen(function* () {
+      const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+      const request = { cookies: {}, headers: {} } as unknown as Parameters<
+        EnvironmentAuth.EnvironmentAuth["Service"]["authenticateHttpRequest"]
+      >[0];
+
+      const descriptor = yield* serverAuth.getDescriptor();
+      const state = yield* serverAuth.getSessionState(request);
+      const httpSession = yield* serverAuth.authenticateHttpRequest(request);
+      const websocketSession = yield* serverAuth.authenticateWebSocketUpgrade(request);
+      const websocketTicket = yield* serverAuth.issueWebSocketTicket(httpSession);
+
+      expect(descriptor.policy).toBe("unsafe-no-auth");
+      expect(state.authenticated).toBe(true);
+      expect(state.scopes).toEqual(AuthAdministrativeScopes);
+      expect(httpSession).toEqual(websocketSession);
+      expect(httpSession.subject).toBe(EnvironmentAuth.UNSAFE_NO_AUTH_SESSION_SUBJECT);
+      expect(httpSession.scopes).toEqual(AuthAdministrativeScopes);
+      expect(websocketTicket.ticket).toBe("unsafe-no-auth");
+      expect(yield* serverAuth.issueStartupPairingUrl("http://127.0.0.1:3773")).toBe(
+        "http://127.0.0.1:3773",
+      );
+    }).pipe(
+      Effect.provide(
+        makeEnvironmentAuthLayer({
+          runtimeProfile: "cocoa-gateway",
+          clientAuthMode: "none",
+          host: "0.0.0.0",
+        }),
+      ),
+    ),
+  );
+
   it.effect("classifies invalid bootstrap credential failures for the HTTP boundary", () =>
     Effect.sync(() => {
       const error = EnvironmentAuth.toBootstrapExchangeError(

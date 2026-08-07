@@ -63,6 +63,9 @@ export interface CocoaGatewayCliFlags {
 
 const CocoaGatewayEnvConfig = Config.all({
   buildIdentity: Config.string("COCOA_BUILD_IDENTITY").pipe(Config.option),
+  clientAuthMode: Config.schema(ServerConfig.GatewayClientAuthMode, "COCOA_CLIENT_AUTH_MODE").pipe(
+    Config.withDefault("required"),
+  ),
   logLevel: Config.logLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   port: Config.port("T3CODE_PORT").pipe(Config.option),
   host: Config.string("T3CODE_HOST").pipe(Config.option),
@@ -148,6 +151,7 @@ export const resolveCocoaGatewayConfig = (
       otlpServiceName: "cocoa-gateway",
       mode: "web",
       runtimeProfile: "cocoa-gateway",
+      clientAuthMode: env.clientAuthMode,
       buildIdentity: normalizeCocoaBuildIdentity(Option.getOrUndefined(env.buildIdentity)),
       port,
       host: Option.getOrUndefined(first(flags.host, env.host)),
