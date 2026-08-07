@@ -97,6 +97,10 @@ export function connectionCatalogDisplayUrl(entry: ConnectionCatalogEntry): stri
       return Option.isSome(entry.profile) && entry.profile.value._tag === "BearerConnectionProfile"
         ? entry.profile.value.httpBaseUrl
         : null;
+    case "DirectConnectionTarget":
+      return Option.isSome(entry.profile) && entry.profile.value._tag === "DirectConnectionProfile"
+        ? entry.profile.value.httpBaseUrl
+        : null;
   }
 }
 

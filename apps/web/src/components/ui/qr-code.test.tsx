@@ -5,7 +5,7 @@ import { QRCodeSvg } from "./qr-code";
 
 describe("QRCodeSvg", () => {
   it("renders with explicit high-contrast colors by default", () => {
-    const markup = renderToStaticMarkup(<QRCodeSvg value="https://example.com/pair" />);
+    const markup = renderToStaticMarkup(<QRCodeSvg value="https://example.com/value" />);
 
     expect(markup).toContain('fill="#fff"');
     expect(markup).toContain('fill="#000"');
@@ -15,7 +15,7 @@ describe("QRCodeSvg", () => {
   it("supports custom foreground and background colors", () => {
     const markup = renderToStaticMarkup(
       <QRCodeSvg
-        value="https://example.com/pair"
+        value="https://example.com/value"
         foregroundColor="#123456"
         backgroundColor="#abcdef"
       />,

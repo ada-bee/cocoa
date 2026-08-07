@@ -85,7 +85,6 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
       Effect.provide(
         makeEnvironmentAuthLayer({
           runtimeProfile: "cocoa-gateway",
-          clientAuthMode: "none",
           host: "0.0.0.0",
         }),
       ),

@@ -6,8 +6,10 @@ import {
   BearerConnectionCredential,
   BearerConnectionProfile,
   BearerConnectionRegistration,
+  DirectConnectionProfile,
+  DirectConnectionRegistration,
 } from "../connection/catalog.ts";
-import { BearerConnectionTarget } from "../connection/model.ts";
+import { BearerConnectionTarget, DirectConnectionTarget } from "../connection/model.ts";
 import {
   ConnectionCatalogDocument,
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
@@ -32,6 +34,33 @@ const credential = new BearerConnectionCredential({ token: "encrypted-at-rest-by
 const decodeCatalogDocument = Schema.decodeUnknownSync(ConnectionCatalogDocument);
 
 describe("Cocoa connection catalog document", () => {
+  it("persists a direct gateway without client credentials", () => {
+    const directTarget = new DirectConnectionTarget({
+      environmentId,
+      label: "Cocoa",
+      connectionId: "direct:cocoa-gateway",
+    });
+    const directProfile = new DirectConnectionProfile({
+      connectionId: directTarget.connectionId,
+      environmentId,
+      label: directTarget.label,
+      httpBaseUrl: "https://cocoa.example.test",
+      wsBaseUrl: "wss://cocoa.example.test",
+    });
+    const document = registerConnectionInCatalog(
+      EMPTY_CONNECTION_CATALOG_DOCUMENT,
+      new DirectConnectionRegistration({ target: directTarget, profile: directProfile }),
+    );
+
+    expect(document).toEqual({
+      schemaVersion: 1,
+      targets: [directTarget],
+      profiles: [directProfile],
+      credentials: [],
+    });
+    expect(decodeCatalogDocument(document)).toEqual(document);
+  });
+
   it("persists only direct bearer connection metadata", () => {
     const document = registerConnectionInCatalog(
       EMPTY_CONNECTION_CATALOG_DOCUMENT,

@@ -2,7 +2,12 @@ import { EnvironmentId } from "@t3tools/contracts/base-schemas";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { BearerConnectionTarget, PrimaryConnectionTarget, type ConnectionTarget } from "./model.ts";
+import {
+  BearerConnectionTarget,
+  DirectConnectionTarget,
+  PrimaryConnectionTarget,
+  type ConnectionTarget,
+} from "./model.ts";
 
 const ConnectionProfileBase = {
   connectionId: Schema.String,
@@ -19,7 +24,16 @@ export class BearerConnectionProfile extends Schema.TaggedClass<BearerConnection
   },
 ) {}
 
-export const ConnectionProfile = BearerConnectionProfile;
+export class DirectConnectionProfile extends Schema.TaggedClass<DirectConnectionProfile>()(
+  "DirectConnectionProfile",
+  {
+    ...ConnectionProfileBase,
+    httpBaseUrl: Schema.String,
+    wsBaseUrl: Schema.String,
+  },
+) {}
+
+export const ConnectionProfile = Schema.Union([DirectConnectionProfile, BearerConnectionProfile]);
 export type ConnectionProfile = typeof ConnectionProfile.Type;
 
 export interface ConnectionCatalogEntry {
@@ -53,7 +67,18 @@ export class BearerConnectionRegistration extends Schema.TaggedClass<BearerConne
   },
 ) {}
 
-export const ConnectionRegistration = BearerConnectionRegistration;
+export class DirectConnectionRegistration extends Schema.TaggedClass<DirectConnectionRegistration>()(
+  "DirectConnectionRegistration",
+  {
+    target: DirectConnectionTarget,
+    profile: DirectConnectionProfile,
+  },
+) {}
+
+export const ConnectionRegistration = Schema.Union([
+  DirectConnectionRegistration,
+  BearerConnectionRegistration,
+]);
 export type ConnectionRegistration = typeof ConnectionRegistration.Type;
 
 /**
@@ -87,6 +112,11 @@ export function connectionRegistrationCatalogEntry(
         profile: Option.none(),
       };
     case "BearerConnectionRegistration":
+      return {
+        target: registration.target,
+        profile: Option.some(registration.profile),
+      };
+    case "DirectConnectionRegistration":
       return {
         target: registration.target,
         profile: Option.some(registration.profile),

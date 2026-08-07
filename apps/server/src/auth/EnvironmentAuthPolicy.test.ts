@@ -154,7 +154,7 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
     ),
   );
 
-  it.effect("advertises no client authentication only for an explicit Cocoa gateway mode", () =>
+  it.effect("never advertises client authentication for the Cocoa gateway", () =>
     Effect.gen(function* () {
       const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
       const descriptor = yield* policy.getDescriptor();
@@ -166,7 +166,6 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
       Effect.provide(
         makeEnvironmentAuthPolicyLayer({
           runtimeProfile: "cocoa-gateway",
-          clientAuthMode: "none",
           mode: "web",
           host: "0.0.0.0",
         }),
@@ -174,7 +173,7 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
     ),
   );
 
-  it.effect("does not disable authentication for the legacy runtime profile", () =>
+  it.effect("keeps legacy runtime authentication behavior", () =>
     Effect.gen(function* () {
       const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
       const descriptor = yield* policy.getDescriptor();
@@ -185,7 +184,6 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
       Effect.provide(
         makeEnvironmentAuthPolicyLayer({
           runtimeProfile: "legacy",
-          clientAuthMode: "none",
           mode: "web",
           host: "0.0.0.0",
         }),

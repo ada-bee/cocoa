@@ -51,7 +51,6 @@ describe("Cocoa Docker packaging policy", () => {
     expect(compose).toContain("pull_policy: always");
     expect(compose).not.toContain("platform:");
     expect(compose).not.toContain("build:");
-    expect(compose).not.toContain("COCOA_CLIENT_AUTH_MODE: none");
     expect(compose).not.toContain("/var/run/docker.sock");
 
     expect(readRootFile("docker/settings.json")).toBe("{}\n");

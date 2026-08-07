@@ -50,6 +50,7 @@ function connectionIdOf(target: ConnectionTarget): string | null {
     case "PrimaryConnectionTarget":
       return null;
     case "BearerConnectionTarget":
+    case "DirectConnectionTarget":
       return target.connectionId;
   }
 }
@@ -92,6 +93,15 @@ export function registerConnectionInCatalog(
   };
 
   switch (registration._tag) {
+    case "DirectConnectionRegistration":
+      return {
+        ...next,
+        profiles: replaceCatalogValue(
+          next.profiles,
+          (value) => value.connectionId,
+          registration.profile,
+        ),
+      };
     case "BearerConnectionRegistration":
       return {
         ...next,

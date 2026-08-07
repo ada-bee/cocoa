@@ -7,8 +7,8 @@ class T3NativeControlsModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("T3NativeControls")
 
-    Function("getShowcasePairingUrl") {
-      appContext.currentActivity?.intent?.getStringExtra("showcasePairingUrl")
+    Function("getShowcaseGatewayUrls") {
+      appContext.currentActivity?.intent?.getStringExtra("showcaseGatewayUrls")
     }
 
     Function("getShowcaseScene") {

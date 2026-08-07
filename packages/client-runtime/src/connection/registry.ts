@@ -131,9 +131,9 @@ export const make = Effect.gen(function* () {
       persistedTargets,
       Effect.fn("EnvironmentRegistry.loadCatalogEntry")(function* (target) {
         const profile =
-          target._tag === "BearerConnectionTarget"
-            ? yield* profiles.get(target.connectionId)
-            : Option.none();
+          target._tag === "PrimaryConnectionTarget"
+            ? Option.none()
+            : yield* profiles.get(target.connectionId);
         return [
           target.environmentId,
           { target, profile } satisfies ConnectionCatalogEntry,

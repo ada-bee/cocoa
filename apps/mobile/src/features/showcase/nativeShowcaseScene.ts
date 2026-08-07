@@ -6,7 +6,7 @@ export type ShowcaseScene = (typeof SHOWCASE_SCENES)[number];
 export type ShowcaseOrientation = "portrait" | "landscape";
 
 interface NativeShowcaseControls {
-  readonly getShowcasePairingUrl?: () => string | null;
+  readonly getShowcaseGatewayUrls?: () => string | null;
   readonly getShowcaseScene?: () => string | null;
   readonly getShowcaseOrientation?: () => string | null;
   readonly applyShowcaseOrientation?: (orientation: ShowcaseOrientation) => Promise<void>;
@@ -19,9 +19,9 @@ function nativeShowcaseControls(): NativeShowcaseControls | null {
   return requireOptionalNativeModule<NativeShowcaseControls>("T3NativeControls");
 }
 
-export function getNativeShowcasePairingUrls(): ReadonlyArray<string> {
+export function getNativeShowcaseGatewayUrls(): ReadonlyArray<string> {
   try {
-    let raw = nativeShowcaseControls()?.getShowcasePairingUrl?.()?.trim();
+    let raw = nativeShowcaseControls()?.getShowcaseGatewayUrls?.()?.trim();
     if (!raw) return [];
     if (raw.startsWith("json-uri:")) {
       try {

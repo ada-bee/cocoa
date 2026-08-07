@@ -12,10 +12,9 @@ import {
   SHOWCASE_THREADS,
 } from "./mobile-showcase-environment.ts";
 import {
-  encodeAndroidPairingUrls,
+  encodeAndroidGatewayUrls,
   normalizeStorePng,
   parseShowcaseCliArgs,
-  parsePairingCredentialOutput,
   planShowcaseCaptures,
   readPngDimensions,
   readPngMetadata,
@@ -293,16 +292,9 @@ it("seeds a playful multi-environment project spectrum", () => {
   );
 });
 
-it("reads multiline JSON from the pairing CLI", () => {
-  assert.equal(
-    parsePairingCredentialOutput('server log\n{\n  "credential": "PAIR-ME"\n}\n'),
-    "PAIR-ME",
-  );
-});
-
-it("encodes Android pairing URLs without shell-sensitive JSON quotes", () => {
-  const urls = ["http://10.0.2.2:65164/#token=ONE", "http://10.0.2.2:65198/#token=TWO"];
-  const encoded = encodeAndroidPairingUrls(urls);
+it("encodes Android gateway URLs without shell-sensitive JSON quotes", () => {
+  const urls = ["http://10.0.2.2:65164/", "http://10.0.2.2:65198/"];
+  const encoded = encodeAndroidGatewayUrls(urls);
   assert.equal(encoded.startsWith("json-uri:"), true);
   assert.deepStrictEqual(JSON.parse(decodeURIComponent(encoded.slice("json-uri:".length))), urls);
   assert.equal(encoded.includes('"'), false);

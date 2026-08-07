@@ -23,10 +23,25 @@ export class BearerConnectionTarget extends Schema.TaggedClass<BearerConnectionT
   },
 ) {}
 
-export const ConnectionTarget = Schema.Union([PrimaryConnectionTarget, BearerConnectionTarget]);
+export class DirectConnectionTarget extends Schema.TaggedClass<DirectConnectionTarget>()(
+  "DirectConnectionTarget",
+  {
+    ...ConnectionTargetBase,
+    connectionId: Schema.String,
+  },
+) {}
+
+export const ConnectionTarget = Schema.Union([
+  PrimaryConnectionTarget,
+  DirectConnectionTarget,
+  BearerConnectionTarget,
+]);
 export type ConnectionTarget = typeof ConnectionTarget.Type;
 
-export const PersistedConnectionTarget = BearerConnectionTarget;
+export const PersistedConnectionTarget = Schema.Union([
+  DirectConnectionTarget,
+  BearerConnectionTarget,
+]);
 export type PersistedConnectionTarget = typeof PersistedConnectionTarget.Type;
 
 export type ConnectionTargetKind = ConnectionTarget["_tag"];

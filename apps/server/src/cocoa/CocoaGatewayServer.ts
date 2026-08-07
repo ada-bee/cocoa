@@ -1,18 +1,12 @@
-import {
-  EnvironmentAuthHttpApi,
-  EnvironmentMetadataHttpApi,
-  EnvironmentOrchestrationHttpApi,
-  ServerSelfUpdateError,
-} from "@t3tools/contracts";
+import { CocoaGatewayEnvironmentHttpApi, ServerSelfUpdateError } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Types from "effect/Types";
 import { FetchHttpClient, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
-import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
-import { authHttpApiLayer, environmentAuthenticatedAuthLayer } from "../auth/http.ts";
+import { cocoaGatewayAuthHttpApiLayer, environmentAuthenticatedAuthLayer } from "../auth/http.ts";
 import { cocoaClientV1WebSocketRouteLayer } from "../clientApi/v1/Route.ts";
 import * as ServerConfig from "../config.ts";
 import * as GatewayHealth from "../health/GatewayHealth.ts";
@@ -108,15 +102,10 @@ const commandReadinessLayer = HttpRouter.middleware()(
   }),
 ).layer;
 
-class CocoaGatewayEnvironmentHttpApi extends HttpApi.make("environment")
-  .add(EnvironmentMetadataHttpApi)
-  .add(EnvironmentAuthHttpApi)
-  .add(EnvironmentOrchestrationHttpApi) {}
-
 const cocoaGatewayEnvironmentHttpApiLayer = HttpApiBuilder.layer(
   CocoaGatewayEnvironmentHttpApi,
 ).pipe(
-  Layer.provide(authHttpApiLayer),
+  Layer.provide(cocoaGatewayAuthHttpApiLayer),
   Layer.provide(orchestrationHttpApiLayer),
   Layer.provide(serverEnvironmentHttpApiLayer),
   Layer.provide(environmentAuthenticatedAuthLayer),

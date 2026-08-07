@@ -23,10 +23,6 @@ export type RuntimeMode = typeof RuntimeMode.Type;
 export const RuntimeProfile = Schema.Literals(["legacy", "cocoa-gateway"]);
 export type RuntimeProfile = typeof RuntimeProfile.Type;
 
-/** Controls authentication at the client-to-gateway boundary. */
-export const GatewayClientAuthMode = Schema.Literals(["required", "none"]);
-export type GatewayClientAuthMode = typeof GatewayClientAuthMode.Type;
-
 export const StartupPresentation = Schema.Literals(["browser", "headless"]);
 export type StartupPresentation = typeof StartupPresentation.Type;
 
@@ -75,7 +71,6 @@ export class ServerConfig extends Context.Service<
     readonly otlpServiceName: string;
     readonly mode: RuntimeMode;
     readonly runtimeProfile?: RuntimeProfile;
-    readonly clientAuthMode?: GatewayClientAuthMode;
     /** Public build identifier baked into Cocoa deployment artifacts. */
     readonly buildIdentity?: string;
     readonly port: number;

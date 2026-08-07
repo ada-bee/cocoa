@@ -24,14 +24,6 @@ import type {
   CocoaClientV1ThreadStreamItem,
 } from "@t3tools/contracts/client/v1";
 
-export type CocoaClientScope =
-  | "orchestration:read"
-  | "orchestration:operate"
-  | "terminal:operate"
-  | "review:write"
-  | "access:read"
-  | "access:write";
-
 export type CocoaClientConnectionStatus =
   | "connecting"
   | "connected"
@@ -45,19 +37,10 @@ export interface CocoaClientConnectionState {
   readonly error?: unknown;
 }
 
-export type CocoaClientFetch = (
-  input: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
-
 export interface CocoaClientConnectOptions {
   readonly baseUrl: string;
-  readonly credential?: string;
-  readonly bearerToken?: string;
-  readonly fetch?: CocoaClientFetch;
   readonly WebSocket?: typeof globalThis.WebSocket;
   readonly protocolRange?: CocoaClientProtocolRange;
-  readonly scopes?: ReadonlyArray<CocoaClientScope>;
   readonly onConnectionStateChange?: (state: CocoaClientConnectionState) => void;
 }
 

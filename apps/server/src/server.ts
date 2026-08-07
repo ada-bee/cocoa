@@ -1,8 +1,6 @@
 import {
-  EnvironmentAuthHttpApi,
+  CocoaGatewayEnvironmentHttpApi,
   EnvironmentHttpApi,
-  EnvironmentMetadataHttpApi,
-  EnvironmentOrchestrationHttpApi,
   ServerSelfUpdateError,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
@@ -13,7 +11,6 @@ import * as Schedule from "effect/Schedule";
 import type * as Types from "effect/Types";
 import { FetchHttpClient, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
-import * as HttpApi from "effect/unstable/httpapi/HttpApi";
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
@@ -107,7 +104,11 @@ import * as SourceControlRepositoryService from "./sourceControl/SourceControlRe
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import { ObservabilityLive } from "./observability/Layers/Observability.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
-import { authHttpApiLayer, environmentAuthenticatedAuthLayer } from "./auth/http.ts";
+import {
+  authHttpApiLayer,
+  cocoaGatewayAuthHttpApiLayer,
+  environmentAuthenticatedAuthLayer,
+} from "./auth/http.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import {
@@ -576,11 +577,6 @@ const commandReadinessLayer = HttpRouter.middleware()(
   }),
 ).layer;
 
-class CocoaGatewayEnvironmentHttpApi extends HttpApi.make("environment")
-  .add(EnvironmentMetadataHttpApi)
-  .add(EnvironmentAuthHttpApi)
-  .add(EnvironmentOrchestrationHttpApi) {}
-
 const legacyEnvironmentHttpApiLayer = HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
   Layer.provide(authHttpApiLayer),
   Layer.provide(connectHttpApiLayer),
@@ -592,7 +588,7 @@ const legacyEnvironmentHttpApiLayer = HttpApiBuilder.layer(EnvironmentHttpApi).p
 const cocoaGatewayEnvironmentHttpApiLayer = HttpApiBuilder.layer(
   CocoaGatewayEnvironmentHttpApi,
 ).pipe(
-  Layer.provide(authHttpApiLayer),
+  Layer.provide(cocoaGatewayAuthHttpApiLayer),
   Layer.provide(orchestrationHttpApiLayer),
   Layer.provide(serverEnvironmentHttpApiLayer),
   Layer.provide(environmentAuthenticatedAuthLayer),

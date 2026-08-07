@@ -6,10 +6,10 @@ public final class T3NativeControlsModule: Module {
   public func definition() -> ModuleDefinition {
     Name("T3NativeControls")
 
-    Function("getShowcasePairingUrl") {
+    Function("getShowcaseGatewayUrls") {
       let arguments = ProcessInfo.processInfo.arguments
       guard
-        let flagIndex = arguments.firstIndex(of: "--showcasePairingUrl"),
+        let flagIndex = arguments.firstIndex(of: "--showcaseGatewayUrls"),
         arguments.indices.contains(flagIndex + 1)
       else {
         return nil as String?

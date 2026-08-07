@@ -31,7 +31,6 @@ import {
 import { useUiStateStore } from "../uiStateStore";
 import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import { configureClientTracing } from "../observability/clientTracing";
-import { resolveInitialServerAuthGateState } from "../environments/primary";
 import { shellEnvironment } from "../state/shell";
 import { useAtomValue } from "@effect/atom-react";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -48,15 +47,6 @@ import {
 } from "../components/KeybindingsUpdateToast.logic";
 
 export const Route = createRootRoute({
-  beforeLoad: async () => {
-    const authGateState =
-      window.desktopBridge === undefined
-        ? await resolveInitialServerAuthGateState()
-        : ({ status: "authenticated" } as const);
-    return {
-      authGateState,
-    };
-  },
   component: RootRouteView,
   errorComponent: RootRouteErrorView,
   head: () => ({
@@ -66,8 +56,6 @@ export const Route = createRootRoute({
 
 function RootRouteView() {
   const pathname = useLocation({ select: (location) => location.pathname });
-  const { authGateState } = Route.useRouteContext();
-  const primaryEnvironmentAuthenticated = authGateState.status === "authenticated";
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -78,16 +66,7 @@ function RootRouteView() {
     };
   }, [pathname]);
 
-  if (pathname === "/pair" || pathname === "/connect" || pathname.startsWith("/connect/")) {
-    return (
-      <>
-        <DocumentTitleSync />
-        <Outlet />
-      </>
-    );
-  }
-
-  if (authGateState.status !== "authenticated") {
+  if (pathname === "/connect" || pathname.startsWith("/connect/")) {
     return (
       <>
         <DocumentTitleSync />
@@ -109,9 +88,9 @@ function RootRouteView() {
       <AnchoredToastProvider>
         <DocumentTitleSync />
         <GlassAppearanceSync />
-        {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
+        <AuthenticatedTracingBootstrap />
         <SlowRpcRequestToastCoordinator />
-        {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
+        <EventRouter />
         {appShell}
       </AnchoredToastProvider>
     </ToastProvider>

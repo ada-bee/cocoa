@@ -10,18 +10,18 @@ import { connectionAtomRuntime } from "./runtime";
 
 const onboardingScheduler = createAtomCommandScheduler();
 
-export const connectPairingUrl = createRuntimeCommand(connectionAtomRuntime, {
-  label: "mobile:connection:connect-pairing-url",
+export const connectGateway = createRuntimeCommand(connectionAtomRuntime, {
+  label: "mobile:connection:connect-gateway",
   scheduler: onboardingScheduler,
-  concurrency: { mode: "singleFlight", key: (pairingUrl: string) => pairingUrl },
-  execute: (pairingUrl: string) =>
+  concurrency: { mode: "singleFlight", key: (httpBaseUrl: string) => httpBaseUrl },
+  execute: (httpBaseUrl: string) =>
     ConnectionOnboarding.pipe(
-      Effect.flatMap((onboarding) => onboarding.registerPairing({ pairingUrl })),
+      Effect.flatMap((onboarding) => onboarding.registerDirect({ httpBaseUrl })),
     ),
 });
 
-export const updateBearerConnection = createRuntimeCommand(connectionAtomRuntime, {
-  label: "mobile:connection:update-bearer",
+export const updateDirectConnection = createRuntimeCommand(connectionAtomRuntime, {
+  label: "mobile:connection:update-direct",
   scheduler: onboardingScheduler,
   concurrency: {
     mode: "serial",
@@ -31,5 +31,5 @@ export const updateBearerConnection = createRuntimeCommand(connectionAtomRuntime
     readonly environmentId: EnvironmentId;
     readonly label: string;
     readonly httpBaseUrl: string;
-  }) => ConnectionOnboarding.pipe(Effect.flatMap((onboarding) => onboarding.updateBearer(input))),
+  }) => ConnectionOnboarding.pipe(Effect.flatMap((onboarding) => onboarding.updateDirect(input))),
 });

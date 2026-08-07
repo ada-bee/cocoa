@@ -12,7 +12,6 @@ import {
   buildRemoveCocoaHostSettingsPatch,
   deriveCocoaHostConnections,
   parseCocoaHostPairingInput,
-  parseGatewayPairingInput,
 } from "./HostConnectionsSettings.logic";
 
 const transport = (url: string, key: string): CocoaHostTransport =>
@@ -194,37 +193,5 @@ describe("Cocoa host connections", () => {
       model: "writer-model",
       options: [{ id: "reasoningEffort", value: "medium" }],
     });
-  });
-});
-
-describe("Cocoa gateway pairing", () => {
-  it("accepts a full pairing link and keeps credentials out of the saved host", () => {
-    expect(
-      parseGatewayPairingInput({
-        gateway: "https://cocoa.example.test/pair#token=one-time-secret",
-        pairingCode: "",
-      }),
-    ).toEqual({
-      host: "https://cocoa.example.test",
-      pairingCode: "one-time-secret",
-    });
-  });
-
-  it("accepts a gateway URL with a separately entered code", () => {
-    expect(
-      parseGatewayPairingInput({
-        gateway: "192.168.20.99:3773/path",
-        pairingCode: "pair-code",
-      }),
-    ).toEqual({
-      host: "https://192.168.20.99:3773",
-      pairingCode: "pair-code",
-    });
-  });
-
-  it("rejects an input without a one-time code", () => {
-    expect(() =>
-      parseGatewayPairingInput({ gateway: "https://cocoa.example.test", pairingCode: "" }),
-    ).toThrowError("Enter the one-time pairing code from the gateway.");
   });
 });

@@ -11,7 +11,7 @@ import { useWorkspaceState } from "../../state/workspace";
 import {
   applyNativeShowcaseOrientation,
   getNativeShowcaseOrientation,
-  getNativeShowcasePairingUrls,
+  getNativeShowcaseGatewayUrls,
   getNativeShowcaseScene,
   markNativeShowcaseReady,
   type ShowcaseScene,
@@ -39,29 +39,29 @@ function sceneFromPathname(pathname: string): ShowcaseScene | null {
 
 export function ShowcaseCaptureCoordinator(props: { readonly pathname: string }) {
   const navigation = useNavigation();
-  const { connectPairingUrl } = useConnectionController();
+  const { connectGateway } = useConnectionController();
   const workspace = useWorkspaceState();
   const projects = useProjects();
   const threads = useThreadShells();
-  const attemptedPairingRef = useRef(new Set<string>());
+  const attemptedGatewayRef = useRef(new Set<string>());
   const seededPendingTaskIdsRef = useRef(new Set<string>());
-  const [pairingUrls, setPairingUrls] = useState<ReadonlyArray<string>>([]);
+  const [gatewayUrls, setGatewayUrls] = useState<ReadonlyArray<string>>([]);
   const [pendingTasksReady, setPendingTasksReady] = useState(false);
   const [requestedScene, setRequestedScene] = useState<ShowcaseScene | null>(null);
   const [readyScene, setReadyScene] = useState<ShowcaseScene | null>(null);
   const [orientationSettled, setOrientationSettled] = useState(false);
 
   useEffect(() => {
-    if (!SHOWCASE_ENABLED || pairingUrls.length > 0) return;
+    if (!SHOWCASE_ENABLED || gatewayUrls.length > 0) return;
 
-    const readPairingUrls = () => {
-      const values = getNativeShowcasePairingUrls();
-      if (values.length > 0) setPairingUrls(values);
+    const readGatewayUrls = () => {
+      const values = getNativeShowcaseGatewayUrls();
+      if (values.length > 0) setGatewayUrls(values);
     };
-    readPairingUrls();
-    const interval = setInterval(readPairingUrls, 250);
+    readGatewayUrls();
+    const interval = setInterval(readGatewayUrls, 250);
     return () => clearInterval(interval);
-  }, [pairingUrls.length]);
+  }, [gatewayUrls.length]);
 
   useEffect(() => {
     if (!SHOWCASE_ENABLED || orientationSettled) return;
@@ -95,24 +95,24 @@ export function ShowcaseCaptureCoordinator(props: { readonly pathname: string })
   }, []);
 
   useEffect(() => {
-    if (!SHOWCASE_ENABLED || pairingUrls.length === 0) return;
+    if (!SHOWCASE_ENABLED || gatewayUrls.length === 0) return;
     let cancelled = false;
     void (async () => {
       await Promise.all(
-        pairingUrls.map(async (pairingUrl) => {
-          if (cancelled || attemptedPairingRef.current.has(pairingUrl)) return;
-          const paired = await retryShowcaseOperation(
-            async () => AsyncResult.isSuccess(await connectPairingUrl(pairingUrl)),
+        gatewayUrls.map(async (gatewayUrl) => {
+          if (cancelled || attemptedGatewayRef.current.has(gatewayUrl)) return;
+          const connected = await retryShowcaseOperation(
+            async () => AsyncResult.isSuccess(await connectGateway(gatewayUrl)),
             { isCancelled: () => cancelled },
           );
-          if (paired) attemptedPairingRef.current.add(pairingUrl);
+          if (connected) attemptedGatewayRef.current.add(gatewayUrl);
         }),
       );
     })();
     return () => {
       cancelled = true;
     };
-  }, [connectPairingUrl, pairingUrls]);
+  }, [connectGateway, gatewayUrls]);
 
   const scene = sceneFromPathname(props.pathname);
   const hasServerFixture =

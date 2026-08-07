@@ -606,34 +606,8 @@ function startShowcaseServer(
   );
 }
 
-export function parsePairingCredentialOutput(output: string): string {
-  const jsonStart = output.indexOf("{");
-  const jsonEnd = output.lastIndexOf("}");
-  if (jsonStart === -1 || jsonEnd < jsonStart) {
-    throw new Error("Pairing credential command did not return JSON.");
-  }
-  const parsed = JSON.parse(output.slice(jsonStart, jsonEnd + 1)) as {
-    readonly credential?: unknown;
-  };
-  if (typeof parsed.credential !== "string" || parsed.credential.length === 0) {
-    throw new Error("Pairing credential command returned no credential.");
-  }
-  return parsed.credential;
-}
-
-async function issuePairingCredential(baseDir: string): Promise<string> {
-  const output = await commandOutput(
-    "node",
-    ["apps/server/src/bin.ts", "auth", "pairing", "create", "--base-dir", baseDir, "--json"],
-    { env: { ...NodeProcess.env, NO_COLOR: "1" } },
-  );
-  return parsePairingCredentialOutput(output);
-}
-
-function buildShowcasePairingUrl(host: string, port: number, credential: string): string {
-  const url = new URL(`http://${host}:${port}/`);
-  url.hash = new URLSearchParams([["token", credential]]).toString();
-  return url.toString();
+function buildShowcaseGatewayUrl(host: string, port: number): string {
+  return new URL(`http://${host}:${port}/`).toString();
 }
 
 export function showcaseSceneUrl(scene: ShowcaseScene, environmentId: string): string {
@@ -647,8 +621,8 @@ export function showcaseSceneUrl(scene: ShowcaseScene, environmentId: string): s
   return `${APP_SCHEME}://${threadPath}/review`;
 }
 
-export function encodeAndroidPairingUrls(pairingUrls: ReadonlyArray<string>): string {
-  return `json-uri:${encodeURIComponent(JSON.stringify(pairingUrls))}`;
+export function encodeAndroidGatewayUrls(gatewayUrls: ReadonlyArray<string>): string {
+  return `json-uri:${encodeURIComponent(JSON.stringify(gatewayUrls))}`;
 }
 
 function startMetro(config: ShowcaseConfig): NodeChildProcess.ChildProcess {
@@ -880,7 +854,7 @@ async function captureIos(
   outputDirectory: string,
   config: ShowcaseConfig,
   metroHost: string,
-  pairingUrls: ReadonlyArray<string>,
+  gatewayUrls: ReadonlyArray<string>,
   registerCleanup: (cleanup: IosCaptureCleanup) => void,
 ): Promise<void> {
   const { simulator, createdByRunner } = await ensureIosSimulator(capture.device);
@@ -942,8 +916,8 @@ async function captureIos(
       ANDROID_PACKAGE,
       "--initialUrl",
       metroUrl,
-      "--showcasePairingUrl",
-      JSON.stringify(pairingUrls),
+      "--showcaseGatewayUrls",
+      JSON.stringify(gatewayUrls),
       "--showcaseScene",
       firstScene,
       // The app rotates itself; Simulator menu UI scripting needs macOS
@@ -1150,7 +1124,7 @@ async function captureAndroid(
   apkPath: string | null,
   outputDirectory: string,
   config: ShowcaseConfig,
-  pairingUrls: ReadonlyArray<string>,
+  gatewayUrls: ReadonlyArray<string>,
   registerCleanup: (cleanup: AndroidCaptureCleanup) => void,
 ): Promise<void> {
   const running = await runningAndroidAvds();
@@ -1199,8 +1173,8 @@ async function captureAndroid(
     "-d",
     `${APP_SCHEME}://expo-development-client/?url=${metroUrl}`,
     "--es",
-    "showcasePairingUrl",
-    encodeAndroidPairingUrls(pairingUrls),
+    "showcaseGatewayUrls",
+    encodeAndroidGatewayUrls(gatewayUrls),
     "--es",
     "showcaseScene",
     firstScene,
@@ -1348,12 +1322,9 @@ async function main(): Promise<void> {
       : null;
 
     for (const capture of captures) {
-      const pairingHost = capture.device.platform === "ios" ? "127.0.0.1" : "10.0.2.2";
-      const pairingUrls = await Promise.all(
-        showcaseEnvironments.map(async (environment) => {
-          const credential = await issuePairingCredential(environment.baseDir);
-          return buildShowcasePairingUrl(pairingHost, environment.port, credential);
-        }),
+      const gatewayHost = capture.device.platform === "ios" ? "127.0.0.1" : "10.0.2.2";
+      const gatewayUrls = showcaseEnvironments.map((environment) =>
+        buildShowcaseGatewayUrl(gatewayHost, environment.port),
       );
       if (capture.device.platform === "ios") {
         await captureIos(
@@ -1362,7 +1333,7 @@ async function main(): Promise<void> {
           outputDirectory,
           showcaseConfig,
           metroHost,
-          pairingUrls,
+          gatewayUrls,
           (cleanup) => iosCleanups.push(cleanup),
         );
       } else {
@@ -1371,7 +1342,7 @@ async function main(): Promise<void> {
           androidApkPath,
           outputDirectory,
           showcaseConfig,
-          pairingUrls,
+          gatewayUrls,
           (cleanup) => androidCleanups.push(cleanup),
         );
       }

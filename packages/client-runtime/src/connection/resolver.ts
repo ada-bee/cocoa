@@ -9,6 +9,7 @@ import * as ClientCapabilities from "../platform/capabilities.ts";
 import {
   BearerConnectionCredential,
   BearerConnectionProfile,
+  DirectConnectionProfile,
   type ConnectionCatalogEntry,
 } from "./catalog.ts";
 import * as ConnectionCredentialStore from "./credentialStore.ts";
@@ -16,6 +17,7 @@ import { credentialMissingError, environmentMismatchError, profileMissingError }
 import type {
   BearerConnectionTarget,
   ConnectionTarget,
+  DirectConnectionTarget,
   PreparedConnection,
   PrimaryConnectionTarget,
 } from "./model.ts";
@@ -32,9 +34,10 @@ export class ConnectionResolver extends Context.Service<
 
 const isBearerProfile = Schema.is(BearerConnectionProfile);
 const isBearerCredential = Schema.is(BearerConnectionCredential);
+const isDirectProfile = Schema.is(DirectConnectionProfile);
 
-function primarySocketUrl(target: PrimaryConnectionTarget): string {
-  const url = new URL(target.wsBaseUrl);
+function socketUrl(wsBaseUrl: string): string {
+  const url = new URL(wsBaseUrl);
   if (url.pathname === "" || url.pathname === "/") {
     url.pathname = "/ws";
   }
@@ -54,7 +57,7 @@ const makePrimaryBroker = Effect.fn("clientRuntime.connection.broker.makePrimary
         environmentId: target.environmentId,
         label: target.label,
         httpBaseUrl: target.httpBaseUrl,
-        socketUrl: primarySocketUrl(target),
+        socketUrl: socketUrl(target.wsBaseUrl),
         httpAuthorization: null,
         target,
       } satisfies PreparedConnection;
@@ -71,6 +74,36 @@ const makePrimaryBroker = Effect.fn("clientRuntime.connection.broker.makePrimary
       target,
     } satisfies PreparedConnection;
   });
+});
+
+const prepareDirect = Effect.fn("clientRuntime.connection.broker.direct")(function* (
+  entry: ConnectionCatalogEntry & { readonly target: DirectConnectionTarget },
+) {
+  const target = entry.target;
+  const profile = yield* Option.match(entry.profile, {
+    onNone: () => Effect.fail(profileMissingError(target.connectionId)),
+    onSome: Effect.succeed,
+  });
+  if (!isDirectProfile(profile)) {
+    return yield* new ConnectionBlockedError({
+      reason: "configuration",
+      detail: `Connection profile ${target.connectionId} is not a direct connection.`,
+    });
+  }
+  if (profile.environmentId !== target.environmentId) {
+    return yield* environmentMismatchError({
+      expected: target.environmentId,
+      actual: profile.environmentId,
+    });
+  }
+  return {
+    environmentId: target.environmentId,
+    label: target.label,
+    httpBaseUrl: profile.httpBaseUrl,
+    socketUrl: socketUrl(profile.wsBaseUrl),
+    httpAuthorization: null,
+    target,
+  } satisfies PreparedConnection;
 });
 
 const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")(function* () {
@@ -140,6 +173,8 @@ export const make = Effect.gen(function* () {
     switch (target._tag) {
       case "PrimaryConnectionTarget":
         return yield* primary(target);
+      case "DirectConnectionTarget":
+        return yield* prepareDirect({ ...entry, target });
       case "BearerConnectionTarget":
         return yield* bearer({ ...entry, target });
     }

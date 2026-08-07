@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { authClientMetadata, redactPairingCredential } from "./connection";
+import { authClientMetadata } from "./connection";
 
 vi.mock("./runtime", () => ({
   runtime: {
@@ -20,14 +20,5 @@ describe("mobile remote connection records", () => {
       deviceType: "mobile",
       os: "iOS",
     });
-  });
-
-  it("removes one-time bootstrap credentials before persisting pairing URLs", () => {
-    expect(redactPairingCredential("https://desktop.example/#token=bootstrap-token")).toBe(
-      "https://desktop.example/",
-    );
-    expect(redactPairingCredential("https://desktop.example/?token=bootstrap-token")).toBe(
-      "https://desktop.example/",
-    );
   });
 });

@@ -243,16 +243,6 @@ const config: ExpoConfig = {
         },
       },
     ],
-    [
-      "expo-camera",
-      {
-        cameraPermission:
-          "Allow Cocoa to access your camera so you can scan gateway pairing QR codes.",
-        microphonePermission: false,
-        barcodeScannerEnabled: true,
-        recordAudioAndroid: false,
-      },
-    ],
     ["expo-image-picker", { photosPermission: false, microphonePermission: false }],
     [
       "expo-splash-screen",

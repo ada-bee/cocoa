@@ -3,8 +3,8 @@ import { useCallback, useMemo } from "react";
 
 import { environmentCatalog } from "../../connection/catalog";
 import {
-  connectPairingUrl as connectPairingUrlAtom,
-  updateBearerConnection,
+  connectGateway as connectGatewayAtom,
+  updateDirectConnection,
 } from "../../connection/onboarding";
 import { useEnvironments } from "../../state/environments";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -12,10 +12,10 @@ import { projectWorkspaceEnvironment, type WorkspaceEnvironment } from "../../st
 
 export function useConnectionController() {
   const { environments } = useEnvironments();
-  const connectPairingUrlMutation = useAtomCommand(connectPairingUrlAtom, {
+  const connectGatewayMutation = useAtomCommand(connectGatewayAtom, {
     reportFailure: false,
   });
-  const updateBearer = useAtomCommand(updateBearerConnection, { reportFailure: false });
+  const updateDirect = useAtomCommand(updateDirectConnection, { reportFailure: false });
   const removeEnvironmentMutation = useAtomCommand(environmentCatalog.remove, "environment remove");
   const retryEnvironmentMutation = useAtomCommand(environmentCatalog.retryNow, "environment retry");
 
@@ -24,9 +24,9 @@ export function useConnectionController() {
     [environments],
   );
 
-  const connectPairingUrl = useCallback(
-    (pairingUrl: string) => connectPairingUrlMutation(pairingUrl),
-    [connectPairingUrlMutation],
+  const connectGateway = useCallback(
+    (httpBaseUrl: string) => connectGatewayMutation(httpBaseUrl),
+    [connectGatewayMutation],
   );
   const removeEnvironment = useCallback(
     (environmentId: EnvironmentId) => removeEnvironmentMutation(environmentId),
@@ -41,17 +41,17 @@ export function useConnectionController() {
       environmentId: EnvironmentId,
       updates: { readonly label: string; readonly displayUrl: string },
     ) =>
-      updateBearer({
+      updateDirect({
         environmentId,
         label: updates.label,
         httpBaseUrl: updates.displayUrl,
       }),
-    [updateBearer],
+    [updateDirect],
   );
 
   return {
     connectedEnvironments,
-    connectPairingUrl,
+    connectGateway,
     removeEnvironment,
     retryEnvironment,
     updateEnvironment,

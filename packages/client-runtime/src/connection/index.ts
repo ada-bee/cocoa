@@ -10,13 +10,13 @@ export * from "./errors.ts";
 export * as Connection from "./layer.ts";
 export * from "./model.ts";
 export {
-  type BearerConnectionUpdateInput,
   ConnectionOnboarding,
-  type PairingConnectionInput,
-  prepareBearerConnectionUpdate,
-  preparePairingRegistration,
-  registerPairingConnection,
-  updateBearerConnection,
+  type DirectConnectionInput,
+  type DirectConnectionUpdateInput,
+  prepareDirectConnectionUpdate,
+  prepareDirectRegistration,
+  registerDirectConnection,
+  updateDirectConnection,
 } from "./onboarding.ts";
 export * from "./presentation.ts";
 export * as ProfileStore from "./profileStore.ts";

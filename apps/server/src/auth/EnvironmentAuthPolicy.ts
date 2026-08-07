@@ -16,8 +16,7 @@ export class EnvironmentAuthPolicy extends Context.Service<
 export const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const isRemoteReachable = isRemoteReachableHost(config.host);
-  const clientAuthDisabled =
-    config.runtimeProfile === "cocoa-gateway" && config.clientAuthMode === "none";
+  const clientAuthDisabled = config.runtimeProfile === "cocoa-gateway";
 
   const policy = clientAuthDisabled
     ? "unsafe-no-auth"

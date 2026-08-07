@@ -9,8 +9,6 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-import { getPairingTokenFromUrl } from "../../pairingUrl";
-
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const DEFAULT_CODEX_INSTANCE = ProviderInstanceId.make("codex");
 const isCocoaHostTransport = Schema.is(CocoaHostTransport);
@@ -19,31 +17,6 @@ export interface CocoaHostConnection {
   readonly instanceId: ProviderInstanceId;
   readonly instance: ProviderInstanceConfig;
   readonly transport: CocoaHostTransport;
-}
-
-export interface GatewayPairingInput {
-  readonly host: string;
-  readonly pairingCode: string;
-}
-
-export function parseGatewayPairingInput(input: {
-  readonly gateway: string;
-  readonly pairingCode: string;
-}): GatewayPairingInput {
-  const rawGateway = input.gateway.trim();
-  if (!rawGateway) throw new Error("Enter a Cocoa gateway URL or pairing link.");
-  const value = /^[a-zA-Z][a-zA-Z\d+.-]*:\/\//u.test(rawGateway)
-    ? rawGateway
-    : `https://${rawGateway}`;
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("Enter a valid Cocoa gateway URL.");
-  }
-  const pairingCode = getPairingTokenFromUrl(url)?.trim() || input.pairingCode.trim();
-  if (!pairingCode) throw new Error("Enter the one-time pairing code from the gateway.");
-  return { host: url.origin, pairingCode };
 }
 
 export function parseCocoaHostPairingInput(input: string): CocoaHostTransport {

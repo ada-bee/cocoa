@@ -9,6 +9,7 @@ import {
   AuthReviewWriteScope,
   AuthTerminalOperateScope,
   EnvironmentAuthInvalidError,
+  CocoaGatewayEnvironmentHttpApi,
   type EnvironmentAuthInvalidReason,
   EnvironmentHttpApi,
   EnvironmentInternalError,
@@ -427,6 +428,43 @@ export const authHttpApiLayer = HttpApiBuilder.group(
           },
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
             failEnvironmentInternal("client_session_revoke_failed", error),
+          ),
+        ),
+      );
+  }),
+);
+
+export const cocoaGatewayAuthHttpApiLayer = HttpApiBuilder.group(
+  CocoaGatewayEnvironmentHttpApi,
+  "auth",
+  Effect.fnUntraced(function* (handlers) {
+    const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+
+    return handlers
+      .handle(
+        "session",
+        Effect.fn("cocoa.environment.auth.session")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            return yield* serverAuth.getSessionState(request);
+          },
+          Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
+            failEnvironmentInternal("internal_error", error),
+          ),
+        ),
+      )
+      .handle(
+        "webSocketTicket",
+        Effect.fn("cocoa.environment.auth.webSocketTicket")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            const session = yield* EnvironmentAuthenticatedPrincipal;
+            yield* appendCredentialResponseHeaders;
+            return yield* serverAuth.issueWebSocketTicket(session);
+          },
+          Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
+            failEnvironmentInternal("websocket_ticket_issuance_failed", error),
           ),
         ),
       );

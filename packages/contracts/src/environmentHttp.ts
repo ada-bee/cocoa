@@ -453,6 +453,23 @@ export class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+/** Cocoa gateways have no client-pairing or token-exchange surface. */
+export class CocoaGatewayAuthHttpApi extends HttpApiGroup.make("auth")
+  .add(
+    HttpApiEndpoint.get("session", "/api/auth/session", {
+      headers: OptionalBearerHeaders,
+      success: AuthSessionState,
+      error: [EnvironmentInternalError],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("webSocketTicket", "/api/auth/websocket-ticket", {
+      headers: OptionalBearerHeaders,
+      success: AuthWebSocketTicketResult,
+      error: [EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 const EnvironmentOrchestrationThreadSnapshotParams = Schema.Struct({
   threadId: ThreadId,
 });
@@ -563,3 +580,8 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentOrchestrationHttpApi)
   .add(EnvironmentConnectHttpApi) {}
+
+export class CocoaGatewayEnvironmentHttpApi extends HttpApi.make("environment")
+  .add(EnvironmentMetadataHttpApi)
+  .add(CocoaGatewayAuthHttpApi)
+  .add(EnvironmentOrchestrationHttpApi) {}
