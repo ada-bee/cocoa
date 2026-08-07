@@ -27,8 +27,10 @@ import {
   type VcsStatusLocalResult,
   type VcsStatusRemoteResult,
   VcsStatusResult,
+  isProviderAvailable,
   ModelSelection,
   type ProviderInstanceId,
+  type ServerSettings as ServerSettingsContract,
   type SourceControlWritingStyleSettings,
 } from "@t3tools/contracts";
 import {
@@ -52,6 +54,7 @@ import {
   repositoryConventionsTextGenerationPolicy,
 } from "../textGeneration/TextGenerationPresets.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as ProviderRegistry from "../provider/Services/ProviderRegistry.ts";
 import { extractBranchNameFromRemoteRef } from "./remoteRefs.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -71,7 +74,8 @@ export interface GitRunStackedActionOptions {
 }
 
 interface SourceControlTextGenerationSettings {
-  readonly modelSelection: ModelSelection;
+  readonly settings: ServerSettingsContract;
+  readonly target: GitRunStackedActionInput["target"];
   readonly style: SourceControlWritingStyleSettings;
 }
 
@@ -579,6 +583,7 @@ export const make = Effect.gen(function* () {
   const gitCore = yield* GitVcsDriver.GitVcsDriver;
   const sourceControlProviders = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   const textGeneration = yield* TextGeneration.TextGeneration;
+  const projection = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   const crypto = yield* Crypto.Crypto;
@@ -589,15 +594,98 @@ export const make = Effect.gen(function* () {
   const requirePersistedProjectTextGenerationOwner = (
     operation: "generateCommitMessage" | "generatePrContent",
     cwd: string,
+    target: GitRunStackedActionInput["target"],
   ): Effect.Effect<ProviderInstanceId, GitManagerError> =>
-    Effect.fail(
-      new GitManagerError({
+    target === undefined
+      ? Effect.fail(
+          new GitManagerError({
+            operation,
+            cwd,
+            detail:
+              "Automatic Git text generation is unavailable until this action is bound to a persisted project target.",
+          }),
+        )
+      : projection.getProjectShellById(target.projectId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new GitManagerError({
+                operation,
+                cwd,
+                detail: "Failed to resolve the persisted project that owns this Git action.",
+                cause,
+              }),
+          ),
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                Effect.fail(
+                  new GitManagerError({
+                    operation,
+                    cwd,
+                    detail: "The persisted project that owns this Git action was not found.",
+                  }),
+                ),
+              onSome: (project) => Effect.succeed(project.providerInstanceId),
+            }),
+          ),
+        );
+
+  const resolveSourceControlTextGeneration = Effect.fn(
+    "GitManager.resolveSourceControlTextGeneration",
+  )(function* (
+    operation: "generateCommitMessage" | "generatePrContent",
+    cwd: string,
+    sourceControlSettings: SourceControlTextGenerationSettings,
+  ) {
+    const providerInstanceId = yield* requirePersistedProjectTextGenerationOwner(
+      operation,
+      cwd,
+      sourceControlSettings.target,
+    );
+    const providers = yield* providerRegistry.getProviders;
+    const owner = providers.find((provider) => provider.instanceId === providerInstanceId);
+    if (owner === undefined || owner.enabled !== true || !isProviderAvailable(owner)) {
+      return yield* new GitManagerError({
         operation,
         cwd,
-        detail:
-          "Automatic Git text generation is unavailable until this action is bound to a persisted project target.",
-      }),
-    );
+        detail: `The provider instance '${providerInstanceId}' that owns this project is unavailable for Git text generation.`,
+      });
+    }
+
+    const settings = sourceControlSettings.settings;
+    const scopedTextGeneration = settings.textGenerationModelSelections?.[providerInstanceId];
+    const singularTextGeneration = settings.textGenerationModelSelection;
+    const configuredDefault = settings.defaultModelSelections?.[providerInstanceId];
+    const advertisedModel =
+      owner.models.find((model) => model.isDefault === true) ?? owner.models[0];
+    const fallback: ModelSelection | undefined =
+      scopedTextGeneration?.instanceId === providerInstanceId
+        ? scopedTextGeneration
+        : singularTextGeneration.instanceId === providerInstanceId
+          ? singularTextGeneration
+          : configuredDefault?.instanceId === providerInstanceId
+            ? configuredDefault
+            : advertisedModel === undefined
+              ? undefined
+              : { instanceId: providerInstanceId, model: advertisedModel.slug };
+    if (fallback === undefined) {
+      return yield* new GitManagerError({
+        operation,
+        cwd,
+        detail: `Configure a text-generation model for provider instance '${providerInstanceId}' before generating Git text.`,
+      });
+    }
+
+    return {
+      providerInstanceId,
+      modelSelection: ServerSettings.resolveSourceControlWriterModelSelection(
+        settings,
+        providerInstanceId,
+        fallback,
+        providers,
+      ),
+    };
+  });
 
   const readRecentCommitSubjects = (cwd: string) =>
     gitCore
@@ -1423,9 +1511,10 @@ export const make = Effect.gen(function* () {
         };
       }
 
-      const providerInstanceId = yield* requirePersistedProjectTextGenerationOwner(
+      const { providerInstanceId, modelSelection } = yield* resolveSourceControlTextGeneration(
         "generateCommitMessage",
         input.cwd,
+        input.settings,
       );
 
       const policy = yield* resolveStylePolicy(input.cwd, input.settings.style);
@@ -1439,7 +1528,7 @@ export const make = Effect.gen(function* () {
           stagedPatch: limitContext(context.stagedPatch, 50_000),
           ...(input.includeBranch ? { includeBranch: true } : {}),
           ...(policy ? { policy } : {}),
-          modelSelection: input.settings.modelSelection,
+          modelSelection,
         })
         .pipe(Effect.map((result) => sanitizeCommitMessage(result)));
 
@@ -1614,9 +1703,10 @@ export const make = Effect.gen(function* () {
       label: `Generating ${terms.shortLabel} content...`,
     });
     const baseRangeRef = yield* resolveBaseRangeRef(cwd, baseBranch);
-    const providerInstanceId = yield* requirePersistedProjectTextGenerationOwner(
+    const { providerInstanceId, modelSelection } = yield* resolveSourceControlTextGeneration(
       "generatePrContent",
       cwd,
+      settings,
     );
     const rangeContext = yield* gitCore.readRangeContext(cwd, baseRangeRef);
     const policy = yield* resolveStylePolicy(cwd, settings.style);
@@ -1635,7 +1725,7 @@ export const make = Effect.gen(function* () {
       diffPatch: limitContext(rangeContext.diffPatch, 60_000),
       ...(changeRequestTemplate ? { changeRequestTemplate } : {}),
       ...(policy ? { policy } : {}),
-      modelSelection: settings.modelSelection,
+      modelSelection,
     });
 
     const bodyFile = path.join(
@@ -2017,22 +2107,11 @@ export const make = Effect.gen(function* () {
         let preResolvedCommitSuggestion: CommitAndBranchSuggestion | undefined = undefined;
 
         const textGenerationSettings = yield* serverSettingsService.getSettings.pipe(
-          Effect.flatMap((settings) =>
-            settings.sourceControlWriterModelSelection === null
-              ? Effect.succeed({
-                  modelSelection: settings.textGenerationModelSelection,
-                  style: settings.sourceControlWritingStyle,
-                })
-              : providerRegistry.getProviders.pipe(
-                  Effect.map((providers) => ({
-                    modelSelection: ServerSettings.resolveSourceControlWriterModelSelection(
-                      settings,
-                      providers,
-                    ),
-                    style: settings.sourceControlWritingStyle,
-                  })),
-                ),
-          ),
+          Effect.map((settings) => ({
+            settings,
+            target: input.target,
+            style: settings.sourceControlWritingStyle,
+          })),
           Effect.mapError(
             (cause) =>
               new GitManagerError({

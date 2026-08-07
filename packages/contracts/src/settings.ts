@@ -14,6 +14,7 @@ import { CodexWorkspaceHelperConfig } from "./codexWorkspaceHelper.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 import { ProviderHostConfigMap } from "./providerHost.ts";
+import { SourceControlHostingHostDefaults } from "./sourceControl.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -599,6 +600,24 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
+/** Hosting integrations that can be disabled centrally in server settings. */
+export const SourceControlHostingProviderKind = Schema.Literals([
+  "github",
+  "gitlab",
+  "bitbucket",
+  "azure-devops",
+]);
+export type SourceControlHostingProviderKind = typeof SourceControlHostingProviderKind.Type;
+
+const SourceControlDisabledHostingProviders = Schema.Array(SourceControlHostingProviderKind).check(
+  Schema.isMaxLength(4),
+  Schema.makeFilter(
+    (providers) =>
+      new Set(providers).size === providers.length ||
+      "Disabled source-control hosting providers must be unique.",
+  ),
+);
+
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -653,6 +672,17 @@ export const ServerSettings = Schema.Struct({
   ),
   sourceControlWriterModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  // Instance-scoped writer selections. The singular field above remains the
+  // compatibility fallback for settings written before this map existed.
+  sourceControlWriterModelSelections: Schema.Record(ProviderInstanceId, ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  sourceControlDisabledHostingProviders: SourceControlDisabledHostingProviders.pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  sourceControlHostingHostDefaults: SourceControlHostingHostDefaults.pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
   ),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
@@ -813,6 +843,13 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  // Whole-map replacement, matching providerInstances patch semantics.
+  sourceControlWriterModelSelections: Schema.optionalKey(
+    Schema.Record(ProviderInstanceId, ModelSelection),
+  ),
+  // Whole-list replacement so removing a disabled provider is durable.
+  sourceControlDisabledHostingProviders: Schema.optionalKey(SourceControlDisabledHostingProviders),
+  sourceControlHostingHostDefaults: Schema.optionalKey(SourceControlHostingHostDefaults),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(TrimmedString),

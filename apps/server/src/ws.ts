@@ -108,7 +108,10 @@ import * as RepositoryReadService from "./project/RepositoryReadService.ts";
 import * as RepositoryMutationService from "./project/RepositoryMutationService.ts";
 import * as RepositoryGitActionService from "./project/RepositoryGitActionService.ts";
 import * as RepositoryStatusBroadcaster from "./project/RepositoryStatusBroadcaster.ts";
-import { discoverProviderSourceControl } from "./sourceControl/ProviderSourceControlDiscovery.ts";
+import {
+  discoverProviderSourceControl,
+  resolveProviderSourceControlInstanceId,
+} from "./sourceControl/ProviderSourceControlDiscovery.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironmentService.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -1695,7 +1698,23 @@ const makeWsRpcLayer = (
                 return { versionControlSystems: [], sourceControlProviders: [] };
               }
               const instances = yield* providerInstanceRegistry.value.listInstances;
-              const providerInstanceId = input.providerInstanceId ?? instances[0]?.instanceId;
+              const configuredInstances = yield* serverSettings.getSettings.pipe(
+                Effect.map((settings) => settings.providerInstances),
+                Effect.orElseSucceed(() => ({})),
+              );
+              const providerInstanceId = resolveProviderSourceControlInstanceId({
+                ...(input.providerInstanceId === undefined
+                  ? {}
+                  : { requestedInstanceId: input.providerInstanceId }),
+                ...(input.providerHostId === undefined
+                  ? {}
+                  : { requestedHostId: input.providerHostId }),
+                configuredInstances,
+                liveInstances: instances.map((instance) => ({
+                  instanceId: instance.instanceId,
+                  vcsAvailable: instance.vcs !== undefined,
+                })),
+              });
               if (providerInstanceId === undefined) {
                 return { versionControlSystems: [], sourceControlProviders: [] };
               }

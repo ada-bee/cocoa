@@ -1,6 +1,7 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
+  ProviderHostId,
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -166,6 +167,30 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("replaces scoped source-control writer selections and disabled providers atomically", () => {
+    const firstOwner = ProviderInstanceId.make("codex_one");
+    const secondOwner = ProviderInstanceId.make("codex_two");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlDisabledHostingProviders: ["github", "gitlab"] as const,
+      sourceControlWriterModelSelections: {
+        [firstOwner]: createModelSelection(firstOwner, "gpt-one"),
+      },
+    };
+
+    const next = applyServerSettingsPatch(current, {
+      sourceControlDisabledHostingProviders: ["bitbucket"],
+      sourceControlWriterModelSelections: {
+        [secondOwner]: createModelSelection(secondOwner, "gpt-two"),
+      },
+    });
+
+    expect(next.sourceControlDisabledHostingProviders).toEqual(["bitbucket"]);
+    expect(next.sourceControlWriterModelSelections).toEqual({
+      [secondOwner]: { instanceId: secondOwner, model: "gpt-two" },
+    });
+  });
+
   it("replaces the per-provider default model map atomically", () => {
     const firstInstance = ProviderInstanceId.make("codex_one");
     const secondInstance = ProviderInstanceId.make("codex_two");
@@ -269,6 +294,62 @@ describe("serverSettings helpers", () => {
     ).toBeNull();
   });
 
+  it("resolves source-control writer selections per owner before the legacy fallback", () => {
+    const owner = ProviderInstanceId.make("codex_owner");
+    const otherOwner = ProviderInstanceId.make("codex_other_owner");
+    const scopedSelection = createModelSelection(owner, "gpt-scoped");
+    const legacySelection = createModelSelection(owner, "gpt-legacy");
+    const ownerFallback = createModelSelection(owner, "gpt-owner-fallback");
+    const otherFallback = createModelSelection(otherOwner, "gpt-other-fallback");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [owner]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+        [otherOwner]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+      },
+      sourceControlWriterModelSelection: legacySelection,
+      sourceControlWriterModelSelections: { [owner]: scopedSelection },
+    };
+
+    expect(resolveSourceControlWriterModelSelection(settings, owner, ownerFallback)).toBe(
+      scopedSelection,
+    );
+    expect(
+      resolveSourceControlWriterModelSelection(
+        { ...settings, sourceControlWriterModelSelections: {} },
+        owner,
+        ownerFallback,
+      ),
+    ).toBe(legacySelection);
+    expect(resolveSourceControlWriterModelSelection(settings, owner, ownerFallback, [])).toBe(
+      ownerFallback,
+    );
+    expect(resolveSourceControlWriterModelSelection(settings, otherOwner, otherFallback)).toBe(
+      otherFallback,
+    );
+    expect(resolveSourceControlWriterModelSelection(settings)).toBe(legacySelection);
+  });
+
+  it("never crosses provider instances when resolving a scoped writer", () => {
+    const owner = ProviderInstanceId.make("codex_owner");
+    const foreign = ProviderInstanceId.make("codex_foreign");
+    const fallback = createModelSelection(owner, "owner-default");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [owner]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+        [foreign]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+      },
+      textGenerationModelSelection: createModelSelection(foreign, "foreign-global"),
+      sourceControlWriterModelSelection: createModelSelection(foreign, "foreign-legacy-writer"),
+      sourceControlWriterModelSelections: {
+        [owner]: createModelSelection(foreign, "foreign-scoped-writer"),
+      },
+    };
+
+    expect(resolveSourceControlWriterModelSelection(settings, owner, fallback)).toBe(fallback);
+  });
+
   it("falls back from a disabled source control writer provider without clearing its selection", () => {
     const instanceId = ProviderInstanceId.make("codex_writer");
     const sourceControlWriterModelSelection = createModelSelection(instanceId, "gpt-5.4-mini");
@@ -360,6 +441,39 @@ describe("serverSettings helpers", () => {
       enabled: true,
       config: { homePath: "~/.codex" },
     });
+  });
+
+  it("replaces provider host maps so removed hosts are not deep-merged back", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerHosts: {
+        old_host: {
+          transport: {
+            type: "cocoa-host" as const,
+            url: "wss://old.example.test/",
+            key: "old-key",
+          },
+        },
+      },
+    };
+
+    expect(applyServerSettingsPatch(current, { providerHosts: {} }).providerHosts).toEqual({});
+  });
+
+  it("replaces centralized hosting defaults so individual services can be cleared", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlHostingHostDefaults: {
+        github: ProviderHostId.make("shared_host"),
+        gitlab: ProviderHostId.make("shared_host"),
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        sourceControlHostingHostDefaults: { gitlab: ProviderHostId.make("shared_host") },
+      }).sourceControlHostingHostDefaults,
+    ).toEqual({ gitlab: "shared_host" });
   });
 
   it("stores background activity profiles as a versioned object and syncs legacy aliases", () => {

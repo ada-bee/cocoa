@@ -232,6 +232,93 @@ describe("ServerSettings.providerHosts", () => {
   });
 });
 
+describe("ServerSettings.sourceControlHostingHostDefaults", () => {
+  it("defaults to no centralized hosting-operation hosts", () => {
+    expect(DEFAULT_SERVER_SETTINGS.sourceControlHostingHostDefaults).toEqual({});
+    expect(decodeServerSettings({}).sourceControlHostingHostDefaults).toEqual({});
+  });
+
+  it("decodes and patches per-service provider hosts", () => {
+    const decoded = decodeServerSettings({
+      sourceControlHostingHostDefaults: {
+        github: "mac_studio",
+        gitlab: "linux_build",
+      },
+    });
+    expect(decoded.sourceControlHostingHostDefaults).toEqual({
+      github: ProviderHostId.make("mac_studio"),
+      gitlab: ProviderHostId.make("linux_build"),
+    });
+
+    expect(
+      decodeServerSettingsPatch({
+        sourceControlHostingHostDefaults: { github: "linux_build" },
+      }).sourceControlHostingHostDefaults,
+    ).toEqual({ github: ProviderHostId.make("linux_build") });
+  });
+});
+
+describe("ServerSettings source-control provider overrides", () => {
+  it("defaults legacy settings to no disabled hosting providers or scoped writer selections", () => {
+    const settings = decodeServerSettings({});
+
+    expect(settings.sourceControlDisabledHostingProviders).toEqual([]);
+    expect(settings.sourceControlWriterModelSelections).toEqual({});
+    expect(DEFAULT_SERVER_SETTINGS.sourceControlDisabledHostingProviders).toEqual([]);
+    expect(DEFAULT_SERVER_SETTINGS.sourceControlWriterModelSelections).toEqual({});
+  });
+
+  it("decodes provider-scoped writer selections and disabled hosting providers", () => {
+    const settings = decodeServerSettings({
+      sourceControlDisabledHostingProviders: ["github", "azure-devops"],
+      sourceControlWriterModelSelections: {
+        codex_work: {
+          instanceId: "codex_writer",
+          model: "gpt-5.4-mini",
+        },
+      },
+    });
+
+    expect(settings.sourceControlDisabledHostingProviders).toEqual(["github", "azure-devops"]);
+    expect(settings.sourceControlWriterModelSelections).toEqual({
+      [ProviderInstanceId.make("codex_work")]: {
+        instanceId: ProviderInstanceId.make("codex_writer"),
+        model: "gpt-5.4-mini",
+      },
+    });
+  });
+
+  it("keeps both patch fields optional and validates their closed boundaries", () => {
+    const empty = decodeServerSettingsPatch({});
+    expect(empty.sourceControlDisabledHostingProviders).toBeUndefined();
+    expect(empty.sourceControlWriterModelSelections).toBeUndefined();
+
+    const patch = decodeServerSettingsPatch({
+      sourceControlDisabledHostingProviders: [],
+      sourceControlWriterModelSelections: {},
+    });
+    expect(patch.sourceControlDisabledHostingProviders).toEqual([]);
+    expect(patch.sourceControlWriterModelSelections).toEqual({});
+
+    expect(() =>
+      decodeServerSettingsPatch({ sourceControlDisabledHostingProviders: ["gitea"] }),
+    ).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({ sourceControlDisabledHostingProviders: ["unknown"] }),
+    ).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({ sourceControlDisabledHostingProviders: ["github", "github"] }),
+    ).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({
+        sourceControlWriterModelSelections: {
+          "invalid provider id": { instanceId: "codex", model: "gpt-5" },
+        },
+      }),
+    ).toThrow();
+  });
+});
+
 describe("ServerSettings worktree defaults", () => {
   it("defaults start-from-origin on for legacy configs", () => {
     expect(decodeServerSettings({}).newWorktreesStartFromOrigin).toBe(true);

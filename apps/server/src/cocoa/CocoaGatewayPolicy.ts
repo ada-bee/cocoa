@@ -50,6 +50,7 @@ export const CocoaGatewayPolicyFailureReason = Schema.Literals([
   "local-process-field",
   "missing-provider-config",
   "missing-provider-host",
+  "missing-source-control-host",
   "missing-endpoint-transport",
   "missing-server-url",
   "provider-environment-forbidden",
@@ -206,6 +207,14 @@ export const resolveCocoaGatewayProviderInstanceConfigMap = Effect.fn(
 ): Effect.fn.Return<ProviderInstanceConfigMap, CocoaGatewayPolicyError> {
   const instances = Object.entries(settings.providerInstances);
 
+  for (const [provider, hostId] of Object.entries(settings.sourceControlHostingHostDefaults)) {
+    if (settings.providerHosts[hostId] === undefined) {
+      return yield* fail("missing-source-control-host", {
+        detail: `${provider} API operations reference provider host '${hostId}', which is not configured.`,
+      });
+    }
+  }
+
   const enabledByInstanceId = new Map<string, boolean>();
   for (const [providerInstanceId, instance] of instances) {
     const validated = yield* validateInstance(providerInstanceId, instance, settings);
@@ -257,6 +266,22 @@ export const resolveCocoaGatewayProviderInstanceConfigMap = Effect.fn(
       yield* validateModelSelection(
         "sourceControlWriterModelSelection",
         settings.sourceControlWriterModelSelection.instanceId,
+        enabledByInstanceId,
+      );
+    }
+    for (const [providerInstanceId, selection] of Object.entries(
+      settings.sourceControlWriterModelSelections,
+    )) {
+      if (selection.instanceId !== providerInstanceId) {
+        return yield* fail("invalid-model-selection", {
+          providerInstanceId,
+          detail:
+            "sourceControlWriterModelSelections entries must reference the provider instance that owns the map key.",
+        });
+      }
+      yield* validateModelSelection(
+        "sourceControlWriterModelSelections",
+        selection.instanceId,
         enabledByInstanceId,
       );
     }

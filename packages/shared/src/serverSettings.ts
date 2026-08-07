@@ -49,7 +49,41 @@ export function isModelSelectionProviderEnabled(
 export function resolveSourceControlWriterModelSelection(
   settings: ServerSettings,
   providers?: ReadonlyArray<ServerProvider>,
+): ModelSelection;
+export function resolveSourceControlWriterModelSelection(
+  settings: ServerSettings,
+  providerInstanceId: ProviderInstanceId,
+  fallback: ModelSelection,
+  providers?: ReadonlyArray<ServerProvider>,
+): ModelSelection;
+export function resolveSourceControlWriterModelSelection(
+  settings: ServerSettings,
+  providerInstanceIdOrProviders?: ProviderInstanceId | ReadonlyArray<ServerProvider>,
+  scopedFallbackOrProviders?: ModelSelection | ReadonlyArray<ServerProvider>,
+  scopedProviderList?: ReadonlyArray<ServerProvider>,
 ): ModelSelection {
+  const providerInstanceId =
+    typeof providerInstanceIdOrProviders === "string" ? providerInstanceIdOrProviders : undefined;
+  const providers =
+    typeof providerInstanceIdOrProviders === "string"
+      ? scopedProviderList
+      : providerInstanceIdOrProviders;
+  if (providerInstanceId !== undefined) {
+    const fallback = scopedFallbackOrProviders as ModelSelection;
+    const scopedSelection = settings.sourceControlWriterModelSelections[providerInstanceId];
+    const legacySelection = settings.sourceControlWriterModelSelection;
+    const selection =
+      scopedSelection?.instanceId === providerInstanceId
+        ? scopedSelection
+        : legacySelection?.instanceId === providerInstanceId
+          ? legacySelection
+          : null;
+    if (!selection || !isModelSelectionProviderEnabled(settings, selection)) return fallback;
+    if (providers === undefined) return selection;
+    const provider = providers.find((candidate) => candidate.instanceId === selection.instanceId);
+    return provider?.enabled === true && isProviderAvailable(provider) ? selection : fallback;
+  }
+
   const selection = settings.sourceControlWriterModelSelection;
   if (!selection || !isModelSelectionProviderEnabled(settings, selection)) {
     return settings.textGenerationModelSelection;
@@ -207,14 +241,26 @@ export function applyServerSettingsPatch(
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
       : {}),
+    ...(patch.providerHosts !== undefined ? { providerHosts: patch.providerHosts } : {}),
+    ...(patch.sourceControlHostingHostDefaults !== undefined
+      ? { sourceControlHostingHostDefaults: patch.sourceControlHostingHostDefaults }
+      : {}),
     ...(patch.defaultModelSelections !== undefined
       ? { defaultModelSelections: patch.defaultModelSelections }
       : {}),
     ...(patch.textGenerationModelSelections !== undefined
       ? { textGenerationModelSelections: patch.textGenerationModelSelections }
       : {}),
+    ...(patch.sourceControlWriterModelSelections !== undefined
+      ? { sourceControlWriterModelSelections: patch.sourceControlWriterModelSelections }
+      : {}),
     ...(patch.sourceControlWriterModelSelection !== undefined
       ? { sourceControlWriterModelSelection: patch.sourceControlWriterModelSelection }
+      : {}),
+    ...(patch.sourceControlDisabledHostingProviders !== undefined
+      ? {
+          sourceControlDisabledHostingProviders: patch.sourceControlDisabledHostingProviders,
+        }
       : {}),
     ...(automaticGitFetchInterval !== undefined ? { automaticGitFetchInterval } : {}),
     ...(providerHealthRefreshInterval !== undefined ? { providerHealthRefreshInterval } : {}),

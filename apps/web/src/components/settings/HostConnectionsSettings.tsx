@@ -29,10 +29,12 @@ import { TraitsPicker } from "../chat/TraitsPicker";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
+import { Switch } from "../ui/switch";
 import { toastManager } from "../ui/toast";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
 import { ProviderHostIconGlyph } from "../ProviderHostIcon";
 import { ProviderHostAppearanceDialog } from "./ProviderHostAppearanceDialog";
+import { ProviderHostSourceControlSettings } from "./SourceControlSettings";
 import { getDriverOption } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
 import {
@@ -44,9 +46,11 @@ import {
 import {
   buildAddCocoaHostSettingsPatch,
   buildRemoveCocoaHostSettingsPatch,
+  buildSourceControlWriterModelSelectionPatch,
   buildUpdateCocoaHostSettingsPatch,
   deriveCocoaHostConnections,
   parseCocoaHostPairingInput,
+  readSourceControlWriterModelSelection,
 } from "./HostConnectionsSettings.logic";
 
 function providerStatusLabel(status: string | undefined): string {
@@ -228,6 +232,65 @@ export function HostConnectionsSection() {
           }
         />
       </>
+    );
+  };
+
+  const sourceControlWriterControl = (
+    instanceId: ProviderInstanceId,
+    providerName: string,
+    hostName: string,
+  ) => {
+    const storedSelection = readSourceControlWriterModelSelection(settings, instanceId);
+    const selection = resolveAppModelSelectionStateForInstance(
+      instanceId,
+      settings,
+      providers,
+      storedSelection ?? undefined,
+    );
+    const enabled = storedSelection !== null;
+    return (
+      <div
+        key={instanceId}
+        className="flex flex-col gap-3 rounded-lg border border-border/50 bg-background/40 p-3 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-foreground">{providerName} writer model</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Generate commit messages and change request text for {hostName} with this provider.
+          </p>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {enabled && selection
+            ? modelControl(
+                instanceId,
+                selection,
+                (nextSelection) =>
+                  updateSettings(
+                    buildSourceControlWriterModelSelectionPatch(
+                      settings,
+                      instanceId,
+                      nextSelection,
+                    ),
+                  ),
+                `${providerName} source control writer model`,
+              )
+            : null}
+          <Switch
+            checked={enabled}
+            disabled={!enabled && selection === null}
+            onCheckedChange={(checked) =>
+              updateSettings(
+                buildSourceControlWriterModelSelectionPatch(
+                  settings,
+                  instanceId,
+                  checked ? selection : null,
+                ),
+              )
+            }
+            aria-label={`Enable ${providerName} source control writer`}
+          />
+        </div>
+      </div>
     );
   };
 
@@ -475,6 +538,36 @@ export function HostConnectionsSection() {
                           : "No Codex provider is bound to this host."}
                       </p>
                     )}
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Source Control
+                    </p>
+                    <ProviderHostSourceControlSettings
+                      hostId={hostId}
+                      providerInstanceId={connection.bindings[0]?.instanceId ?? null}
+                    />
+                    {connection.bindings.length > 0 ? (
+                      <div className="mt-3 space-y-2">
+                        {connection.bindings.map(
+                          ({ instanceId: writerInstanceId, instance: writerInstance }) => {
+                            const writerProvider = providerByInstanceId.get(writerInstanceId);
+                            const writerProviderName =
+                              writerInstance.displayName ??
+                              (writerProvider
+                                ? (PROVIDER_DISPLAY_NAMES[writerProvider.driver] ??
+                                  String(writerProvider.driver))
+                                : String(writerInstanceId));
+                            return sourceControlWriterControl(
+                              writerInstanceId,
+                              writerProviderName,
+                              hostName,
+                            );
+                          },
+                        )}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ) : null}

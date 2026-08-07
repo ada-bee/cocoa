@@ -1,5 +1,7 @@
 import {
   type OrchestrationProjectShell,
+  type ProviderHostId,
+  type ProviderInstanceConfigMap,
   type ProviderInstanceId,
   type SourceControlDiscoveryResult,
   type SourceControlProviderDiscoveryItem,
@@ -22,6 +24,31 @@ const PROVIDER_INSTALL_HINTS: Readonly<Record<SourceControlProviderKind, string>
   "azure-devops": "Install and authenticate the Azure CLI on this provider host.",
   unknown: "Configure the repository hosting integration on this provider host.",
 };
+
+export function resolveProviderSourceControlInstanceId(input: {
+  readonly requestedInstanceId?: ProviderInstanceId;
+  readonly requestedHostId?: ProviderHostId;
+  readonly configuredInstances: ProviderInstanceConfigMap;
+  readonly liveInstances: ReadonlyArray<{
+    readonly instanceId: ProviderInstanceId;
+    readonly vcsAvailable: boolean;
+  }>;
+}): ProviderInstanceId | undefined {
+  if (input.requestedInstanceId !== undefined) return input.requestedInstanceId;
+  if (input.requestedHostId === undefined) return input.liveInstances[0]?.instanceId;
+
+  const configuredIds = new Set(
+    Object.entries(input.configuredInstances)
+      .filter(([, configured]) => configured.hostId === input.requestedHostId)
+      .map(([instanceId]) => instanceId),
+  );
+  return (
+    input.liveInstances.find(
+      (instance) => configuredIds.has(instance.instanceId) && instance.vcsAvailable,
+    )?.instanceId ??
+    input.liveInstances.find((instance) => configuredIds.has(instance.instanceId))?.instanceId
+  );
+}
 
 function detectedProviderItem(kind: SourceControlProviderKind): SourceControlProviderDiscoveryItem {
   return {

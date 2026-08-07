@@ -1,6 +1,7 @@
 import {
   CocoaHostTransport,
   decodeCocoaHostPairingToken,
+  type ModelSelection,
   ProviderDriverKind,
   type ProviderHostConfig,
   ProviderHostId,
@@ -14,6 +15,11 @@ import * as Schema from "effect/Schema";
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const DEFAULT_CODEX_INSTANCE = ProviderInstanceId.make("codex");
 const isCocoaHostTransport = Schema.is(CocoaHostTransport);
+
+type SourceControlWriterModelSettings = Pick<
+  ServerSettings,
+  "sourceControlWriterModelSelection" | "sourceControlWriterModelSelections"
+>;
 
 export interface CocoaHostConnection {
   readonly hostId: ProviderHostId;
@@ -42,6 +48,39 @@ function readConfig(value: unknown): Readonly<Record<string, unknown>> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Readonly<Record<string, unknown>>)
     : {};
+}
+
+export function readSourceControlWriterModelSelection(
+  settings: SourceControlWriterModelSettings,
+  instanceId: ProviderInstanceId,
+): ModelSelection | null {
+  const selection =
+    settings.sourceControlWriterModelSelections[instanceId] ??
+    (settings.sourceControlWriterModelSelection?.instanceId === instanceId
+      ? settings.sourceControlWriterModelSelection
+      : null);
+  return selection === null ? null : { ...selection, instanceId };
+}
+
+export function buildSourceControlWriterModelSelectionPatch(
+  settings: SourceControlWriterModelSettings,
+  instanceId: ProviderInstanceId,
+  selection: ModelSelection | null,
+): ServerSettingsPatch {
+  const sourceControlWriterModelSelections = {
+    ...settings.sourceControlWriterModelSelections,
+  };
+  if (selection === null) {
+    delete sourceControlWriterModelSelections[instanceId];
+  } else {
+    sourceControlWriterModelSelections[instanceId] = { ...selection, instanceId };
+  }
+  return {
+    sourceControlWriterModelSelections,
+    ...(selection === null && settings.sourceControlWriterModelSelection?.instanceId === instanceId
+      ? { sourceControlWriterModelSelection: null }
+      : {}),
+  };
 }
 
 export function deriveCocoaHostConnections(
@@ -232,8 +271,10 @@ export function buildRemoveCocoaHostSettingsPatch(
     ServerSettings,
     | "providerInstances"
     | "providerHosts"
+    | "sourceControlHostingHostDefaults"
     | "defaultModelSelections"
     | "sourceControlWriterModelSelection"
+    | "sourceControlWriterModelSelections"
     | "textGenerationModelSelection"
     | "textGenerationModelSelections"
   >,
@@ -241,22 +282,41 @@ export function buildRemoveCocoaHostSettingsPatch(
 ): ServerSettingsPatch {
   const providerHosts = { ...settings.providerHosts };
   if (!connection.legacy) delete providerHosts[connection.hostId];
+  const sourceControlHostingHostDefaults = {
+    ...settings.sourceControlHostingHostDefaults,
+  };
+  for (const [kind, hostId] of Object.entries(sourceControlHostingHostDefaults)) {
+    if (hostId === connection.hostId) {
+      delete sourceControlHostingHostDefaults[
+        kind as keyof typeof sourceControlHostingHostDefaults
+      ];
+    }
+  }
   const providerInstances = { ...settings.providerInstances };
   const removedInstanceIds = new Set(connection.bindings.map(({ instanceId }) => instanceId));
   for (const instanceId of removedInstanceIds) delete providerInstances[instanceId];
   const textGenerationModelSelections = { ...settings.textGenerationModelSelections };
+  const sourceControlWriterModelSelections = {
+    ...settings.sourceControlWriterModelSelections,
+  };
   const defaultModelSelections = { ...settings.defaultModelSelections };
   let removedDefaultSelection = false;
   let removedPerProviderSelection = false;
+  let removedSourceControlWriterSelection = false;
   for (const instanceId of removedInstanceIds) {
     removedDefaultSelection ||= defaultModelSelections[instanceId] !== undefined;
     removedPerProviderSelection ||= textGenerationModelSelections[instanceId] !== undefined;
     delete defaultModelSelections[instanceId];
     delete textGenerationModelSelections[instanceId];
+    removedSourceControlWriterSelection ||=
+      sourceControlWriterModelSelections[instanceId] !== undefined;
+    delete sourceControlWriterModelSelections[instanceId];
   }
   const perProviderPatch = {
     ...(removedPerProviderSelection ? { textGenerationModelSelections } : {}),
     ...(removedDefaultSelection ? { defaultModelSelections } : {}),
+    ...(removedSourceControlWriterSelection ? { sourceControlWriterModelSelections } : {}),
+    sourceControlHostingHostDefaults,
   };
   const remainingHost = deriveCocoaHostConnections({ providerHosts, providerInstances }).find(
     (candidate) => candidate.codexBinding !== null,

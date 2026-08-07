@@ -1,8 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ProjectId, ProviderInstanceId, type OrchestrationProjectShell } from "@t3tools/contracts";
+import {
+  ProjectId,
+  ProviderDriverKind,
+  ProviderHostId,
+  ProviderInstanceId,
+  type OrchestrationProjectShell,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 
-import { discoverProviderSourceControl } from "./ProviderSourceControlDiscovery.ts";
+import {
+  discoverProviderSourceControl,
+  resolveProviderSourceControlInstanceId,
+} from "./ProviderSourceControlDiscovery.ts";
 
 const ALFREDO = ProviderInstanceId.make("alfredo");
 const RAVIOLI = ProviderInstanceId.make("ravioli");
@@ -37,6 +46,30 @@ function project(input: {
 }
 
 describe("provider source control discovery", () => {
+  it("resolves every host kind through a live VCS-capable binding, not a Codex-only slot", () => {
+    const alfredoHost = ProviderHostId.make("alfredo_host");
+    const opencode = ProviderInstanceId.make("opencode_alfredo");
+    const selected = resolveProviderSourceControlInstanceId({
+      requestedHostId: alfredoHost,
+      configuredInstances: {
+        [ALFREDO]: {
+          driver: ProviderDriverKind.make("codex"),
+          hostId: alfredoHost,
+        },
+        [opencode]: {
+          driver: ProviderDriverKind.make("opencode"),
+          hostId: alfredoHost,
+        },
+      },
+      liveInstances: [
+        { instanceId: ALFREDO, vcsAvailable: false },
+        { instanceId: opencode, vcsAvailable: true },
+      ],
+    });
+
+    expect(selected).toBe(opencode);
+  });
+
   it("scopes Git and detected repository hosts to one provider host", () => {
     const result = discoverProviderSourceControl({
       providerInstanceId: ALFREDO,

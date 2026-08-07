@@ -11,9 +11,11 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildAddCocoaHostSettingsPatch,
   buildRemoveCocoaHostSettingsPatch,
+  buildSourceControlWriterModelSelectionPatch,
   buildUpdateCocoaHostSettingsPatch,
   deriveCocoaHostConnections,
   parseCocoaHostPairingInput,
+  readSourceControlWriterModelSelection,
 } from "./HostConnectionsSettings.logic";
 
 const transport = (url: string, key: string): CocoaHostTransport =>
@@ -190,7 +192,7 @@ describe("Cocoa host connections", () => {
       providerHosts: {
         ...first.providerHosts!,
         host_one_example_test: {
-          ...first.providerHosts?.[ProviderHostId.make("host_one_example_test")]!,
+          ...first.providerHosts![ProviderHostId.make("host_one_example_test")]!,
           icon: "database" as const,
           accentColor: "#7c3aed",
         },
@@ -316,6 +318,62 @@ describe("Cocoa host connections", () => {
     });
   });
 
+  it("reads a legacy source control writer only for its matching provider instance", () => {
+    const owner = ProviderInstanceId.make("codex_owner");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlWriterModelSelection: {
+        instanceId: owner,
+        model: "legacy-writer",
+      },
+    };
+
+    expect(readSourceControlWriterModelSelection(settings, owner)).toEqual({
+      instanceId: "codex_owner",
+      model: "legacy-writer",
+    });
+    expect(
+      readSourceControlWriterModelSelection(settings, ProviderInstanceId.make("codex_other")),
+    ).toBeNull();
+  });
+
+  it("writes and removes only one provider's source control writer selection", () => {
+    const owner = ProviderInstanceId.make("codex_owner");
+    const other = ProviderInstanceId.make("codex_other");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlWriterModelSelections: {
+        [other]: { instanceId: other, model: "other-writer" },
+      },
+    };
+    const enabled = buildSourceControlWriterModelSelectionPatch(settings, owner, {
+      instanceId: other,
+      model: "owner-writer",
+      options: [{ id: "reasoningEffort", value: "high" }],
+    });
+
+    expect(enabled.sourceControlWriterModelSelections).toEqual({
+      codex_other: { instanceId: "codex_other", model: "other-writer" },
+      codex_owner: {
+        instanceId: "codex_owner",
+        model: "owner-writer",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      },
+    });
+
+    const disabled = buildSourceControlWriterModelSelectionPatch(
+      {
+        ...settings,
+        sourceControlWriterModelSelections: enabled.sourceControlWriterModelSelections!,
+      },
+      owner,
+      null,
+    );
+    expect(disabled.sourceControlWriterModelSelections).toEqual({
+      codex_other: { instanceId: "codex_other", model: "other-writer" },
+    });
+  });
+
   it("derives canonical hosts first and keeps a narrow legacy endpoint fallback", () => {
     const settings = {
       ...DEFAULT_SERVER_SETTINGS,
@@ -393,6 +451,17 @@ describe("Cocoa host connections", () => {
         opencode: { driver: ProviderDriverKind.make("opencode"), hostId },
         remote_other: { driver: ProviderDriverKind.make("codex") },
       },
+      sourceControlWriterModelSelections: {
+        codex: { instanceId: ProviderInstanceId.make("codex"), model: "codex-writer" },
+        opencode: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "opencode-writer",
+        },
+        remote_other: {
+          instanceId: ProviderInstanceId.make("remote_other"),
+          model: "other-writer",
+        },
+      },
     };
     const [connection] = deriveCocoaHostConnections(settings);
     const patch = buildRemoveCocoaHostSettingsPatch(settings, connection!);
@@ -401,5 +470,32 @@ describe("Cocoa host connections", () => {
     expect(patch.providerInstances).toEqual({
       remote_other: { driver: "codex" },
     });
+    expect(patch.sourceControlWriterModelSelections).toEqual({
+      remote_other: { instanceId: "remote_other", model: "other-writer" },
+    });
+  });
+
+  it("clears centralized hosting defaults that reference a deleted host", () => {
+    const hostId = ProviderHostId.make("shared_host");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerHosts: {
+        shared_host: { transport: transport("wss://shared.test/socket", "key") },
+        api_host: { transport: transport("wss://api.test/socket", "api-key") },
+      },
+      providerInstances: {
+        codex: { driver: ProviderDriverKind.make("codex"), hostId },
+      },
+      sourceControlHostingHostDefaults: {
+        github: hostId,
+        gitlab: ProviderHostId.make("api_host"),
+      },
+    };
+    const connection = deriveCocoaHostConnections(settings).find(
+      (candidate) => candidate.hostId === hostId,
+    );
+    const patch = buildRemoveCocoaHostSettingsPatch(settings, connection!);
+
+    expect(patch.sourceControlHostingHostDefaults).toEqual({ gitlab: "api_host" });
   });
 });
