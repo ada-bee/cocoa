@@ -28,6 +28,26 @@ export function getDesktopUrl(isDevelopment: boolean): string {
   return `${getDesktopOrigin(isDevelopment)}/`;
 }
 
+/** Electron requires custom scheme privileges before the app becomes ready. */
+export function registerDesktopSchemePrivilegesSync(): void {
+  Electron.protocol.registerSchemesAsPrivileged([
+    {
+      scheme: DESKTOP_PRODUCTION_SCHEME,
+      privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+    },
+    {
+      scheme: DESKTOP_DEVELOPMENT_SCHEME,
+      privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
+    },
+  ]);
+}
+
+export const layerSchemePrivileges = Layer.effectDiscard(
+  Effect.sync(registerDesktopSchemePrivilegesSync).pipe(
+    Effect.withSpan("desktop.electron.protocol.registerSchemePrivileges"),
+  ),
+);
+
 export class ElectronProtocolRegistrationError extends Schema.TaggedErrorClass<ElectronProtocolRegistrationError>()(
   "ElectronProtocolRegistrationError",
   {

@@ -265,6 +265,23 @@ export const PickFolderOptionsSchema = Schema.Struct({
 });
 
 /**
+ * A file returned by the desktop theme-file picker. Oversized files carry an
+ * empty text so the renderer can reject them by size without the main
+ * process ever holding their contents.
+ */
+export interface PickedThemeFile {
+  name: string;
+  size: number;
+  text: string;
+}
+
+export const PickedThemeFileSchema = Schema.Struct({
+  name: Schema.String,
+  size: Schema.Number,
+  text: Schema.String,
+});
+
+/**
  * Renderer-facing snapshot of a desktop preview tab. Mirrors the main-process
  * PreviewTabState shape but uses serialisable primitives only.
  */
@@ -678,6 +695,20 @@ export const PreviewAnnotationPayloadSchema: Schema.Codec<PreviewAnnotationPaylo
   },
 );
 
+export type PreviewAnnotationSubmission = "attach" | "send";
+export const PreviewAnnotationSubmissionSchema: Schema.Codec<PreviewAnnotationSubmission> =
+  Schema.Literals(["attach", "send"]);
+
+export interface PreviewAnnotationSubmissionResult {
+  annotation: PreviewAnnotationPayload;
+  submission: PreviewAnnotationSubmission;
+}
+export const PreviewAnnotationSubmissionResultSchema: Schema.Codec<PreviewAnnotationSubmissionResult> =
+  Schema.Struct({
+    annotation: PreviewAnnotationPayloadSchema,
+    submission: PreviewAnnotationSubmissionSchema,
+  });
+
 export const DesktopPreviewTabInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
 });
@@ -753,6 +784,12 @@ export interface DesktopBridge {
   setConnectionCatalog: (catalog: string) => Promise<boolean>;
   clearConnectionCatalog: () => Promise<void>;
   pickFolder: (options?: PickFolderOptions) => Promise<string | null>;
+  /**
+   * Multi-select JSON file picker that opens in the VS Code extensions
+   * directory when one exists. Optional: older desktop builds lack it, and
+   * web callers fall back to a plain file input.
+   */
+  pickThemeFiles?: () => Promise<readonly PickedThemeFile[] | null>;
   confirm: (message: string) => Promise<boolean>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
   showContextMenu: <T extends string>(
@@ -810,10 +847,11 @@ export interface DesktopPreviewBridge {
   setAnnotationTheme: (theme: DesktopPreviewAnnotationTheme) => Promise<void>;
   /**
    * Activate the in-page element picker for the given tab. Resolves with
-   * the picked payload, or `null` when the user cancels (Escape / nav). The
-   * promise rejects if the picker can't be activated (no webview, etc.).
+   * the picked annotation and its attach/send intent, or `null` when the
+   * user cancels (Escape / nav). The promise rejects if the picker can't be
+   * activated (no webview, etc.).
    */
-  pickElement: (tabId: string) => Promise<PreviewAnnotationPayload | null>;
+  pickElement: (tabId: string) => Promise<PreviewAnnotationSubmissionResult | null>;
   /** Cancel an in-flight preview annotation session. */
   cancelPickElement: (tabId: string) => Promise<void>;
   captureScreenshot: (tabId: string) => Promise<DesktopPreviewScreenshotArtifact>;

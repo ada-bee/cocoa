@@ -232,6 +232,22 @@ export function compactTraceAttributes(
   return Object.fromEntries(entries);
 }
 
+function formatTraceExit(exit: Exit.Exit<unknown, unknown>): EffectTraceRecord["exit"] {
+  if (ExitRuntime.isSuccess(exit)) {
+    return { _tag: "Success" };
+  }
+  if (Cause.hasInterruptsOnly(exit.cause)) {
+    return {
+      _tag: "Interrupted",
+      cause: Cause.pretty(exit.cause),
+    };
+  }
+  return {
+    _tag: "Failure",
+    cause: Cause.pretty(exit.cause),
+  };
+}
+
 const TRACE_ATTRIBUTE_MAX_LENGTH = 500;
 const TRACE_ATTRIBUTE_TRUNCATED_LENGTH = 200;
 const TRACE_ATTRIBUTE_TRUNCATION_SUFFIX = "…[truncated]";
@@ -285,22 +301,6 @@ export function truncateTraceAttributes(attributes: TraceAttributes): TraceAttri
     truncated[key] = next;
   }
   return truncated ?? attributes;
-}
-
-function formatTraceExit(exit: Exit.Exit<unknown, unknown>): EffectTraceRecord["exit"] {
-  if (ExitRuntime.isSuccess(exit)) {
-    return { _tag: "Success" };
-  }
-  if (Cause.hasInterruptsOnly(exit.cause)) {
-    return {
-      _tag: "Interrupted",
-      cause: Cause.pretty(exit.cause),
-    };
-  }
-  return {
-    _tag: "Failure",
-    cause: Cause.pretty(exit.cause),
-  };
 }
 
 export function spanToTraceRecord(span: SerializableSpan): EffectTraceRecord {

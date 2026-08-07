@@ -29,6 +29,7 @@ import {
   type OrchestrationShellStreamItem,
   type OrchestrationThreadStreamItem,
   OrchestrationGetFullThreadDiffError,
+  OrchestrationGetWorkflowScriptError,
   OrchestrationGetSnapshotError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
@@ -1090,6 +1091,17 @@ const makeWsRpcLayer = (
                   "dispatch-command-rpc",
                 ),
               ),
+            ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getWorkflowScript]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getWorkflowScript,
+            Effect.fail(
+              new OrchestrationGetWorkflowScriptError({
+                reason: "root-unavailable",
+                scriptPath: input.scriptPath,
+              }),
             ),
             { "rpc.aggregate": "orchestration" },
           ),

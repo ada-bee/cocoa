@@ -17,6 +17,7 @@ export interface NewThreadModelTarget {
 export function resolveNewThreadModelSelection(input: {
   readonly carriedSelection: ModelSelection | null;
   readonly targetProject: NewThreadModelTarget;
+  readonly hostDefaultSelection?: ModelSelection | undefined;
   readonly targetEnvironmentProviders: ReadonlyArray<ServerProvider>;
 }): ModelSelection | null {
   if (input.carriedSelection?.instanceId === input.targetProject.providerInstanceId) {
@@ -27,11 +28,15 @@ export function resolveNewThreadModelSelection(input: {
     input.targetProject.defaultModelSelection?.instanceId === input.targetProject.providerInstanceId
       ? input.targetProject.defaultModelSelection
       : null;
+  const hostDefault =
+    input.hostDefaultSelection?.instanceId === input.targetProject.providerInstanceId
+      ? input.hostDefaultSelection
+      : null;
   const targetProvider = input.targetEnvironmentProviders.find(
     (provider) => provider.instanceId === input.targetProject.providerInstanceId,
   );
 
   return targetProvider
-    ? resolveDefaultProviderModelSelection([targetProvider], projectDefault)
-    : projectDefault;
+    ? resolveDefaultProviderModelSelection([targetProvider], projectDefault ?? hostDefault)
+    : (projectDefault ?? hostDefault);
 }

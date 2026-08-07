@@ -49,18 +49,21 @@ import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts"
 import { CheckpointRevertReactor } from "../src/orchestration/Services/CheckpointRevertReactor.ts";
 import { CheckpointRevertGate } from "../src/orchestration/Services/CheckpointRevertGate.ts";
 import { ProviderCommandReactor } from "../src/orchestration/Services/ProviderCommandReactor.ts";
-import { ProviderRuntimeIngestionService } from "../src/orchestration/Services/ProviderRuntimeIngestion.ts";
 import * as RepositoryIdentityResolver from "../src/project/RepositoryIdentityResolver.ts";
 import * as ProjectWorkspace from "../src/project/ProjectWorkspace.ts";
 import { OrchestrationEngineLive } from "../src/orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers/ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "../src/orchestration/Layers/ProjectionSnapshotQuery.ts";
+import * as ThreadBackgroundLiveness from "../src/orchestration/ThreadBackgroundLiveness.ts";
+import * as ThreadPlanProgress from "../src/orchestration/ThreadPlanProgress.ts";
 import { RuntimeReceiptBusTest } from "../src/orchestration/Layers/RuntimeReceiptBus.ts";
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { TurnDispatchJournalRepositoryLive } from "../src/persistence/Layers/TurnDispatchJournal.ts";
 import { CheckpointCoordinator } from "../src/orchestration/Services/CheckpointCoordinator.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
+import { CheckpointReactor } from "../src/orchestration/Services/CheckpointReactor.ts";
+import { ProviderRuntimeIngestionService } from "../src/orchestration/Services/ProviderRuntimeIngestion.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -223,6 +226,8 @@ export interface OrchestrationIntegrationHarness {
       timeoutMs?: number,
     ): Effect.Effect<Receipt, never>;
   };
+  readonly drainProviderRuntime: Effect.Effect<void>;
+  readonly drainCheckpointReactor: Effect.Effect<void>;
   readonly dispose: Effect.Effect<void, never>;
 }
 
@@ -315,6 +320,9 @@ export const makeOrchestrationIntegrationHarness = (
       checkpointStoreLayer,
       providerLayer,
       RuntimeReceiptBusTest,
+    ).pipe(
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
     );
     const serverSettingsLayer = ServerSettingsService.layerTest();
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
@@ -360,16 +368,20 @@ export const makeOrchestrationIntegrationHarness = (
         ),
       ),
     );
-    const checkpointReactorLayer = Layer.succeed(CheckpointRevertReactor, {
+    const checkpointRevertReactorLayer = Layer.succeed(CheckpointRevertReactor, {
       process: () => Effect.die("unused"),
       recover: () => Effect.succeed([]),
+      start: () => Effect.void,
+      drain: Effect.void,
+    });
+    const checkpointReactorLayer = Layer.succeed(CheckpointReactor, {
       start: () => Effect.void,
       drain: Effect.void,
     });
     const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
       Layer.provideMerge(runtimeIngestionLayer),
       Layer.provideMerge(providerCommandReactorLayer),
-      Layer.provideMerge(checkpointReactorLayer),
+      Layer.provideMerge(checkpointRevertReactorLayer),
       Layer.provideMerge(
         Layer.succeed(PostTurnCheckpointReactor, {
           processTurnCompleted: () => Effect.die("unused"),
@@ -399,6 +411,7 @@ export const makeOrchestrationIntegrationHarness = (
     const layer = Layer.empty.pipe(
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(orchestrationReactorLayer),
+      Layer.provideMerge(checkpointReactorLayer),
       Layer.provideMerge(providerRegistryLayer),
       Layer.provide(persistenceLayer),
       Layer.provideMerge(RepositoryIdentityResolver.layer),
@@ -414,6 +427,13 @@ export const makeOrchestrationIntegrationHarness = (
     const reactor = yield* tryRuntimePromise("load OrchestrationReactor service", () =>
       runtime.runPromise(Effect.service(OrchestrationReactor)),
     ).pipe(Effect.orDie);
+    const providerRuntimeIngestion = yield* tryRuntimePromise(
+      "load ProviderRuntimeIngestion service",
+      () => runtime.runPromise(Effect.service(ProviderRuntimeIngestionService)),
+    ).pipe(Effect.orDie);
+    const checkpointReactor = yield* tryRuntimePromise("load CheckpointReactor service", () =>
+      runtime.runPromise(Effect.service(CheckpointReactor)),
+    ).pipe(Effect.orDie);
     const snapshotQuery = yield* tryRuntimePromise("load ProjectionSnapshotQuery service", () =>
       runtime.runPromise(Effect.service(ProjectionSnapshotQuery)),
     ).pipe(Effect.orDie);
@@ -423,10 +443,6 @@ export const makeOrchestrationIntegrationHarness = (
     const providerCommandReactor = yield* tryRuntimePromise(
       "load ProviderCommandReactor service",
       () => runtime.runPromise(Effect.service(ProviderCommandReactor)),
-    ).pipe(Effect.orDie);
-    const providerRuntimeIngestion = yield* tryRuntimePromise(
-      "load ProviderRuntimeIngestion service",
-      () => runtime.runPromise(Effect.service(ProviderRuntimeIngestionService)),
     ).pipe(Effect.orDie);
     const checkpointStore = yield* tryRuntimePromise("load CheckpointStore service", () =>
       runtime.runPromise(Effect.service(CheckpointStore.CheckpointStore)),
@@ -589,6 +605,8 @@ export const makeOrchestrationIntegrationHarness = (
       waitForDomainEvent,
       waitForPendingApproval,
       waitForReceipt,
+      drainProviderRuntime: providerRuntimeIngestion.drain,
+      drainCheckpointReactor: checkpointReactor.drain,
       dispose,
     } satisfies OrchestrationIntegrationHarness;
   });

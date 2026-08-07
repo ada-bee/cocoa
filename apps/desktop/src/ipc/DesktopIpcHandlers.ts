@@ -1,3 +1,4 @@
+// @effect-diagnostics anyUnknownInErrorContext:off - heterogeneous IPC handlers expose their combined legacy service context.
 import * as Effect from "effect/Effect";
 
 import * as DesktopIpc from "./DesktopIpc.ts";
@@ -20,6 +21,7 @@ import {
   getWindowFullscreenState,
   openExternal,
   pickFolder,
+  pickThemeFiles,
   setTheme,
   showContextMenu,
 } from "./methods/window.ts";
@@ -39,6 +41,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(clearConnectionCatalog);
 
   yield* ipc.handle(pickFolder);
+  yield* ipc.handle(pickThemeFiles);
   yield* ipc.handle(confirm);
   yield* ipc.handle(setTheme);
   yield* ipc.handle(showContextMenu);

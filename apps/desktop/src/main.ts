@@ -1,3 +1,4 @@
+// @effect-diagnostics anyUnknownInErrorContext:off - Cocoa's compatibility desktop layer still composes legacy service contexts.
 for (const stream of [process.stdout, process.stderr]) {
   stream.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code !== "EPIPE") throw err;
@@ -20,6 +21,7 @@ import * as DesktopAssets from "./app/DesktopAssets.ts";
 import * as DesktopConnectionCatalogStore from "./app/DesktopConnectionCatalogStore.ts";
 import * as DesktopEnvironment from "./app/DesktopEnvironment.ts";
 import * as DesktopLifecycle from "./app/DesktopLifecycle.ts";
+import * as DesktopPreReadyPlatform from "./app/DesktopPreReadyPlatform.ts";
 import * as DesktopObservability from "./app/DesktopClientObservability.ts";
 import * as DesktopShutdown from "./app/DesktopShutdown.ts";
 import * as DesktopState from "./app/DesktopState.ts";
@@ -119,6 +121,7 @@ const desktopApplicationLayer = Layer.mergeAll(
 const desktopRuntimeLayer = desktopApplicationLayer.pipe(
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(NodeHttpClient.layerUndici),
+  Layer.provideMerge(DesktopPreReadyPlatform.layer),
 );
 
 DesktopApp.program.pipe(Effect.provide(desktopRuntimeLayer), NodeRuntime.runMain);

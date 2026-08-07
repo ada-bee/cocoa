@@ -139,6 +139,32 @@ describe("applyProviderInstanceSettings", () => {
 
     expect(entry?.enabled).toBe(false);
   });
+
+  it("projects a Cocoa host-backed snapshot as its nested harness in model rails", () => {
+    const entries = deriveProviderInstanceEntries([
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "alfredo",
+        displayName: "Rigatoni Alfredo",
+      }),
+    ]);
+    const [entry] = applyProviderInstanceSettings(entries, {
+      providerInstances: {
+        [ProviderInstanceId.make("alfredo")]: {
+          driver: ProviderDriverKind.make("codex"),
+          displayName: "Rigatoni Alfredo",
+          accentColor: "#ff0000",
+          config: {
+            endpointTransport: { type: "cocoa-host" },
+          },
+        },
+      },
+      providers: {} as never,
+    });
+
+    expect(entry?.displayName).toBe("Codex");
+    expect(entry?.accentColor).toBeUndefined();
+  });
 });
 
 describe("deriveProviderInstanceEntries", () => {

@@ -204,6 +204,22 @@ export const resolveCocoaGatewayProviderInstanceConfigMap = Effect.fn(
         enabledByInstanceId,
       );
     }
+    for (const [providerInstanceId, selection] of Object.entries(
+      settings.defaultModelSelections ?? {},
+    )) {
+      if (selection.instanceId !== providerInstanceId) {
+        return yield* fail("invalid-model-selection", {
+          providerInstanceId,
+          detail:
+            "defaultModelSelections entries must reference the provider instance that owns the map key.",
+        });
+      }
+      yield* validateModelSelection(
+        "defaultModelSelections",
+        selection.instanceId,
+        enabledByInstanceId,
+      );
+    }
     if (settings.sourceControlWriterModelSelection !== null) {
       yield* validateModelSelection(
         "sourceControlWriterModelSelection",

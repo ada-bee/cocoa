@@ -97,6 +97,28 @@ describe("resolveNewThreadModelSelection", () => {
     ).toBe(carriedSelection);
   });
 
+  it("uses the configured host default after a project default and before the advertised default", () => {
+    expect(
+      resolveNewThreadModelSelection({
+        carriedSelection: null,
+        targetProject: {
+          providerInstanceId: rigatoniId,
+          defaultModelSelection: null,
+        },
+        hostDefaultSelection: {
+          instanceId: rigatoniId,
+          model: "gpt-rigatoni-custom-default",
+          options: [{ id: "reasoning_effort", value: "high" }],
+        },
+        targetEnvironmentProviders: [rigatoni],
+      }),
+    ).toEqual({
+      instanceId: rigatoniId,
+      model: "gpt-rigatoni-custom-default",
+      options: [{ id: "reasoning_effort", value: "high" }],
+    });
+  });
+
   it("returns null instead of carrying another instance when the target has no config or default", () => {
     expect(
       resolveNewThreadModelSelection({

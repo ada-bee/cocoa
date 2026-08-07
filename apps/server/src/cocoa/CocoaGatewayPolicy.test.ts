@@ -117,6 +117,22 @@ describe("Cocoa gateway provider policy", () => {
     );
   });
 
+  it.effect("rejects a host default stored under another provider's key", () => {
+    const settings = validSettings();
+    return expectReason(
+      {
+        ...settings,
+        defaultModelSelections: {
+          [ProviderInstanceId.make("macbook_air")]: {
+            instanceId: ProviderInstanceId.make("linux_dev_box"),
+            model: "gpt-5.4",
+          },
+        },
+      },
+      "invalid-model-selection",
+    );
+  });
+
   it.effect("accepts an empty explicit instance map as the online onboarding state", () =>
     Effect.gen(function* () {
       const settings = decodeSettings({});

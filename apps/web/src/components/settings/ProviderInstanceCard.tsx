@@ -333,8 +333,14 @@ interface ProviderInstanceCardProps {
    * omit it.
    */
   readonly headerAction?: ReactNode | undefined;
+  /** Optional host-owned default model control supplied by Cocoa's outer host card. */
+  readonly defaultModelControl?: ReactNode | undefined;
   /** Provider-owned generated-text model control, supplied by the settings panel. */
   readonly textGenerationModelControl?: ReactNode | undefined;
+  /** Presentation-only label when host and harness identities are projected separately. */
+  readonly presentationDisplayName?: string | undefined;
+  /** Hide harness appearance fields when presentation belongs to the outer host. */
+  readonly showAppearanceControls?: boolean | undefined;
   readonly hiddenModels: ReadonlyArray<string>;
   readonly favoriteModels: ReadonlyArray<string>;
   readonly modelOrder: ReadonlyArray<string>;
@@ -378,7 +384,10 @@ export function ProviderInstanceCard({
   connectionManaged = false,
   onDelete,
   headerAction,
+  defaultModelControl,
   textGenerationModelControl,
+  presentationDisplayName,
+  showAppearanceControls = true,
   hiddenModels,
   favoriteModels,
   modelOrder,
@@ -404,7 +413,10 @@ export function ProviderInstanceCard({
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
   const FallbackIconComponent = driverOption?.icon;
   const displayName =
-    instance.displayName?.trim() || driverOption?.label || String(instance.driver);
+    presentationDisplayName?.trim() ||
+    instance.displayName?.trim() ||
+    driverOption?.label ||
+    String(instance.driver);
   const accentColor = normalizeProviderAccentColor(instance.accentColor);
 
   // Narrow `instance.driver` for callers that key on the closed
@@ -609,32 +621,36 @@ export function ProviderInstanceCard({
       <Collapsible open={isExpanded} onOpenChange={onExpandedChange}>
         <CollapsibleContent>
           <div className="space-y-5 px-3 pb-4 pt-2 sm:px-4">
-            <div>
-              <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
-                <span className="text-xs font-medium text-foreground">Display name</span>
-                <DraftInput
-                  id={`provider-instance-${instanceId}-display-name`}
-                  className="mt-1.5"
-                  value={instance.displayName ?? ""}
-                  onCommit={updateDisplayName}
-                  placeholder={driverOption?.label ?? "Instance label"}
-                  spellCheck={false}
-                />
-                <span className="mt-1 block text-xs text-muted-foreground">
-                  Optional label shown in the provider list.
-                </span>
-              </label>
-            </div>
+            {showAppearanceControls ? (
+              <div>
+                <label htmlFor={`provider-instance-${instanceId}-display-name`} className="block">
+                  <span className="text-xs font-medium text-foreground">Display name</span>
+                  <DraftInput
+                    id={`provider-instance-${instanceId}-display-name`}
+                    className="mt-1.5"
+                    value={instance.displayName ?? ""}
+                    onCommit={updateDisplayName}
+                    placeholder={driverOption?.label ?? "Instance label"}
+                    spellCheck={false}
+                  />
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    Optional label shown in the provider list.
+                  </span>
+                </label>
+              </div>
+            ) : null}
 
-            <div>
-              <ProviderAccentColorPicker
-                displayName={displayName}
-                value={accentColor}
-                onCommit={updateAccentColor}
-                commitDelayMs={120}
-                description="Used to distinguish this instance in picker rails and model lists."
-              />
-            </div>
+            {showAppearanceControls ? (
+              <div>
+                <ProviderAccentColorPicker
+                  displayName={displayName}
+                  value={accentColor}
+                  onCommit={updateAccentColor}
+                  commitDelayMs={120}
+                  description="Used to distinguish this instance in picker rails and model lists."
+                />
+              </div>
+            ) : null}
 
             {connectionManaged ? null : (
               <>
@@ -656,6 +672,22 @@ export function ProviderInstanceCard({
                 ) : null}
               </>
             )}
+
+            {defaultModelControl ? (
+              <div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-foreground">Default model</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Used for new threads on this host unless the project overrides it.
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                    {defaultModelControl}
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             {textGenerationModelControl ? (
               <div>

@@ -48,6 +48,7 @@ import { useRemoteConnectionStatus } from "../../state/use-remote-environment-re
 import { branchBadgeLabel, useNewTaskFlow } from "./new-task-flow-provider";
 import { newTaskPhysicalProjectKeyFor } from "./newTaskProjectSelection";
 import { useCreateProjectThread } from "./use-project-actions";
+import { resolveDraftProjectSelection } from "./new-task-project-selection";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
 
 function formatWorkspaceLabel(input: {
@@ -88,7 +89,7 @@ export function NewTaskDraftScreen(props: {
   const colorScheme = useColorScheme();
   const isKeyboardVisible = useKeyboardState((state) => state.isVisible);
   const controlsBottomPadding = isKeyboardVisible ? 8 : Math.max(insets.bottom, 10);
-  const { logicalProjects, selectedProject, setProject } = flow;
+  const { projectScopes, selectedProject, selectedProjectKey, setProject } = flow;
   const { connectedEnvironments } = useRemoteConnectionStatus();
   const selectedEnvironmentServerConfig = useEnvironmentServerConfig(
     selectedProject?.environmentId ?? null,
@@ -285,24 +286,25 @@ export function NewTaskDraftScreen(props: {
       return;
     }
 
-    if (selectedProject) {
+    const selection = resolveDraftProjectSelection(selectedProjectKey, projects, projectScopes);
+    if (selection.kind === "preserve") {
       return;
     }
-
-    if (logicalProjects.length === 1) {
-      setProject(logicalProjects[0]!.project);
+    if (selection.kind === "select") {
+      setProject(selection.project);
       return;
     }
 
     navigation.dispatch(StackActions.replace("NewTask"));
   }, [
-    logicalProjects,
+    projectScopes,
     projects,
     props.initialProjectRef,
     props.incomingShareId,
     props.pendingTaskId,
     navigation,
     selectedProject,
+    selectedProjectKey,
     setProject,
   ]);
 

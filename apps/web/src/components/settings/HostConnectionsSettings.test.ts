@@ -12,6 +12,9 @@ import {
   buildRemoveCocoaHostSettingsPatch,
   deriveCocoaHostConnections,
   parseCocoaHostPairingInput,
+  readCocoaHostIconSvg,
+  sanitizeCocoaHostIconSvg,
+  withCocoaHostIconSvg,
 } from "./HostConnectionsSettings.logic";
 
 const transport = (url: string, key: string): CocoaHostTransport =>
@@ -188,6 +191,16 @@ describe("Cocoa host connections", () => {
           model: "remaining-model",
         },
       },
+      defaultModelSelections: {
+        codex: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "removed-default",
+        },
+        codex_host_two_example_test: {
+          instanceId: ProviderInstanceId.make("codex_host_two_example_test"),
+          model: "remaining-default",
+        },
+      },
     };
     const [firstConnection] = deriveCocoaHostConnections(settings);
 
@@ -209,5 +222,29 @@ describe("Cocoa host connections", () => {
         model: "remaining-model",
       },
     });
+    expect(removed.defaultModelSelections).toEqual({
+      codex_host_two_example_test: {
+        instanceId: "codex_host_two_example_test",
+        model: "remaining-default",
+      },
+    });
+  });
+
+  it("stores only bounded inert SVG host icons", () => {
+    const instance = {
+      driver: ProviderDriverKind.make("codex"),
+      config: { endpointTransport: transport("wss://host.test/socket", "key") },
+    };
+    const svg = sanitizeCocoaHostIconSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>',
+    );
+    const withIcon = withCocoaHostIconSvg(instance, svg);
+
+    expect(readCocoaHostIconSvg(withIcon)).toBe(svg);
+    expect(readCocoaHostIconSvg(withCocoaHostIconSvg(withIcon, null))).toBeNull();
+    expect(() => sanitizeCocoaHostIconSvg("<svg><script>alert(1)</script></svg>")).toThrow();
+    expect(() =>
+      sanitizeCocoaHostIconSvg('<svg><image href="https://example.test/icon.png"/></svg>'),
+    ).toThrow();
   });
 });

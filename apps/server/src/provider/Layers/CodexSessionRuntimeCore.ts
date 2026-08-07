@@ -741,6 +741,46 @@ function shouldSuppressChildConversationNotification(
   );
 }
 
+export type CodexChildNotificationRoute = "agent-event" | "parent" | "drop";
+
+const CHILD_AGENT_EVENT_METHODS: ReadonlySet<string> = new Set([
+  "turn/started",
+  "turn/completed",
+  "thread/status/changed",
+  "thread/tokenUsage/updated",
+  "item/started",
+  "item/completed",
+  "thread/closed",
+  "error",
+]);
+
+const CHILD_CHATTER_METHODS: ReadonlySet<string> = new Set([
+  "item/agentMessage/delta",
+  "item/reasoning/textDelta",
+  "item/reasoning/summaryTextDelta",
+  "item/reasoning/summaryPartAdded",
+  "item/commandExecution/outputDelta",
+  "item/fileChange/outputDelta",
+  "item/fileChange/patchUpdated",
+  "item/plan/delta",
+  "turn/plan/updated",
+  "turn/diff/updated",
+  "thread/name/updated",
+  "thread/settings/updated",
+  "rawResponseItem/completed",
+  "thread/archived",
+  "thread/unarchived",
+  "thread/compacted",
+  "thread/started",
+]);
+
+/** Pure routing table shared with upstream's captured Codex multi-agent wire tests. */
+export function routeCodexChildNotification(method: string): CodexChildNotificationRoute {
+  if (CHILD_AGENT_EVENT_METHODS.has(method)) return "agent-event";
+  if (CHILD_CHATTER_METHODS.has(method)) return "drop";
+  return "parent";
+}
+
 function toCodexUserInputAnswer(
   questionId: string,
   value: ProviderUserInputAnswers[string],

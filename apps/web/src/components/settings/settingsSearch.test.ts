@@ -88,8 +88,8 @@ describe("searchSettings", () => {
 
   it("separates provider hosts from frontend clients", () => {
     expect(SETTINGS_SECTION_LABELS["/settings/clients"]).toBe("Clients");
-    expect(searchSettings("Cocoa hosts")[0]).toMatchObject({
-      id: "remote-environments",
+    expect(searchSettings("Provider hosts")[0]).toMatchObject({
+      id: "providers",
       to: "/settings/providers",
     });
     expect(searchSettings("Clients")[0]).toMatchObject({

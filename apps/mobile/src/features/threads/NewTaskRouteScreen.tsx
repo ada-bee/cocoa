@@ -10,17 +10,13 @@ import { cn } from "../../lib/cn";
 import { AndroidScreenHeader } from "../../components/AndroidScreenHeader";
 import { AppText as Text } from "../../components/AppText";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
-import { useProjects, useServerConfigs, useThreadShells } from "../../state/entities";
+import { useProjects, useServerConfigs } from "../../state/entities";
 import type { WorkspaceState } from "../../state/workspaceModel";
 import { useWorkspaceState } from "../../state/workspace";
-import { groupProjectsByRepository } from "../../lib/repositoryGroups";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { useIncomingShare } from "../sharing/IncomingShareProvider";
-import {
-  flattenNewTaskPhysicalProjects,
-  newTaskPhysicalProjectKeyFor,
-  newTaskProviderLabel,
-} from "./newTaskProjectSelection";
+import { newTaskPhysicalProjectKeyFor, newTaskProviderLabel } from "./newTaskProjectSelection";
+import { useNewTaskFlow } from "./new-task-flow-provider";
 
 type NewTaskRouteParams = {
   readonly incomingShareId?: string | string[];
@@ -83,8 +79,8 @@ function deriveProjectEmptyState(catalogState: WorkspaceState): {
 
 export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRouteParams | undefined>) {
   const projects = useProjects();
-  const threads = useThreadShells();
   const serverConfigs = useServerConfigs();
+  const { logicalProjects } = useNewTaskFlow();
   const { state: catalogState } = useWorkspaceState();
   const navigation = useNavigation();
   const isFocused = useIsFocused();
@@ -105,12 +101,8 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
         : `Choose a project for the ${incomingShare.attachments.length} images you shared`
     : null;
   const screenTitle = incomingShare ? "Start a task" : "Choose project";
-  const repositoryGroups = useMemo(
-    () => groupProjectsByRepository({ projects, threads }),
-    [projects, threads],
-  );
   const items = useMemo(() => {
-    return flattenNewTaskPhysicalProjects(repositoryGroups).map(({ key, project }) => ({
+    return logicalProjects.map(({ key, project }) => ({
       environmentId: project.environmentId,
       id: project.id,
       providerInstanceId: project.providerInstanceId,
@@ -119,7 +111,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
       workspaceRoot: project.workspaceRoot,
       providerLabel: newTaskProviderLabel(serverConfigs, project),
     }));
-  }, [repositoryGroups, serverConfigs]);
+  }, [logicalProjects, serverConfigs]);
   const projectEmptyState = deriveProjectEmptyState(catalogState);
   const resumedDestinationKeyRef = useRef<string | null>(null);
   const reservedDestinationProject = incomingShare?.destination

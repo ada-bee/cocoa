@@ -156,7 +156,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
 
       yield* reportProgress("installing");
       const updateId = yield* launcher
-        .requestUpdate({ targetVersion })
+        .requestUpdate({ targetVersion, dbPath: serverConfig.dbPath })
         .pipe(
           Effect.mapError((error) =>
             failWith(

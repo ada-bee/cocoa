@@ -10,7 +10,7 @@ import * as NodeSqliteClient from "./NodeSqliteClient.ts";
 const layer = it.layer(Layer.mergeAll(NodeSqliteClient.layerMemory()));
 
 layer("Cocoa migrations", (it) => {
-  it.effect("runs in a separate migration chain and leaves room for upstream id 36", () =>
+  it.effect("runs in a separate migration chain and leaves room for upstream id 39", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
@@ -39,7 +39,7 @@ layer("Cocoa migrations", (it) => {
       `;
       assert.deepStrictEqual(restored, [{ deletedAt: null, providerDeletedAt: null }]);
 
-      assert.equal(migrationManifest.at(-1)?.[0], 35);
+      assert.equal(migrationManifest.at(-1)?.[0], 38);
       assert.deepStrictEqual(cocoaMigrationManifest, [
         [1, "ProviderCheckpointOperations"],
         [2, "TurnDispatchJournal"],
@@ -54,7 +54,7 @@ layer("Cocoa migrations", (it) => {
 
       yield* sql`
         INSERT INTO effect_sql_migrations (migration_id, name)
-        VALUES (36, 'FutureUpstreamMigration')
+        VALUES (39, 'FutureUpstreamMigration')
       `;
 
       const upstream = yield* sql<{
@@ -63,7 +63,7 @@ layer("Cocoa migrations", (it) => {
       }>`
         SELECT migration_id AS "migrationId", name
         FROM effect_sql_migrations
-        WHERE migration_id = 36
+        WHERE migration_id = 39
       `;
       const cocoa = yield* sql<{
         readonly migrationId: number;
@@ -74,7 +74,7 @@ layer("Cocoa migrations", (it) => {
         ORDER BY migration_id
       `;
 
-      assert.deepStrictEqual(upstream, [{ migrationId: 36, name: "FutureUpstreamMigration" }]);
+      assert.deepStrictEqual(upstream, [{ migrationId: 39, name: "FutureUpstreamMigration" }]);
       assert.deepStrictEqual(cocoa, [
         { migrationId: 1, name: "ProviderCheckpointOperations" },
         { migrationId: 2, name: "TurnDispatchJournal" },

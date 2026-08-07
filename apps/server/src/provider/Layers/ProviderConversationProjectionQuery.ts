@@ -104,7 +104,7 @@ function selectProviderTurnWindow(
     start = index;
     if (turnHasUserMessage(allTurns[index]!)) {
       userTurnCount += 1;
-      if (userTurnCount >= window.turnLimit) break;
+      if (userTurnCount >= (window.turnLimit ?? Number.POSITIVE_INFINITY)) break;
     }
   }
 

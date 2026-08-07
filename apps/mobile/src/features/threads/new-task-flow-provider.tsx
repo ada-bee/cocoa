@@ -34,7 +34,6 @@ import {
   resolveProjectModelSelection,
   resolveSelectableModelSelection,
 } from "../../lib/modelOptions";
-import { groupProjectsByRepository } from "../../lib/repositoryGroups";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
   appendComposerDraftAttachments,
@@ -64,6 +63,12 @@ import {
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
 import { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import {
+  buildHomeProjectScopes,
+  sortHomeProjectScopes,
+  type HomeProjectScope,
+} from "../home/homeThreadList";
+import { useMobileProjectGroupingSettings } from "../../state/project-grouping";
 import {
   findNewTaskPhysicalProject,
   flattenNewTaskPhysicalProjects,
@@ -122,6 +127,7 @@ export function branchBadgeLabel(input: {
 }
 
 type NewTaskFlowContextValue = {
+  readonly projectScopes: ReadonlyArray<HomeProjectScope>;
   readonly logicalProjects: ReadonlyArray<{
     readonly key: string;
     readonly project: EnvironmentProject;
@@ -191,14 +197,25 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const threads = useThreadShells();
   const serverConfigs = useServerConfigs();
   const { savedConnectionsById } = useSavedRemoteConnections();
+  const groupingSettings = useMobileProjectGroupingSettings();
 
-  const repositoryGroups = useMemo(
-    () => groupProjectsByRepository({ projects, threads }),
-    [projects, threads],
+  const projectScopes = useMemo(
+    () =>
+      sortHomeProjectScopes({
+        scopes: buildHomeProjectScopes({
+          projects,
+          environmentId: null,
+          projectGroupingMode: groupingSettings.sidebarProjectGroupingMode,
+        }),
+        threads,
+        pendingTasks: [],
+        projectSortOrder: "updated_at",
+      }),
+    [groupingSettings.sidebarProjectGroupingMode, projects, threads],
   );
   const logicalProjects = useMemo(
-    () => flattenNewTaskPhysicalProjects(repositoryGroups),
-    [repositoryGroups],
+    () => flattenNewTaskPhysicalProjects(projectScopes),
+    [projectScopes],
   );
 
   const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
@@ -807,6 +824,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
 
   const value = useMemo<NewTaskFlowContextValue>(
     () => ({
+      projectScopes,
       logicalProjects,
       selectedEnvironmentId,
       selectedProjectKey,
@@ -873,6 +891,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       finishEditingPendingTask,
       interactionMode,
       loadBranches,
+      projectScopes,
       logicalProjects,
       modelOptions,
       prompt,

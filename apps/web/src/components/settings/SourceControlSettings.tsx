@@ -475,33 +475,35 @@ function EmptySourceControlDiscovery({
   const hasError = error !== null;
 
   return (
-    <SettingsSection id={searchableSetting("source-control").id} title="Server environment">
+    <SettingsSection id={searchableSetting("source-control").id} title="Provider source control">
       <Empty className="min-h-88">
         <EmptyMedia variant="icon">
           <GitPullRequestIcon />
         </EmptyMedia>
         <EmptyHeader>
           <EmptyTitle>
-            {hasError ? "Could not scan the server environment" : "Nothing detected yet"}
+            {hasError ? "Could not read provider source control" : "Managed by provider hosts"}
           </EmptyTitle>
           <EmptyDescription>
             {hasError
               ? error
-              : "Install Git on the server, add optional hosting integrations or credentials your workspace needs, then rescan."}
+              : "Cocoa reads repository status, refs, remotes, and diffs through configured provider endpoints. Host-level discovery and account setup are not exposed yet."}
           </EmptyDescription>
         </EmptyHeader>
-        <EmptyContent>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 gap-1.5 px-3 text-xs"
-            onClick={onScan}
-            disabled={isPending}
-          >
-            <RefreshCwIcon className={cn("size-3.5", isPending && "animate-spin")} />
-            Scan
-          </Button>
-        </EmptyContent>
+        {hasError ? (
+          <EmptyContent>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 gap-1.5 px-3 text-xs"
+              onClick={onScan}
+              disabled={isPending}
+            >
+              <RefreshCwIcon className={cn("size-3.5", isPending && "animate-spin")} />
+              Try again
+            </Button>
+          </EmptyContent>
+        ) : null}
       </Empty>
     </SettingsSection>
   );

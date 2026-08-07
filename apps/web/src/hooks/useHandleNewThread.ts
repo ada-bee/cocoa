@@ -111,6 +111,8 @@ export function useNewThreadHandler() {
         ? resolveNewThreadModelSelection({
             carriedSelection: carriedModelSelection,
             targetProject: project,
+            hostDefaultSelection:
+              primaryServerSettings.defaultModelSelections?.[project.providerInstanceId],
             targetEnvironmentProviders: serverConfigs.get(project.environmentId)?.providers ?? [],
           })
         : null;

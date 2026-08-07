@@ -212,12 +212,29 @@ export function applyProviderInstanceSettings(
 
   return entries.map((entry) => {
     const explicitInstance = settings.providerInstances?.[entry.instanceId];
+    const explicitConfig =
+      explicitInstance?.config !== null && typeof explicitInstance?.config === "object"
+        ? (explicitInstance.config as Readonly<Record<string, unknown>>)
+        : null;
+    const endpointTransport = explicitConfig?.endpointTransport;
+    const isCocoaHostBacked =
+      endpointTransport !== null &&
+      typeof endpointTransport === "object" &&
+      (endpointTransport as Readonly<Record<string, unknown>>).type === "cocoa-host";
     const enabled = explicitInstance
       ? (explicitInstance.enabled ?? true)
       : entry.isDefault
         ? (legacyProviders[entry.driverKind]?.enabled ?? entry.enabled)
         : false;
-    return enabled === entry.enabled ? entry : { ...entry, enabled };
+    const presentation = isCocoaHostBacked
+      ? {
+          displayName: driverKindLabel(entry.driverKind),
+          // Accent/icon presentation belongs to the host selector in Cocoa;
+          // provider rails keep native harness identity.
+          accentColor: undefined,
+        }
+      : {};
+    return { ...entry, ...presentation, enabled };
   });
 }
 

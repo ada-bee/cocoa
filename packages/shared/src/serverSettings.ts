@@ -207,6 +207,9 @@ export function applyServerSettingsPatch(
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
       : {}),
+    ...(patch.defaultModelSelections !== undefined
+      ? { defaultModelSelections: patch.defaultModelSelections }
+      : {}),
     ...(patch.textGenerationModelSelections !== undefined
       ? { textGenerationModelSelections: patch.textGenerationModelSelections }
       : {}),

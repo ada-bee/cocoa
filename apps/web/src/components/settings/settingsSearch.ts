@@ -38,9 +38,19 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
  */
 export const SETTINGS_SEARCH_ITEMS = [
   {
-    id: "theme",
-    title: "Theme",
+    id: "color-scheme",
+    title: "Color scheme",
     to: "/settings/appearance",
+    // The scheme tiles sit at the top of the Appearance section.
+    targetId: "appearance",
+  },
+  {
+    id: "theme",
+    title: "Themes",
+    to: "/settings/appearance",
+    // Theme cards live directly under the scheme tiles; the section is the
+    // stable scroll destination for both.
+    targetId: "appearance",
   },
   {
     // Prefixed because the slider control already owns the `glass-opacity` id.
@@ -54,6 +64,31 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/appearance",
     // The setting is stage-dependent, so its parent section is the stable destination.
     targetId: "appearance",
+  },
+  {
+    id: "interface-font",
+    title: "Interface font",
+    to: "/settings/appearance",
+  },
+  {
+    id: "prompt-font",
+    title: "Prompt font",
+    to: "/settings/appearance",
+  },
+  {
+    id: "code-font",
+    title: "Code font",
+    to: "/settings/appearance",
+  },
+  {
+    id: "terminal-font",
+    title: "Terminal font",
+    to: "/settings/appearance",
+  },
+  {
+    id: "font-smoothing",
+    title: "Font smoothing",
+    to: "/settings/appearance",
   },
   {
     id: "word-wrap",
@@ -78,6 +113,11 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "assistant-output",
     title: "Assistant output",
+    to: "/settings/general",
+  },
+  {
+    id: "provider-update-checks",
+    title: "Provider update checks",
     to: "/settings/general",
   },
   {
@@ -129,7 +169,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "providers",
-    title: "Provider models",
+    title: "Provider hosts",
     to: "/settings/providers",
   },
   {
@@ -139,7 +179,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "remote-environments",
-    title: "Cocoa hosts",
+    title: "Provider hosts",
     to: "/settings/providers",
   },
   {
@@ -157,6 +197,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Auto-settle inactive threads",
     to: "/settings/beta",
     targetId: "sidebar-v2",
+  },
+  {
+    id: "restore-plan-mode",
+    title: "Restore plan mode (legacy)",
+    to: "/settings/beta",
   },
   {
     id: "archive",

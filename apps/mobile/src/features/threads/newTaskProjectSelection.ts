@@ -1,7 +1,7 @@
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId, ServerConfig } from "@t3tools/contracts";
 
-import type { RepositoryGroup } from "../../lib/repositoryGroups";
+import type { HomeProjectScope } from "../home/homeThreadList";
 
 export type NewTaskPhysicalProject = {
   readonly key: string;
@@ -26,10 +26,10 @@ export function newTaskPhysicalProjectKeyFor(project: EnvironmentProject): strin
 
 /** Preserve every provider-bound project even when the UI groups their repository. */
 export function flattenNewTaskPhysicalProjects(
-  repositoryGroups: ReadonlyArray<RepositoryGroup>,
+  projectScopes: ReadonlyArray<HomeProjectScope>,
 ): ReadonlyArray<NewTaskPhysicalProject> {
-  return repositoryGroups.flatMap((group) =>
-    group.projects.map(({ project }) => ({
+  return projectScopes.flatMap((group) =>
+    group.projects.map((project) => ({
       key: newTaskPhysicalProjectKeyFor(project),
       project,
     })),

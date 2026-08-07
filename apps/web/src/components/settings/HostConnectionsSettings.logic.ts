@@ -33,6 +33,45 @@ function readConfig(value: unknown): Readonly<Record<string, unknown>> {
     : {};
 }
 
+const HOST_ICON_MAX_BYTES = 64 * 1024;
+
+export function readCocoaHostIconSvg(instance: ProviderInstanceConfig): string | null {
+  const value = instance.iconSvg;
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/**
+ * Keep SVG uploads inert and bounded. They are rendered through an `<img>`
+ * data URL (never injected as markup); these checks additionally reject
+ * executable content, external fetches, and embedded documents.
+ */
+export function sanitizeCocoaHostIconSvg(input: string): string {
+  const svg = input.trim();
+  if (!/^<svg(?:\s|>)/iu.test(svg) || !/<\/svg>$/iu.test(svg)) {
+    throw new Error("Choose a complete SVG file.");
+  }
+  if (new TextEncoder().encode(svg).byteLength > HOST_ICON_MAX_BYTES) {
+    throw new Error("Host icons must be 64 KB or smaller.");
+  }
+  if (
+    /<(?:script|foreignObject|iframe|object|embed|audio|video)\b/iu.test(svg) ||
+    /\son[a-z]+\s*=/iu.test(svg) ||
+    /\b(?:href|xlink:href)\s*=\s*["'](?!#)/iu.test(svg) ||
+    /(?:url\s*\(|@import)/iu.test(svg)
+  ) {
+    throw new Error("Host icons cannot contain scripts, embedded documents, or external links.");
+  }
+  return svg;
+}
+
+export function withCocoaHostIconSvg(
+  instance: ProviderInstanceConfig,
+  svg: string | null,
+): ProviderInstanceConfig {
+  const { iconSvg: _iconSvg, ...rest } = instance;
+  return svg === null ? rest : { ...rest, iconSvg: svg };
+}
+
 export function deriveCocoaHostConnections(
   settings: Pick<ServerSettings, "providerInstances">,
 ): ReadonlyArray<CocoaHostConnection> {
@@ -95,6 +134,7 @@ export function buildAddCocoaHostSettingsPatch(
         ...(existingInstance?.accentColor === undefined
           ? {}
           : { accentColor: existingInstance.accentColor }),
+        ...(existingInstance?.iconSvg === undefined ? {} : { iconSvg: existingInstance.iconSvg }),
         config: {
           ...(customModels.length === 0 ? {} : { customModels }),
           endpointTransport: transport,
@@ -118,6 +158,7 @@ export function buildRemoveCocoaHostSettingsPatch(
   settings: Pick<
     ServerSettings,
     | "providerInstances"
+    | "defaultModelSelections"
     | "sourceControlWriterModelSelection"
     | "textGenerationModelSelection"
     | "textGenerationModelSelections"
@@ -127,10 +168,16 @@ export function buildRemoveCocoaHostSettingsPatch(
   const providerInstances = { ...settings.providerInstances };
   delete providerInstances[connection.instanceId];
   const textGenerationModelSelections = { ...settings.textGenerationModelSelections };
+  const defaultModelSelections = { ...settings.defaultModelSelections };
+  const removedDefaultSelection = defaultModelSelections[connection.instanceId] !== undefined;
+  delete defaultModelSelections[connection.instanceId];
   const removedPerProviderSelection =
     textGenerationModelSelections[connection.instanceId] !== undefined;
   delete textGenerationModelSelections[connection.instanceId];
-  const perProviderPatch = removedPerProviderSelection && { textGenerationModelSelections };
+  const perProviderPatch = {
+    ...(removedPerProviderSelection ? { textGenerationModelSelections } : {}),
+    ...(removedDefaultSelection ? { defaultModelSelections } : {}),
+  };
   const [remainingHost] = deriveCocoaHostConnections({ providerInstances });
   if (!remainingHost) return { providerInstances, ...perProviderPatch };
 

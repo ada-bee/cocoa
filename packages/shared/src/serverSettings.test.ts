@@ -166,6 +166,27 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("replaces the per-provider default model map atomically", () => {
+    const firstInstance = ProviderInstanceId.make("codex_one");
+    const secondInstance = ProviderInstanceId.make("codex_two");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      defaultModelSelections: {
+        [firstInstance]: createModelSelection(firstInstance, "gpt-one"),
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        defaultModelSelections: {
+          [secondInstance]: createModelSelection(secondInstance, "gpt-two"),
+        },
+      }).defaultModelSelections,
+    ).toEqual({
+      [secondInstance]: { instanceId: secondInstance, model: "gpt-two" },
+    });
+  });
+
   it("resolves generated text within the owning provider instance", () => {
     const owner = ProviderInstanceId.make("codex_remote");
     const fallback = createModelSelection(owner, "thread-model");

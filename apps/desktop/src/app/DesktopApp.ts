@@ -1,3 +1,4 @@
+// @effect-diagnostics anyUnknownInErrorContext:off - Cocoa's desktop compatibility runtime composes legacy service layers during migration.
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";

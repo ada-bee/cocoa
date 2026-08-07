@@ -23,6 +23,7 @@ export interface SidebarProjectSnapshot extends Project {
   memberProjects: readonly SidebarProjectGroupMember[];
   memberProjectRefs: readonly ScopedProjectRef[];
   remoteEnvironmentLabels: readonly string[];
+  allRemoteMembersAreDesktopLocal: boolean;
 }
 
 export interface SidebarProjectPickerEntry {
@@ -121,6 +122,7 @@ export function buildSidebarProjectSnapshots(input: {
   settings: ProjectGroupingSettings;
   primaryEnvironmentId: EnvironmentId | null;
   resolveEnvironmentLabel: (environmentId: EnvironmentId) => string | null;
+  isDesktopLocalEnvironment?: (environmentId: EnvironmentId) => boolean;
 }): SidebarProjectSnapshot[] {
   const winnersByPhysicalKey = collectProjectWinnersByPhysicalKey(input);
   const groupedMembers = new Map<string, SidebarProjectGroupMember[]>();
@@ -190,6 +192,10 @@ export function buildSidebarProjectSnapshots(input: {
     const remoteEnvironmentLabels = remoteMembers
       .flatMap((member) => (member.environmentLabel ? [member.environmentLabel] : []))
       .filter((label, index, labels) => labels.indexOf(label) === index);
+    const isDesktopLocal = input.isDesktopLocalEnvironment ?? (() => false);
+    const allRemoteMembersAreDesktopLocal =
+      remoteMembers.length > 0 &&
+      remoteMembers.every((member) => isDesktopLocal(member.environmentId));
     result.push({
       ...representative,
       projectKey: logicalKey,
@@ -206,6 +212,7 @@ export function buildSidebarProjectSnapshots(input: {
       memberProjects: members,
       memberProjectRefs: projectRefsByLogicalKey.get(logicalKey) ?? [],
       remoteEnvironmentLabels,
+      allRemoteMembersAreDesktopLocal,
     });
   }
 

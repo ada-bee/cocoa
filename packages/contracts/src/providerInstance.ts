@@ -124,6 +124,9 @@ export type ProviderInstanceEnvironment = typeof ProviderInstanceEnvironment.Typ
 export const ProviderInstanceConfig = Schema.Struct({
   driver: ProviderDriverKind,
   displayName: Schema.optional(TrimmedNonEmptyString),
+  // Transitional host presentation while Cocoa lifts endpoint transport into
+  // a first-class ProviderHost contract. Render only through an image URL.
+  iconSvg: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(64 * 1024))),
   accentColor: Schema.optional(TrimmedNonEmptyString),
   environment: Schema.optionalKey(ProviderInstanceEnvironment),
   enabled: Schema.optionalKey(Schema.Boolean),

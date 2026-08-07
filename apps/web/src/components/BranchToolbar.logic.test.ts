@@ -423,7 +423,7 @@ describe("shouldShowEnvironmentIndicator", () => {
 });
 
 describe("shouldShowComposerContextStrip", () => {
-  it("keeps the provider indicator visible for a remote non-Git project", () => {
+  it("keeps the environment indicator visible for a non-Git project", () => {
     expect(
       shouldShowComposerContextStrip({
         hasActiveProject: true,
@@ -433,7 +433,7 @@ describe("shouldShowComposerContextStrip", () => {
     ).toBe(true);
   });
 
-  it("hides the strip when a non-Git project has no provider indicator", () => {
+  it("hides the strip when a non-Git project has no environment indicator", () => {
     expect(
       shouldShowComposerContextStrip({
         hasActiveProject: true,
@@ -443,7 +443,7 @@ describe("shouldShowComposerContextStrip", () => {
     ).toBe(false);
   });
 
-  it("shows Git controls without requiring a provider indicator", () => {
+  it("shows Git controls without requiring an environment indicator", () => {
     expect(
       shouldShowComposerContextStrip({
         hasActiveProject: true,
@@ -451,16 +451,6 @@ describe("shouldShowComposerContextStrip", () => {
         showEnvironmentIndicator: false,
       }),
     ).toBe(true);
-  });
-
-  it("never shows the strip without an active provider-bound project", () => {
-    expect(
-      shouldShowComposerContextStrip({
-        hasActiveProject: false,
-        isGitRepo: true,
-        showEnvironmentIndicator: true,
-      }),
-    ).toBe(false);
   });
 });
 

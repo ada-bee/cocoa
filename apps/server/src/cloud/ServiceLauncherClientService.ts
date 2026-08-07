@@ -58,6 +58,7 @@ export class ServiceLauncherClient extends Context.Service<
     readonly trial: boolean;
     readonly requestUpdate: (input: {
       readonly targetVersion: string;
+      readonly dbPath: string;
     }) => Effect.Effect<string, ServiceLauncherClientError | ServiceLauncherRejectedError>;
     readonly prepareTrial: Effect.Effect<
       ServerSelfUpdateOutcome | undefined,

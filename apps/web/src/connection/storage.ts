@@ -48,8 +48,12 @@ const StoredShellSnapshot = Schema.Struct({
   snapshot: OrchestrationShellSnapshot,
 });
 const StoredShellSnapshotJson = Schema.fromJsonString(StoredShellSnapshot);
-// v3 may store a windowed snapshot. Older clients must reject it rather than
-// mistake a partial history for a complete thread after rollback.
+// v2 stores the snapshot sequence alongside the thread so a warm cache can
+// resume via `afterSequence` instead of re-downloading the full thread body.
+// v3 adds windowed (paginated) snapshots carrying `page` metadata. The bump
+// exists for rollback safety: a pre-pagination client would decode a windowed
+// v2 record, silently drop the unknown `page` field, and treat the partial
+// thread as complete forever. Older entries fail to decode → cold cache.
 const StoredThreadSnapshot = Schema.Struct({
   schemaVersion: Schema.Literal(3),
   environmentId: EnvironmentId,

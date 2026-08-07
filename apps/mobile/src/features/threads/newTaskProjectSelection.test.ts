@@ -8,7 +8,7 @@ import {
   type ServerConfig,
 } from "@t3tools/contracts";
 
-import { groupProjectsByRepository } from "../../lib/repositoryGroups";
+import { buildHomeProjectScopes } from "../home/homeThreadList";
 import {
   findNewTaskPhysicalProject,
   flattenNewTaskPhysicalProjects,
@@ -53,7 +53,11 @@ describe("new-task physical project selection", () => {
   it("preserves both provider endpoints inside one logical repository group", () => {
     const macbook = project("codex-macbook", "project-macbook");
     const linux = project("codex-linux", "project-linux");
-    const repositoryGroups = groupProjectsByRepository({ projects: [macbook, linux], threads: [] });
+    const repositoryGroups = buildHomeProjectScopes({
+      projects: [macbook, linux],
+      environmentId: null,
+      projectGroupingMode: "repository",
+    });
 
     expect(repositoryGroups).toHaveLength(1);
     const choices = flattenNewTaskPhysicalProjects(repositoryGroups);
