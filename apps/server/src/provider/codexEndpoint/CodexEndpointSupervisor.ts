@@ -10,7 +10,6 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as SynchronizedRef from "effect/SynchronizedRef";
-import * as FileSystem from "effect/FileSystem";
 
 import { CodexSessionRuntimeEndpointUnavailableError } from "../Layers/CodexSessionRuntimeCore.ts";
 import * as CodexEndpointFactory from "./CodexEndpointFactory.ts";
@@ -107,9 +106,7 @@ export interface StartCodexEndpointSupervisorOptions<E = never> {
 }
 
 export interface CodexEndpointSupervisor {
-  readonly start: <E>(
-    options: StartCodexEndpointSupervisorOptions<E>,
-  ) => Effect.Effect<void, never, FileSystem.FileSystem>;
+  readonly start: <E>(options: StartCodexEndpointSupervisorOptions<E>) => Effect.Effect<void>;
   readonly borrow: (
     threadId: ThreadId,
   ) => Effect.Effect<CodexEndpointBorrow, CodexSessionRuntimeEndpointUnavailableError>;
@@ -141,9 +138,6 @@ export function classifyCodexEndpointSupervisorError(
   error: CodexEndpointFactory.CodexEndpointFactoryError,
 ): CodexEndpointSupervisorErrorDisposition {
   switch (error._tag) {
-    case "CodexEndpointCredentialReadError":
-    case "CodexEndpointInvalidCredentialError":
-    case "CodexEndpointCredentialSigningError":
     case "CodexEndpointCompatibilityError":
       return "permanent";
     case "CodexEndpointWebSocketOpenError":

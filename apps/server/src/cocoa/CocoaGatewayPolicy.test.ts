@@ -19,9 +19,9 @@ const validSettings = () =>
         driver: "codex",
         config: {
           endpointTransport: {
-            type: "direct-websocket",
+            type: "cocoa-host",
             url: "wss://macaroni.test:4500",
-            authentication: { type: "none" },
+            key: "test_host_key",
           },
         },
       },
@@ -29,9 +29,9 @@ const validSettings = () =>
         driver: "codex",
         config: {
           endpointTransport: {
-            type: "direct-websocket",
+            type: "cocoa-host",
             url: "wss://rigatoni-alfredo.test:4500",
-            authentication: { type: "none" },
+            key: "test_host_key",
           },
         },
       },
@@ -67,13 +67,10 @@ describe("Cocoa gateway provider policy", () => {
         });
         expect(resolved[ProviderInstanceId.make("codex_rigatoni")]?.config).toMatchObject({
           endpointTransport: {
-            type: "direct-websocket",
+            type: "cocoa-host",
             url: "ws://192.168.20.60:4500",
             allowInsecureTransport: true,
-            authentication: {
-              type: "signed-bearer-token",
-              audience: "codex-rigatoni",
-            },
+            key: "test_host_key",
           },
         });
         expect(resolved[ProviderInstanceId.make("codex_rigatoni_alfredo")]?.config).toMatchObject({
@@ -97,8 +94,36 @@ describe("Cocoa gateway provider policy", () => {
     }),
   );
 
-  it.effect("rejects an empty explicit instance map", () =>
-    expectReason(decodeSettings({}), "empty-provider-map"),
+  it.effect("accepts an empty explicit instance map as the online onboarding state", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({});
+      const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(settings);
+
+      expect(resolved).toEqual({});
+      assert.strictEqual(resolved, settings.providerInstances);
+    }),
+  );
+
+  it.effect(
+    "allows removing the last instance without requiring placeholder model selections",
+    () =>
+      Effect.gen(function* () {
+        const withoutInstances = decodeSettings({
+          providerInstances: {},
+          textGenerationModelSelection: {
+            instanceId: "removed_host",
+            model: "gpt-5.4",
+          },
+          sourceControlWriterModelSelection: {
+            instanceId: "removed_host",
+            model: "gpt-5.4",
+          },
+        });
+        const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(withoutInstances);
+
+        expect(resolved).toEqual({});
+        assert.strictEqual(resolved, withoutInstances.providerInstances);
+      }),
   );
 
   it.effect("rejects non-Codex drivers before registry construction", () => {
@@ -169,11 +194,11 @@ describe("Cocoa gateway provider policy", () => {
     );
   });
 
-  it.effect("allows independent WebSocket endpoint credential file references", () => {
+  it.effect("allows a Cocoa host key on every endpoint", () => {
     const settings = validSettings();
     const macbook = settings.providerInstances[ProviderInstanceId.make("macbook_air")]!;
     const linux = settings.providerInstances[ProviderInstanceId.make("linux_dev_box")]!;
-    const withEndpointCredentials = {
+    const withHostKeys = {
       ...settings,
       providerInstances: {
         ...settings.providerInstances,
@@ -181,12 +206,9 @@ describe("Cocoa gateway provider policy", () => {
           ...macbook,
           config: {
             endpointTransport: {
-              type: "direct-websocket" as const,
+              type: "cocoa-host" as const,
               url: "wss://codex.internal.example:4500",
-              authentication: {
-                type: "capability-token" as const,
-                credential: { source: "file" as const, path: "/run/secrets/codex-token" },
-              },
+              key: "test_host_key" as const,
             },
           },
         },
@@ -194,14 +216,9 @@ describe("Cocoa gateway provider policy", () => {
           ...linux,
           config: {
             endpointTransport: {
-              type: "direct-websocket" as const,
+              type: "cocoa-host" as const,
               url: "wss://rigatoni-alfredo.test:4500",
-              authentication: {
-                type: "signed-bearer-token" as const,
-                credential: { source: "file" as const, path: "/run/secrets/linux-token" },
-                issuer: "cocoa-gateway",
-                audience: "codex-linux",
-              },
+              key: "test_host_key" as const,
             },
           },
         },
@@ -209,21 +226,17 @@ describe("Cocoa gateway provider policy", () => {
     };
 
     return Effect.gen(function* () {
-      const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(withEndpointCredentials);
+      const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(withHostKeys);
       expect(resolved[ProviderInstanceId.make("macbook_air")]?.config).toMatchObject({
         endpointTransport: {
-          authentication: {
-            type: "capability-token",
-            credential: { source: "file", path: "/run/secrets/codex-token" },
-          },
+          type: "cocoa-host",
+          key: "test_host_key",
         },
       });
       expect(resolved[ProviderInstanceId.make("linux_dev_box")]?.config).toMatchObject({
         endpointTransport: {
-          authentication: {
-            type: "signed-bearer-token",
-            credential: { source: "file", path: "/run/secrets/linux-token" },
-          },
+          type: "cocoa-host",
+          key: "test_host_key",
         },
       });
     });

@@ -1,19 +1,15 @@
 import {
-  type CodexDirectWebSocketTransport,
+  type CocoaHostTransport,
   type CodexEndpointTransport,
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as FileSystem from "effect/FileSystem";
 import * as Scope from "effect/Scope";
 
 import * as CodexEndpointConnection from "./CodexEndpointConnection.ts";
-import {
-  type CodexDirectWebSocketConnectorError,
-  makeDirectWebSocketConnector,
-} from "./DirectWebSocketConnector.ts";
+import { type CocoaHostConnectorError, makeCocoaHostConnector } from "./CocoaHostConnector.ts";
 
 export interface MakeCodexEndpointOptions {
   readonly providerInstanceId: ProviderInstanceId;
@@ -21,27 +17,27 @@ export interface MakeCodexEndpointOptions {
 }
 
 export interface CodexEndpointConnectorConstructors {
-  readonly directWebSocket: (
-    transport: CodexDirectWebSocketTransport,
+  readonly cocoaHost: (
+    transport: CocoaHostTransport,
   ) => Effect.Effect<
     CodexEndpointConnection.CodexEndpointFramedTransport,
-    CodexDirectWebSocketConnectorError,
-    FileSystem.FileSystem | Scope.Scope
+    CocoaHostConnectorError,
+    Scope.Scope
   >;
 }
 
 export type CodexEndpointFactoryError =
-  | CodexDirectWebSocketConnectorError
+  | CocoaHostConnectorError
   | CodexEndpointConnection.CodexEndpointConnectionError;
 
 export const defaultConnectorConstructors: CodexEndpointConnectorConstructors = {
-  directWebSocket: makeDirectWebSocketConnector,
+  cocoaHost: makeCocoaHostConnector,
 };
 
 const acquireFramedTransport = (
   transport: CodexEndpointTransport,
   constructors: CodexEndpointConnectorConstructors,
-) => constructors.directWebSocket(transport);
+) => constructors.cocoaHost(transport);
 
 export const make = Effect.fn("CodexEndpointFactory.make")(function* (
   options: MakeCodexEndpointOptions,
@@ -49,7 +45,7 @@ export const make = Effect.fn("CodexEndpointFactory.make")(function* (
 ): Effect.fn.Return<
   CodexEndpointConnection.CodexEndpointConnection["Service"],
   CodexEndpointFactoryError,
-  FileSystem.FileSystem | Scope.Scope
+  Scope.Scope
 > {
   const parentScope = yield* Effect.scope;
 

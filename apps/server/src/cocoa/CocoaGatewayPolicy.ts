@@ -37,7 +37,6 @@ const LOCAL_PROCESS_FIELDS = new Set(["binaryPath", "homePath", "launchArgs", "s
 
 export const CocoaGatewayPolicyFailureReason = Schema.Literals([
   "checkpoint-helper-requires-endpoint-git",
-  "empty-provider-map",
   "invalid-provider-config",
   "local-process-field",
   "missing-provider-config",
@@ -99,7 +98,7 @@ const validateInstance = Effect.fn("CocoaGatewayPolicy.validateInstance")(functi
     return yield* fail("provider-environment-forbidden", {
       providerInstanceId,
       detail:
-        "Cocoa endpoint providers cannot carry process environment values; use an explicit endpoint credential reference.",
+        "Cocoa endpoint providers cannot carry process environment values; pair a Cocoa host instead.",
     });
   }
 
@@ -173,9 +172,6 @@ export const resolveCocoaGatewayProviderInstanceConfigMap = Effect.fn(
   settings: ServerSettings,
 ): Effect.fn.Return<ProviderInstanceConfigMap, CocoaGatewayPolicyError> {
   const instances = Object.entries(settings.providerInstances);
-  if (instances.length === 0) {
-    return yield* fail("empty-provider-map");
-  }
 
   const enabledByInstanceId = new Map<string, boolean>();
   for (const [providerInstanceId, instance] of instances) {
@@ -183,17 +179,22 @@ export const resolveCocoaGatewayProviderInstanceConfigMap = Effect.fn(
     enabledByInstanceId.set(providerInstanceId, validated.enabled);
   }
 
-  yield* validateModelSelection(
-    "textGenerationModelSelection",
-    settings.textGenerationModelSelection.instanceId,
-    enabledByInstanceId,
-  );
-  if (settings.sourceControlWriterModelSelection !== null) {
+  // An empty registry is Cocoa's online onboarding state. The settings schema
+  // still carries legacy/default model selections, but there is no route for
+  // them to validate against until the first endpoint is paired.
+  if (instances.length > 0) {
     yield* validateModelSelection(
-      "sourceControlWriterModelSelection",
-      settings.sourceControlWriterModelSelection.instanceId,
+      "textGenerationModelSelection",
+      settings.textGenerationModelSelection.instanceId,
       enabledByInstanceId,
     );
+    if (settings.sourceControlWriterModelSelection !== null) {
+      yield* validateModelSelection(
+        "sourceControlWriterModelSelection",
+        settings.sourceControlWriterModelSelection.instanceId,
+        enabledByInstanceId,
+      );
+    }
   }
 
   return settings.providerInstances;

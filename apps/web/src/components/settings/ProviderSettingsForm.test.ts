@@ -10,16 +10,11 @@ import {
 } from "./ProviderSettingsForm";
 
 describe("ProviderSettingsForm helpers", () => {
-  it("derives visible provider config fields from the client definition schema", () => {
+  it("does not expose legacy local-process fields for Cocoa Codex hosts", () => {
     const codex = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("codex")];
 
     expect(codex).toBeDefined();
-    expect(deriveProviderSettingsFields(codex!).map((field) => field.key)).toEqual([
-      "binaryPath",
-      "homePath",
-      "shadowHomePath",
-      "launchArgs",
-    ]);
+    expect(deriveProviderSettingsFields(codex!)).toEqual([]);
   });
 
   it("sources labels and descriptions from schema annotations", () => {

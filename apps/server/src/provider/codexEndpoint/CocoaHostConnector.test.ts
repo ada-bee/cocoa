@@ -1,23 +1,25 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import type { CodexDirectWebSocketTransport } from "@t3tools/contracts";
+// Exercises the gateway-facing cocoa-hostd WebSocket boundary.
+import { CocoaHostKey, type CocoaHostTransport } from "@t3tools/contracts";
 import type * as NodeSocket from "@effect/platform-node-shared/NodeSocket";
 import type * as NodeHttp from "node:http";
 import { expect, it } from "@effect/vitest";
 
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import {
+  type BunClientWebSocket,
+  type BunClientWebSocketConstructor,
   type CodexEndpointWebSocket,
   type CodexEndpointWebSocketFactory,
   DEFAULT_HANDSHAKE_TIMEOUT_MS,
   DEFAULT_MAX_PAYLOAD_BYTES,
-  makeDirectWebSocketConnector,
-} from "./DirectWebSocketConnector.ts";
+  makeBunWebSocketFactory,
+  makeCocoaHostConnector,
+} from "./CocoaHostConnector.ts";
 
 type MessageListener = (data: NodeSocket.NodeWS.RawData, isBinary: boolean) => void;
 type ErrorListener = (error: Error) => void;
@@ -146,34 +148,113 @@ class FakeWebSocket implements CodexEndpointWebSocket {
   }
 }
 
-const noAuthentication = {
-  type: "direct-websocket",
-  url: "ws://127.0.0.1:4500",
-  authentication: { type: "none" },
-} satisfies CodexDirectWebSocketTransport;
+type BunEventName = "open" | "message" | "error" | "close";
+type BunEventListener = (event: unknown) => void;
 
-const capabilityAuthentication = {
-  type: "direct-websocket",
-  url: "wss://codex.example.test",
-  authentication: {
-    type: "capability-token",
-    credential: { source: "file", path: "/run/secrets/codex-token" },
-  },
-} satisfies CodexDirectWebSocketTransport;
+class FakeBunClientWebSocket implements BunClientWebSocket {
+  private static latest: FakeBunClientWebSocket | undefined;
+  static capturedUrl: string | undefined;
+  static capturedOptions:
+    | {
+        readonly headers?: NodeHttp.OutgoingHttpHeaders;
+        readonly perMessageDeflate?: boolean;
+      }
+    | undefined;
 
-const signedBearerAuthentication = {
-  type: "direct-websocket",
-  url: "wss://codex.example.test",
-  authentication: {
-    type: "signed-bearer-token",
-    credential: { source: "file", path: "/run/secrets/codex-signing-key" },
-    issuer: "cocoa",
-    audience: "codex",
-  },
-} satisfies CodexDirectWebSocketTransport;
+  readyState = 0;
+  binaryType = "arraybuffer";
+  readonly sent: string[] = [];
+  readonly closes: Array<{ readonly code?: number; readonly reason?: string }> = [];
+  terminateCount = 0;
 
-const signingSecret = "0123456789abcdef0123456789abcdef";
-const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+  private readonly eventListeners = new Map<BunEventName, Set<BunEventListener>>();
+
+  static reset(): void {
+    FakeBunClientWebSocket.latest = undefined;
+  }
+
+  static current(): FakeBunClientWebSocket | undefined {
+    return FakeBunClientWebSocket.latest;
+  }
+
+  constructor(
+    url: string,
+    options: {
+      readonly headers?: NodeHttp.OutgoingHttpHeaders;
+      readonly perMessageDeflate?: boolean;
+    },
+  ) {
+    FakeBunClientWebSocket.latest = this;
+    FakeBunClientWebSocket.capturedUrl = url;
+    FakeBunClientWebSocket.capturedOptions = options;
+  }
+
+  addEventListener(event: BunEventName, listener: BunEventListener): void {
+    let listeners = this.eventListeners.get(event);
+    if (listeners === undefined) {
+      listeners = new Set();
+      this.eventListeners.set(event, listeners);
+    }
+    listeners.add(listener);
+  }
+
+  removeEventListener(event: BunEventName, listener: BunEventListener): void {
+    this.eventListeners.get(event)?.delete(listener);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(code = 1000, reason = ""): void {
+    this.closes.push({ code, reason });
+    if (this.readyState === 3) return;
+    this.readyState = 3;
+    this.emit("close", { code, reason });
+  }
+
+  terminate(): void {
+    this.terminateCount += 1;
+    this.readyState = 3;
+  }
+
+  open(): void {
+    this.readyState = 1;
+    this.emit("open", {});
+  }
+
+  message(data: string | Buffer): void {
+    this.emit("message", { data });
+  }
+
+  private emit(event: BunEventName, detail: unknown): void {
+    for (const listener of this.eventListeners.get(event) ?? []) listener(detail);
+  }
+}
+
+const BunWebSocketConstructor = FakeBunClientWebSocket as unknown as BunClientWebSocketConstructor;
+
+const connectWithFakeBun = Effect.fn("CocoaHostConnectorTest.connectWithFakeBun")(function* (
+  options: { readonly incomingFrameCapacity?: number; readonly maxPayloadBytes?: number } = {},
+) {
+  FakeBunClientWebSocket.reset();
+  const connecting = yield* makeCocoaHostConnector(cocoaHost, {
+    ...options,
+    makeWebSocket: makeBunWebSocketFactory(BunWebSocketConstructor),
+  }).pipe(Effect.forkChild);
+  yield* Effect.yieldNow;
+  const socket = FakeBunClientWebSocket.current();
+  if (socket === undefined) return yield* Effect.die(new Error("Bun WebSocket was not created"));
+  socket.open();
+  const connection = yield* Fiber.join(connecting);
+  return { connection, socket } as const;
+});
+
+const cocoaHost = {
+  type: "cocoa-host",
+  url: "ws://127.0.0.1:4510",
+  key: CocoaHostKey.make("host_key_abc123"),
+} satisfies CocoaHostTransport;
 
 const makeHarness = () => {
   const socket = new FakeWebSocket();
@@ -197,40 +278,90 @@ const makeHarness = () => {
   };
 };
 
-const noOpFileSystem = FileSystem.layerNoop({});
-
-it.effect("opens without Authorization when authentication is disabled", () => {
+it.effect("opens the Cocoa host WebSocket with its pairing key", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
-    const connection = yield* makeDirectWebSocketConnector(noAuthentication, {
+    const connection = yield* makeCocoaHostConnector(cocoaHost, {
       makeWebSocket: harness.makeWebSocket,
     });
     yield* connection.outgoing(Stream.make("first", "second"));
 
-    expect(harness.capturedUrl).toBe(noAuthentication.url);
+    expect(harness.capturedUrl).toBe(cocoaHost.url);
     expect(harness.capturedOptions).toMatchObject({
-      headers: {},
+      headers: { Authorization: "Bearer host_key_abc123" },
       handshakeTimeout: DEFAULT_HANDSHAKE_TIMEOUT_MS,
       maxPayload: DEFAULT_MAX_PAYLOAD_BYTES,
       perMessageDeflate: false,
     });
     expect(harness.socket.sent).toEqual(["first", "second"]);
-  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+  }).pipe(Effect.scoped);
 });
+
+it.effect("adapts Bun WebSocket events and preserves the Bearer handshake", () =>
+  Effect.gen(function* () {
+    const { connection, socket } = yield* connectWithFakeBun();
+    const incoming = yield* Stream.runHead(connection.incoming).pipe(Effect.forkChild);
+    socket.message("from-hostd");
+
+    expect(FakeBunClientWebSocket.capturedUrl).toBe(cocoaHost.url);
+    expect(FakeBunClientWebSocket.capturedOptions).toMatchObject({
+      headers: { Authorization: "Bearer host_key_abc123" },
+      perMessageDeflate: false,
+    });
+    expect(socket.binaryType).toBe("nodebuffer");
+    expect(Option.getOrUndefined(yield* Fiber.join(incoming))).toBe("from-hostd");
+
+    yield* connection.outgoing(Stream.make("to-hostd"));
+    expect(socket.sent).toEqual(["to-hostd"]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("closes a Bun WebSocket when its no-op pause reaches bounded overflow", () =>
+  Effect.gen(function* () {
+    const { connection, socket } = yield* connectWithFakeBun({ incomingFrameCapacity: 1 });
+    socket.message("one");
+    socket.message("two");
+
+    const termination = yield* connection.terminationError;
+    expect(termination._tag).toBe("CodexAppServerTransportError");
+    expect((termination.cause as { _tag?: string })._tag).toBe(
+      "CodexEndpointIncomingFrameOverflowError",
+    );
+    expect(socket.closes).toContainEqual({
+      code: 1008,
+      reason: "Incoming frame capacity exceeded",
+    });
+  }).pipe(Effect.scoped),
+);
+
+it.effect("enforces the configured payload limit for Bun WebSockets", () =>
+  Effect.gen(function* () {
+    const { connection, socket } = yield* connectWithFakeBun({ maxPayloadBytes: 3 });
+    socket.message("four");
+
+    const termination = yield* connection.terminationError;
+    expect(termination._tag).toBe("CodexAppServerTransportError");
+    expect((termination.cause as { _tag?: string })._tag).toBe("CodexEndpointWebSocketError");
+    expect(socket.closes).toContainEqual({
+      code: 1009,
+      reason: "WebSocket payload limit exceeded",
+    });
+  }).pipe(Effect.scoped),
+);
 
 it.effect("terminates a connecting socket when opening is interrupted", () => {
   const socket = new FakeWebSocket();
   const makeWebSocket: CodexEndpointWebSocketFactory = () => socket;
 
   return Effect.gen(function* () {
-    const opening = yield* makeDirectWebSocketConnector(noAuthentication, {
+    const opening = yield* makeCocoaHostConnector(cocoaHost, {
       makeWebSocket,
     }).pipe(Effect.scoped, Effect.forkChild);
     yield* Effect.yieldNow;
     yield* Fiber.interrupt(opening);
 
     expect(socket.terminateCount).toBe(1);
-  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+  }).pipe(Effect.scoped);
 });
 
 it.effect("preserves an HTTP upgrade rejection status", () => {
@@ -241,191 +372,20 @@ it.effect("preserves an HTTP upgrade rejection status", () => {
   };
 
   return Effect.gen(function* () {
-    const error = yield* makeDirectWebSocketConnector(noAuthentication, {
+    const error = yield* makeCocoaHostConnector(cocoaHost, {
       makeWebSocket,
     }).pipe(Effect.flip);
 
     expect(error._tag).toBe("CodexEndpointWebSocketOpenError");
     if (error._tag !== "CodexEndpointWebSocketOpenError") return;
     expect(error.httpStatus).toBe(401);
-  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
-});
-
-it.effect("reads a capability token file and sends an explicit Authorization header", () => {
-  const harness = makeHarness();
-  const paths: string[] = [];
-  const fileSystem = FileSystem.layerNoop({
-    readFileString: (path) => {
-      paths.push(path);
-      return Effect.succeed("  secret-value\n");
-    },
-  });
-
-  return Effect.gen(function* () {
-    yield* makeDirectWebSocketConnector(capabilityAuthentication, {
-      makeWebSocket: harness.makeWebSocket,
-    });
-
-    expect(paths).toEqual(["/run/secrets/codex-token"]);
-    expect(harness.capturedOptions?.headers).toEqual({
-      Authorization: "Bearer secret-value",
-    });
-  }).pipe(Effect.scoped, Effect.provide(fileSystem));
-});
-
-it.effect("mints a signed bearer token from the referenced shared secret", () => {
-  const harness = makeHarness();
-  const paths: string[] = [];
-  const fileSystem = FileSystem.layerNoop({
-    readFileString: (path) => {
-      paths.push(path);
-      return Effect.succeed(`  ${signingSecret}\n`);
-    },
-  });
-
-  return Effect.gen(function* () {
-    yield* makeDirectWebSocketConnector(signedBearerAuthentication, {
-      makeWebSocket: harness.makeWebSocket,
-      nowEpochSeconds: () => 1_700_000_000,
-    });
-
-    expect(paths).toEqual(["/run/secrets/codex-signing-key"]);
-    expect(harness.capturedOptions?.headers).toEqual({
-      Authorization:
-        "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjb2NvYSIsImF1ZCI6ImNvZGV4IiwiZXhwIjoxNzAwMDAwMDYwfQ.8vMM1DNvNDzxI-i8JyaZzvgIwKIYTJ9WcqTOnRGxCtg",
-    });
-  }).pipe(Effect.scoped, Effect.provide(fileSystem));
-});
-
-it.effect("mints a fresh signed bearer token for every connector call", () => {
-  const first = makeHarness();
-  const second = makeHarness();
-  const times = [1_700_000_000, 1_700_000_001];
-  let credentialReads = 0;
-  const fileSystem = FileSystem.layerNoop({
-    readFileString: () => {
-      credentialReads += 1;
-      return Effect.succeed(signingSecret);
-    },
-  });
-
-  return Effect.gen(function* () {
-    yield* makeDirectWebSocketConnector(signedBearerAuthentication, {
-      makeWebSocket: first.makeWebSocket,
-      nowEpochSeconds: () => times.shift()!,
-    }).pipe(Effect.scoped);
-    yield* makeDirectWebSocketConnector(signedBearerAuthentication, {
-      makeWebSocket: second.makeWebSocket,
-      nowEpochSeconds: () => times.shift()!,
-    }).pipe(Effect.scoped);
-
-    const firstToken = String(first.capturedOptions?.headers?.Authorization).slice(7);
-    const secondToken = String(second.capturedOptions?.headers?.Authorization).slice(7);
-    expect(credentialReads).toBe(2);
-    expect(firstToken).not.toBe(secondToken);
-    expect(
-      decodeJson(Buffer.from(firstToken.split(".")[1]!, "base64url").toString("utf8")),
-    ).toEqual({ iss: "cocoa", aud: "codex", exp: 1_700_000_060 });
-    expect(
-      decodeJson(Buffer.from(secondToken.split(".")[1]!, "base64url").toString("utf8")),
-    ).toEqual({ iss: "cocoa", aud: "codex", exp: 1_700_000_061 });
-  }).pipe(Effect.provide(fileSystem));
-});
-
-it.effect("keeps endpoint credentials and audiences isolated", () => {
-  const macaroni = makeHarness();
-  const alfredo = makeHarness();
-  const macaroniSecret = "macaroni-0123456789abcdef0123456789abcdef";
-  const alfredoSecret = "alfredo--0123456789abcdef0123456789abcdef";
-  const reads: string[] = [];
-  const fileSystem = FileSystem.layerNoop({
-    readFileString: (path) => {
-      reads.push(path);
-      return Effect.succeed(path.endsWith("macaroni") ? macaroniSecret : alfredoSecret);
-    },
-  });
-  const transport = (host: string, audience: string) =>
-    ({
-      type: "direct-websocket",
-      url: `ws://${host}:4500`,
-      allowInsecureTransport: true,
-      authentication: {
-        type: "signed-bearer-token",
-        credential: { source: "file", path: `/run/secrets/${host}` },
-        issuer: "cocoa-gateway",
-        audience,
-      },
-    }) satisfies CodexDirectWebSocketTransport;
-
-  return Effect.gen(function* () {
-    yield* makeDirectWebSocketConnector(transport("macaroni", "codex-macaroni"), {
-      makeWebSocket: macaroni.makeWebSocket,
-      nowEpochSeconds: () => 1_700_000_000,
-    }).pipe(Effect.scoped);
-    yield* makeDirectWebSocketConnector(transport("rigatoni-alfredo", "codex-rigatoni-alfredo"), {
-      makeWebSocket: alfredo.makeWebSocket,
-      nowEpochSeconds: () => 1_700_000_000,
-    }).pipe(Effect.scoped);
-
-    const macaroniToken = String(macaroni.capturedOptions?.headers?.Authorization).slice(7);
-    const alfredoToken = String(alfredo.capturedOptions?.headers?.Authorization).slice(7);
-    expect(reads).toEqual(["/run/secrets/macaroni", "/run/secrets/rigatoni-alfredo"]);
-    expect(macaroniToken).not.toBe(alfredoToken);
-    expect(
-      decodeJson(Buffer.from(macaroniToken.split(".")[1]!, "base64url").toString("utf8")),
-    ).toEqual({ iss: "cocoa-gateway", aud: "codex-macaroni", exp: 1_700_000_060 });
-    expect(
-      decodeJson(Buffer.from(alfredoToken.split(".")[1]!, "base64url").toString("utf8")),
-    ).toEqual({
-      iss: "cocoa-gateway",
-      aud: "codex-rigatoni-alfredo",
-      exp: 1_700_000_060,
-    });
-  }).pipe(Effect.provide(fileSystem));
-});
-
-it.effect("rejects signed bearer secrets shorter than 32 bytes before creating a WebSocket", () => {
-  const harness = makeHarness();
-  const fileSystem = FileSystem.layerNoop({
-    readFileString: () => Effect.succeed("short shared secret"),
-  });
-
-  return Effect.gen(function* () {
-    const error = yield* makeDirectWebSocketConnector(signedBearerAuthentication, {
-      makeWebSocket: harness.makeWebSocket,
-    }).pipe(Effect.flip);
-
-    expect(error._tag).toBe("CodexEndpointInvalidCredentialError");
-    expect(error).toMatchObject({ reason: "too-short" });
-    expect(harness.capturedUrl).toBeUndefined();
-  }).pipe(Effect.scoped, Effect.provide(fileSystem));
-});
-
-it.effect("does not create a WebSocket when signed bearer token signing fails", () => {
-  const harness = makeHarness();
-  const fileSystem = FileSystem.layerNoop({
-    readFileString: () => Effect.succeed(signingSecret),
-  });
-
-  return Effect.gen(function* () {
-    const error = yield* makeDirectWebSocketConnector(signedBearerAuthentication, {
-      makeWebSocket: harness.makeWebSocket,
-      mintSignedBearerToken: () => {
-        throw new Error("signing unavailable");
-      },
-    }).pipe(Effect.flip);
-
-    expect(error._tag).toBe("CodexEndpointCredentialSigningError");
-    expect(harness.capturedUrl).toBeUndefined();
-    expect(error).not.toHaveProperty("secret");
-    expect(error).toMatchObject({ path: "/run/secrets/codex-signing-key" });
-  }).pipe(Effect.scoped, Effect.provide(fileSystem));
+  }).pipe(Effect.scoped);
 });
 
 it.effect("rejects binary frames as a typed transport failure", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
-    const connection = yield* makeDirectWebSocketConnector(noAuthentication, {
+    const connection = yield* makeCocoaHostConnector(cocoaHost, {
       makeWebSocket: harness.makeWebSocket,
     });
     const failure = yield* Stream.runHead(connection.incoming).pipe(Effect.flip, Effect.forkChild);
@@ -436,13 +396,13 @@ it.effect("rejects binary frames as a typed transport failure", () => {
     expect(error._tag).toBe("CodexAppServerTransportError");
     expect((error.cause as { _tag?: string })._tag).toBe("CodexEndpointBinaryFrameError");
     expect(harness.socket.closeCount).toBe(1);
-  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+  }).pipe(Effect.scoped);
 });
 
 it.effect("fails incoming frames when the socket emits an error", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
-    const connection = yield* makeDirectWebSocketConnector(noAuthentication, {
+    const connection = yield* makeCocoaHostConnector(cocoaHost, {
       makeWebSocket: harness.makeWebSocket,
     });
     const failure = yield* Stream.runHead(connection.incoming).pipe(Effect.flip, Effect.forkChild);
@@ -452,13 +412,13 @@ it.effect("fails incoming frames when the socket emits an error", () => {
     const error = yield* Fiber.join(failure);
     expect(error._tag).toBe("CodexAppServerTransportError");
     expect((error.cause as { _tag?: string })._tag).toBe("CodexEndpointWebSocketError");
-  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+  }).pipe(Effect.scoped);
 });
 
 it.effect("converges both transport directions when a send fails", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
-    const connection = yield* makeDirectWebSocketConnector(noAuthentication, {
+    const connection = yield* makeCocoaHostConnector(cocoaHost, {
       makeWebSocket: harness.makeWebSocket,
     });
     const incomingFailure = yield* Stream.runHead(connection.incoming).pipe(
@@ -476,13 +436,13 @@ it.effect("converges both transport directions when a send fails", () => {
     expect(incomingError).toBe(outgoingError);
     expect(terminationError).toBe(outgoingError);
     expect(harness.socket.terminateCount).toBe(1);
-  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+  }).pipe(Effect.scoped);
 });
 
 it.effect("propagates abnormal disconnects through the incoming stream", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
-    const connection = yield* makeDirectWebSocketConnector(noAuthentication, {
+    const connection = yield* makeCocoaHostConnector(cocoaHost, {
       makeWebSocket: harness.makeWebSocket,
     });
     const failure = yield* Stream.runHead(connection.incoming).pipe(Effect.flip, Effect.forkChild);
@@ -492,13 +452,13 @@ it.effect("propagates abnormal disconnects through the incoming stream", () => {
     const error = yield* Fiber.join(failure);
     expect(error._tag).toBe("CodexAppServerTransportError");
     expect((error.cause as { code?: number }).code).toBe(1006);
-  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+  }).pipe(Effect.scoped);
 });
 
 it.effect("ends incoming normally while retaining the clean-close termination error", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
-    const connection = yield* makeDirectWebSocketConnector(noAuthentication, {
+    const connection = yield* makeCocoaHostConnector(cocoaHost, {
       makeWebSocket: harness.makeWebSocket,
     });
     const collected = yield* Stream.runCollect(connection.incoming).pipe(Effect.forkChild);
@@ -511,13 +471,13 @@ it.effect("ends incoming normally while retaining the clean-close termination er
     expect(termination._tag).toBe("CodexAppServerTransportError");
     expect((termination.cause as { code?: number; wasClean?: boolean }).code).toBe(1000);
     expect((termination.cause as { wasClean?: boolean }).wasClean).toBe(true);
-  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+  }).pipe(Effect.scoped);
 });
 
 it.effect("pauses a full bounded queue and resumes after consumption", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
-    const connection = yield* makeDirectWebSocketConnector(noAuthentication, {
+    const connection = yield* makeCocoaHostConnector(cocoaHost, {
       incomingFrameCapacity: 1,
       makeWebSocket: harness.makeWebSocket,
     });
@@ -527,17 +487,17 @@ it.effect("pauses a full bounded queue and resumes after consumption", () => {
     const value = yield* Stream.runHead(connection.incoming);
     expect(Option.getOrUndefined(value)).toBe("one");
     expect(harness.socket.resumeCount).toBe(1);
-  }).pipe(Effect.scoped, Effect.provide(noOpFileSystem));
+  }).pipe(Effect.scoped);
 });
 
 it.effect("closes the socket when its scope is finalized", () => {
   const harness = makeHarness();
   return Effect.gen(function* () {
-    yield* makeDirectWebSocketConnector(noAuthentication, {
+    yield* makeCocoaHostConnector(cocoaHost, {
       makeWebSocket: harness.makeWebSocket,
     }).pipe(Effect.scoped);
 
     expect(harness.socket.terminateCount).toBe(1);
     expect(harness.socket.readyState).toBe(3);
-  }).pipe(Effect.provide(noOpFileSystem));
+  }).pipe(Effect.scoped);
 });

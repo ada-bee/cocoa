@@ -15,7 +15,6 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -73,12 +72,11 @@ const DIRECT_INSTANCE_ID = ProviderInstanceId.make("codex_direct");
 const DIRECT_THREAD_ID = ThreadId.make("thread-direct-boundary");
 const THREAD_ID = ThreadId.make("thread-endpoint-generation");
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
-const decodeUnknownJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const ENDPOINT_CONFIG = decodeCodexSettings({
   endpointTransport: {
-    type: "direct-websocket",
+    type: "cocoa-host",
     url: "ws://127.0.0.1:7777",
-    authentication: { type: "none" },
+    key: "test_host_key",
   },
 });
 const testCrypto = Crypto.make({
@@ -434,29 +432,15 @@ const makeFakeDirectEndpoint = Effect.fn("acceptance.makeFakeDirectEndpoint")(fu
   } satisfies FakeDirectEndpoint;
 });
 
-it.live("routes a signed-bearer turn through the direct WebSocket boundary", () =>
+it.live("routes a host-key turn through the Cocoa host WebSocket boundary", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const endpoint = yield* makeFakeDirectEndpoint();
-      const fileSystem = yield* FileSystem.FileSystem;
-      const secretDirectory = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "cocoa-direct-endpoint-",
-      });
-      const secretPath = `${secretDirectory}/shared-secret`;
-      yield* fileSystem.writeFileString(
-        secretPath,
-        "0123456789abcdef0123456789abcdef0123456789abcdef",
-      );
       const config = decodeCodexSettings({
         endpointTransport: {
-          type: "direct-websocket",
+          type: "cocoa-host",
           url: endpoint.url,
-          authentication: {
-            type: "signed-bearer-token",
-            credential: { source: "file", path: secretPath },
-            issuer: "cocoa-gateway",
-            audience: "codex-direct",
-          },
+          key: "test_host_key",
         },
       });
       const textGeneration = {
@@ -519,12 +503,7 @@ it.live("routes a signed-bearer turn through the direct WebSocket boundary", () 
         platformFamily: "unix",
         platformOs: "linux",
       });
-      const bearer = endpoint.authorization?.replace(/^Bearer /u, "");
-      expect(bearer).toBeDefined();
-      const claims = yield* decodeUnknownJson(
-        Buffer.from(bearer!.split(".")[1]!, "base64url").toString("utf8"),
-      );
-      expect(claims).toMatchObject({ iss: "cocoa-gateway", aud: "codex-direct" });
+      expect(endpoint.authorization).toBe("Bearer test_host_key");
       expect(endpoint.messages).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ method: "initialize" }),

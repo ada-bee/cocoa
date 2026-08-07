@@ -176,7 +176,7 @@ export const COCOA_GATEWAY_TRANSITIVE_CALLSITE_MANIFEST = [
   ...[
     "provider/codexEndpoint/CodexEndpointFactory.ts",
     "provider/codexEndpoint/CodexEndpointSupervisor.ts",
-    "provider/codexEndpoint/DirectWebSocketConnector.ts",
+    "provider/codexEndpoint/CocoaHostConnector.ts",
     "provider/Drivers/CodexEndpointDriver.ts",
   ].map(
     (sourcePath) =>

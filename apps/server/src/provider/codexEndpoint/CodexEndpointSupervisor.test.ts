@@ -1,6 +1,11 @@
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { type CodexEndpointTransport, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  CocoaHostKey,
+  type CodexEndpointTransport,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -14,10 +19,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 
 import * as CodexEndpointConnection from "./CodexEndpointConnection.ts";
 import type { CodexEndpointRouter } from "./CodexEndpointRouter.ts";
-import {
-  CodexEndpointInvalidCredentialError,
-  CodexEndpointWebSocketOpenError,
-} from "./DirectWebSocketConnector.ts";
+import { CodexEndpointWebSocketOpenError } from "./CocoaHostConnector.ts";
 import {
   calculateCodexEndpointRetryDelay,
   classifyCodexEndpointSupervisorError,
@@ -31,9 +33,9 @@ import {
 const INSTANCE_ID = ProviderInstanceId.make("codex_remote");
 const THREAD_ID = ThreadId.make("thread_remote");
 const TRANSPORT = {
-  type: "direct-websocket",
+  type: "cocoa-host",
   url: "ws://127.0.0.1:7777",
-  authentication: { type: "none" },
+  key: CocoaHostKey.make("test_host_key"),
 } as const satisfies CodexEndpointTransport;
 const ROUTER = {
   registerSession: () => Effect.die("unused"),
@@ -316,9 +318,10 @@ it.layer(NodeServices.layer)("CodexEndpointSupervisor", (it) => {
       Effect.gen(function* () {
         let sleepCalls = 0;
         let factoryCalls = 0;
-        const permanent = new CodexEndpointInvalidCredentialError({
-          path: "/run/secrets/codex-signing-key",
-          reason: "too-short",
+        const permanent = new CodexEndpointWebSocketOpenError({
+          url: TRANSPORT.url,
+          cause: new Error("upgrade rejected"),
+          httpStatus: 401,
         });
         const supervisor = yield* makeSupervisor({
           makeEndpoint: (() => {

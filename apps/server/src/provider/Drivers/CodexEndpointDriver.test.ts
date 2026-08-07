@@ -14,8 +14,8 @@ import {
   NoOpProviderEventLoggers,
   ProviderEventLoggers,
 } from "../Layers/ProviderEventLoggersService.ts";
-import { CodexEndpointInvalidCredentialError } from "../codexEndpoint/DirectWebSocketConnector.ts";
 import * as CodexEndpointConnection from "../codexEndpoint/CodexEndpointConnection.ts";
+import { CodexEndpointWebSocketOpenError } from "../codexEndpoint/CocoaHostConnector.ts";
 import {
   codexEndpointLifecyclePresentation,
   makeCodexEndpointDriver,
@@ -93,17 +93,17 @@ it("normalizes endpoint lifecycle states and exposes only safe compatibility det
   assert.equal(incompatible.connectionState, "blocked");
   assert.include(incompatible.message, "required method 'thread/start' is missing");
 
-  const credentialPath = "/run/secrets/highly-sensitive-key-name";
-  const credentialFailure = codexEndpointLifecyclePresentation({
+  const authorizationFailure = codexEndpointLifecyclePresentation({
     _tag: "Blocked",
-    error: new CodexEndpointInvalidCredentialError({
-      path: credentialPath,
-      reason: "too-short",
+    error: new CodexEndpointWebSocketOpenError({
+      url: "wss://host.example.test/codex",
+      cause: new Error("upgrade rejected"),
+      httpStatus: 401,
     }),
   });
-  assert.equal(credentialFailure.connectionState, "blocked");
-  assert.notInclude(credentialFailure.message, credentialPath);
-  assert.notInclude(credentialFailure.message, "too-short");
+  assert.equal(authorizationFailure.connectionState, "blocked");
+  assert.notInclude(authorizationFailure.message, "host.example.test");
+  assert.notInclude(authorizationFailure.message, "upgrade rejected");
 
   assert.equal(
     codexEndpointLifecyclePresentation({ _tag: "Connecting", attempt: 2 }).connectionState,
@@ -113,7 +113,10 @@ it("normalizes endpoint lifecycle states and exposes only safe compatibility det
     codexEndpointLifecyclePresentation({
       _tag: "Retrying",
       attempt: 3,
-      error: new CodexEndpointInvalidCredentialError({ path: credentialPath, reason: "too-short" }),
+      error: new CodexEndpointWebSocketOpenError({
+        url: "wss://host.example.test/codex",
+        cause: new Error("offline"),
+      }),
       delay: null,
     }).connectionState,
     "disconnected",
@@ -136,9 +139,9 @@ it.effect("stamps pending and account-blocked endpoint snapshots with connection
   Effect.gen(function* () {
     const settings = decodeCodexSettings({
       endpointTransport: {
-        type: "direct-websocket",
+        type: "cocoa-host",
         url: "ws://127.0.0.1:7777",
-        authentication: { type: "none" },
+        key: "test_host_key",
       },
     });
     assert.equal((yield* makePendingCodexEndpointProvider(settings)).connectionState, "connecting");
@@ -194,9 +197,9 @@ it.layer(TestLayer)("CodexEndpointDriver", (it) => {
         });
         const config = decodeCodexSettings({
           endpointTransport: {
-            type: "direct-websocket",
+            type: "cocoa-host",
             url: "ws://127.0.0.1:7777",
-            authentication: { type: "none" },
+            key: "test_host_key",
           },
           endpointTerminal: { enabled: true, sandboxMode: "workspaceWrite" },
           endpointGitExecutablePath: "/usr/bin/git",

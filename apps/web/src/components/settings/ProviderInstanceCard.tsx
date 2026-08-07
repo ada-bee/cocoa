@@ -313,6 +313,12 @@ interface ProviderInstanceCardProps {
   readonly onExpandedChange: (open: boolean) => void;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
   /**
+   * Host-backed Cocoa instances are paired and removed only from Settings ->
+   * Connections. Their lifecycle and runtime transport must not acquire a
+   * second editing surface in the provider-details card.
+   */
+  readonly connectionManaged?: boolean;
+  /**
    * Pass `undefined` to hide the delete button entirely. Built-in default
    * instance slots use `undefined` — they can't be deleted without losing
    * the slot, and their "reset to defaults" affordance lives on an outer
@@ -367,6 +373,7 @@ export function ProviderInstanceCard({
   isExpanded,
   onExpandedChange,
   onUpdate,
+  connectionManaged = false,
   onDelete,
   headerAction,
   hiddenModels,
@@ -585,11 +592,13 @@ export function ProviderInstanceCard({
                 className={cn("size-3.5 transition-transform", isExpanded && "rotate-180")}
               />
             </Button>
-            <Switch
-              checked={enabled}
-              onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
-              aria-label={`Enable ${displayName}`}
-            />
+            {connectionManaged ? null : (
+              <Switch
+                checked={enabled}
+                onCheckedChange={(checked) => updateEnabled(Boolean(checked))}
+                aria-label={`Enable ${displayName}`}
+              />
+            )}
           </div>
         </div>
       </div>
@@ -624,22 +633,26 @@ export function ProviderInstanceCard({
               />
             </div>
 
-            <div>
-              <ProviderEnvironmentSection
-                environment={instance.environment ?? []}
-                onChange={updateEnvironment}
-              />
-            </div>
+            {connectionManaged ? null : (
+              <>
+                <div>
+                  <ProviderEnvironmentSection
+                    environment={instance.environment ?? []}
+                    onChange={updateEnvironment}
+                  />
+                </div>
 
-            {driverOption ? (
-              <ProviderSettingsForm
-                definition={driverOption}
-                value={instance.config}
-                idPrefix={`provider-instance-${instanceId}`}
-                variant="card"
-                onChange={updateConfig}
-              />
-            ) : null}
+                {driverOption ? (
+                  <ProviderSettingsForm
+                    definition={driverOption}
+                    value={instance.config}
+                    idPrefix={`provider-instance-${instanceId}`}
+                    variant="card"
+                    onChange={updateConfig}
+                  />
+                ) : null}
+              </>
+            )}
 
             {driverOption !== undefined ? (
               <ProviderModelsSection

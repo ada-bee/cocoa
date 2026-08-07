@@ -72,6 +72,12 @@ function readFieldBooleanDefault(
 export function deriveProviderSettingsFields(
   definition: ProviderClientDefinition,
 ): ReadonlyArray<ProviderSettingsFieldModel> {
+  // Cocoa's Codex instances are configured exclusively by pasting a cocoa-hostd
+  // pairing token in Settings -> Connections. The retained Codex schema still
+  // carries upstream local-process fields for persisted-data compatibility;
+  // they must not become a second connection/configuration surface here.
+  if (definition.value === "codex") return [];
+
   const schemaAnnotation = readProviderSettingsFormSchemaAnnotation(definition);
   const orderedKeys = new Map(
     (schemaAnnotation.order ?? []).map((key, index) => [key, index] as const),

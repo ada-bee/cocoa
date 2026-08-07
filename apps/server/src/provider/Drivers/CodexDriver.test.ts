@@ -46,26 +46,23 @@ import type { ProviderVcsAdapter } from "../ProviderVcsAdapter.ts";
 import * as CodexEndpointConnection from "../codexEndpoint/CodexEndpointConnection.ts";
 import type { CodexEndpointRouter } from "../codexEndpoint/CodexEndpointRouter.ts";
 import * as CodexEndpointSupervisor from "../codexEndpoint/CodexEndpointSupervisor.ts";
-import {
-  CodexEndpointInvalidCredentialError,
-  CodexEndpointWebSocketOpenError,
-} from "../codexEndpoint/DirectWebSocketConnector.ts";
+import { CodexEndpointWebSocketOpenError } from "../codexEndpoint/CocoaHostConnector.ts";
 import { makeCodexDriver, type CodexDriverDependencies } from "./CodexDriver.ts";
 
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 const INSTANCE_ID = ProviderInstanceId.make("codex_remote");
 const ENDPOINT_CONFIG = decodeCodexSettings({
   endpointTransport: {
-    type: "direct-websocket",
+    type: "cocoa-host",
     url: "ws://127.0.0.1:7777",
-    authentication: { type: "none" },
+    key: "test_host_key",
   },
 });
 const WORKSPACE_ENDPOINT_CONFIG = decodeCodexSettings({
   endpointTransport: {
-    type: "direct-websocket",
+    type: "cocoa-host",
     url: "ws://127.0.0.1:7777",
-    authentication: { type: "none" },
+    key: "test_host_key",
   },
   workspaceHelper: {
     type: "cocoa-workspace-helper-v1",
@@ -81,17 +78,17 @@ const WORKSPACE_ENDPOINT_CONFIG = decodeCodexSettings({
 });
 const TERMINAL_ENDPOINT_CONFIG = decodeCodexSettings({
   endpointTransport: {
-    type: "direct-websocket",
+    type: "cocoa-host",
     url: "ws://127.0.0.1:7777",
-    authentication: { type: "none" },
+    key: "test_host_key",
   },
   endpointTerminal: { enabled: true, sandboxMode: "workspaceWrite" },
 });
 const TERMINAL_WORKSPACE_ENDPOINT_CONFIG = decodeCodexSettings({
   endpointTransport: {
-    type: "direct-websocket",
+    type: "cocoa-host",
     url: "ws://127.0.0.1:7777",
-    authentication: { type: "none" },
+    key: "test_host_key",
   },
   endpointTerminal: { enabled: true, sandboxMode: "dangerFullAccess" },
   endpointGitExecutablePath: "/run/current-system/sw/bin/git",
@@ -979,9 +976,9 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
       Effect.gen(function* () {
         const retry = yield* makeGatedRetry();
         const recovered = yield* makeTerminationConnection(INSTANCE_ID, 1);
-        const directTransport = ENDPOINT_CONFIG.endpointTransport;
-        if (directTransport?.type !== "direct-websocket") {
-          return yield* Effect.die("expected direct WebSocket endpoint test config");
+        const hostTransport = ENDPOINT_CONFIG.endpointTransport;
+        if (hostTransport?.type !== "cocoa-host") {
+          return yield* Effect.die("expected Cocoa host endpoint test config");
         }
         const router = {
           registerSession: () => Effect.die("unused"),
@@ -1000,7 +997,7 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
             return transientCalls === 1
               ? Effect.fail(
                   new CodexEndpointWebSocketOpenError({
-                    url: directTransport.url,
+                    url: hostTransport.url,
                     cause: new Error("host unavailable"),
                   }),
                 )
@@ -1054,9 +1051,10 @@ it.layer(TestLayer)("CodexDriver endpoint integration", (it) => {
           }),
           makeEndpoint: (() =>
             Effect.fail(
-              new CodexEndpointInvalidCredentialError({
-                path: "/run/secrets/codex-signing-key",
-                reason: "too-short",
+              new CodexEndpointWebSocketOpenError({
+                url: hostTransport.url,
+                cause: new Error("upgrade rejected"),
+                httpStatus: 401,
               }),
             )) as CodexDriverDependencies["makeEndpoint"],
           makeAdapter: (() => Effect.succeed(adapter)) as CodexDriverDependencies["makeAdapter"],

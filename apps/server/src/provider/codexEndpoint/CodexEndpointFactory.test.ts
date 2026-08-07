@@ -1,4 +1,4 @@
-import { type CodexEndpointTransport, ProviderInstanceId } from "@t3tools/contracts";
+import { CodexEndpointTransport, ProviderInstanceId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 
 import * as Cause from "effect/Cause";
@@ -15,6 +15,7 @@ import {
 } from "./CodexEndpointFactory.ts";
 
 const PROVIDER_INSTANCE_ID = ProviderInstanceId.make("remote_codex");
+const decodeTransport = Schema.decodeUnknownSync(CodexEndpointTransport);
 const decodeJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -79,17 +80,17 @@ const makeConstructors = (
   });
 
   return {
-    directWebSocket: () => connector("direct"),
+    cocoaHost: () => connector("host"),
   };
 };
 
-it.effect("routes the endpoint to exactly one direct WebSocket connector", () =>
+it.effect("routes the endpoint to exactly one Cocoa host connector", () =>
   Effect.gen(function* () {
-    const transport: CodexEndpointTransport = {
-      type: "direct-websocket",
-      url: "ws://127.0.0.1:4500",
-      authentication: { type: "none" },
-    };
+    const transport = decodeTransport({
+      type: "cocoa-host",
+      url: "ws://127.0.0.1:4510",
+      key: "host_key",
+    });
     const acquired: string[] = [];
     const finalized: string[] = [];
     const constructors = makeConstructors(acquired, finalized);
@@ -101,8 +102,8 @@ it.effect("routes the endpoint to exactly one direct WebSocket connector", () =>
 
     expect(connection.identity.providerInstanceId).toBe(PROVIDER_INSTANCE_ID);
     expect(connection.compatibility.serverVersion).toBe("0.146.0");
-    expect(acquired).toEqual(["direct"]);
-    expect(finalized).toEqual(["direct"]);
+    expect(acquired).toEqual(["host"]);
+    expect(finalized).toEqual(["host"]);
   }).pipe(Effect.provide(dependencies)),
 );
 
@@ -115,17 +116,17 @@ it.effect("closes the selected connector immediately when connection initializat
     const error = yield* makeCodexEndpoint(
       {
         providerInstanceId: PROVIDER_INSTANCE_ID,
-        transport: {
-          type: "direct-websocket",
-          url: "ws://127.0.0.1:4500",
-          authentication: { type: "none" },
-        },
+        transport: decodeTransport({
+          type: "cocoa-host",
+          url: "ws://127.0.0.1:4510",
+          key: "host_key",
+        }),
       },
       constructors,
     ).pipe(Effect.flip);
 
     expect(error._tag).toBe("CodexEndpointInitializationError");
-    expect(acquired).toEqual(["direct"]);
-    expect(finalized).toEqual(["direct"]);
+    expect(acquired).toEqual(["host"]);
+    expect(finalized).toEqual(["host"]);
   }).pipe(Effect.scoped, Effect.provide(dependencies)),
 );

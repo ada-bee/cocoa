@@ -3,7 +3,6 @@ import {
   ArchiveX,
   InfoIcon,
   LoaderIcon,
-  PlusIcon,
   RefreshCwIcon,
   SettingsIcon,
 } from "lucide-react";
@@ -106,9 +105,9 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
-import { COCOA_PROVIDER_CLIENT_DEFINITIONS, getDriverOption } from "./providerDriverMeta";
+import { getDriverOption } from "./providerDriverMeta";
+import { deriveCocoaHostConnections } from "./HostConnectionsSettings.logic";
 import {
   backgroundActivitySharedPolicySettings,
   buildProviderInstanceUpdatePatch,
@@ -297,10 +296,6 @@ function withoutProviderInstanceFavorites(
 ) {
   return favorites.filter((favorite) => favorite.provider !== instanceId);
 }
-
-const PROVIDER_SETTINGS = COCOA_PROVIDER_CLIENT_DEFINITIONS.map((definition) => ({
-  provider: definition.value,
-}));
 
 function ProviderLastChecked({ lastCheckedAt }: { lastCheckedAt: string | null }) {
   useRelativeTimeTick();
@@ -1628,17 +1623,8 @@ export function ProviderSettingsPanel() {
     reportFailure: false,
   });
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
-  const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const refreshingRef = useRef(false);
-  const visibleProviderSettings = PROVIDER_SETTINGS.filter(
-    (providerSettings) =>
-      providerSettings.provider !== "cursor" ||
-      serverProviders.some(
-        (provider) =>
-          provider.instanceId === defaultInstanceIdForDriver(ProviderDriverKind.make("cursor")),
-      ),
-  );
   const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
   const textGenInstanceId = textGenerationModelSelection.instanceId;
   const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
@@ -1688,55 +1674,14 @@ export function ProviderSettingsPanel() {
     readonly instance: ProviderInstanceConfig;
     readonly driver: ProviderDriverKind;
     readonly isDefault: boolean;
-    readonly isDirty?: boolean;
   }
 
-  const instancesByDriver = new Map<
-    ProviderDriverKind,
-    Array<[ProviderInstanceId, ProviderInstanceConfig]>
-  >();
-  for (const [rawId, instance] of Object.entries(settings.providerInstances ?? {})) {
-    const driver = instance.driver;
-    const list = instancesByDriver.get(driver) ?? [];
-    list.push([rawId as ProviderInstanceId, instance]);
-    instancesByDriver.set(driver, list);
-  }
-
-  const rows: InstanceRow[] = [];
-
-  for (const providerSettings of visibleProviderSettings) {
-    type LegacyProviderSettings = (typeof settings.providers)[keyof typeof settings.providers];
-    const legacyProviders = settings.providers as Record<string, LegacyProviderSettings>;
-    const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
-      string,
-      LegacyProviderSettings
-    >;
-    const driver = providerSettings.provider;
-    const defaultInstanceId = defaultInstanceIdForDriver(driver);
-    const explicitInstance = settings.providerInstances?.[defaultInstanceId];
-    const legacyConfig = legacyProviders[providerSettings.provider]!;
-    const defaultLegacyConfig = defaultLegacyProviders[providerSettings.provider]!;
-    const effectiveInstance: ProviderInstanceConfig =
-      explicitInstance ??
-      ({
-        driver,
-        enabled: legacyConfig.enabled,
-        config: legacyConfig,
-      } satisfies ProviderInstanceConfig);
-    const isDirty =
-      explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig);
-    rows.push({
-      instanceId: defaultInstanceId,
-      instance: effectiveInstance,
-      driver,
-      isDefault: true,
-      isDirty,
-    });
-    for (const [id, instance] of instancesByDriver.get(providerSettings.provider) ?? []) {
-      if (id === defaultInstanceId) continue;
-      rows.push({ instanceId: id, instance, driver: instance.driver, isDefault: false });
-    }
-  }
+  const rows: InstanceRow[] = deriveCocoaHostConnections(settings).map((connection) => ({
+    instanceId: connection.instanceId,
+    instance: connection.instance,
+    driver: connection.instance.driver,
+    isDefault: connection.instanceId === defaultInstanceIdForDriver(connection.instance.driver),
+  }));
 
   const updateProviderInstance = (
     row: InstanceRow,
@@ -1757,14 +1702,6 @@ export function ProviderSettingsPanel() {
         textGenerationModelSelection: options?.textGenerationModelSelection,
       }),
     );
-  };
-
-  const deleteProviderInstance = (id: ProviderInstanceId) => {
-    updateSettings({
-      providerInstances: withoutProviderInstanceKey(settings.providerInstances, id),
-      providerModelPreferences: withoutProviderInstanceKey(settings.providerModelPreferences, id),
-      favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], id),
-    });
   };
 
   const updateProviderModelPreferences = (
@@ -1811,29 +1748,6 @@ export function ProviderSettingsPanel() {
     });
   };
 
-  const resetDefaultInstance = (driverKind: ProviderDriverKind) => {
-    type LegacyProviderSettings = (typeof settings.providers)[keyof typeof settings.providers];
-    const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
-      string,
-      LegacyProviderSettings | undefined
-    >;
-    const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
-    const defaultLegacyProvider = defaultLegacyProviders[driverKind];
-    if (defaultLegacyProvider === undefined) return;
-    updateSettings({
-      providers: {
-        ...settings.providers,
-        [driverKind]: defaultLegacyProvider,
-      } as typeof settings.providers,
-      providerInstances: withoutProviderInstanceKey(settings.providerInstances, defaultInstanceId),
-      providerModelPreferences: withoutProviderInstanceKey(
-        settings.providerModelPreferences,
-        defaultInstanceId,
-      ),
-      favorites: withoutProviderInstanceFavorites(settings.favorites ?? [], defaultInstanceId),
-    });
-  };
-
   return (
     <SettingsPageContainer>
       <SettingsSection
@@ -1841,22 +1755,6 @@ export function ProviderSettingsPanel() {
         headerAction={
           <div className="flex items-center gap-1.5">
             <ProviderLastChecked lastCheckedAt={lastCheckedAt} />
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    size="icon-xs"
-                    variant="ghost"
-                    className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-                    onClick={() => setIsAddInstanceDialogOpen(true)}
-                    aria-label="Add provider instance"
-                  >
-                    <PlusIcon className="size-3" />
-                  </Button>
-                }
-              />
-              <TooltipPopup side="top">Add provider instance</TooltipPopup>
-            </Tooltip>
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -1944,6 +1842,18 @@ export function ProviderSettingsPanel() {
           }
         />
 
+        {rows.length === 0 ? (
+          <SettingsRow
+            title="No connected providers"
+            description="Add a Cocoa host connection before configuring provider models."
+            control={
+              <Button render={<Link to="/settings/connections" />} size="sm" variant="outline">
+                Open Connections
+              </Button>
+            }
+          />
+        ) : null}
+
         {rows.map((row) => {
           const driverOption = getDriverOption(row.driver);
           const liveProvider = serverProviders.find(
@@ -1956,14 +1866,6 @@ export function ProviderSettingsPanel() {
           const favoriteModels = Arr.filterMap(settings.favorites ?? [], (favorite) =>
             favorite.provider === row.instanceId ? Result.succeed(favorite.model) : Result.failVoid,
           );
-          const resetLabel = driverOption?.label ?? String(row.driver);
-          const headerAction =
-            row.isDefault && row.isDirty ? (
-              <SettingResetButton
-                label={`${resetLabel} provider settings`}
-                onClick={() => resetDefaultInstance(row.driver)}
-              />
-            ) : null;
           return (
             <ProviderInstanceCard
               key={row.instanceId}
@@ -1991,8 +1893,7 @@ export function ProviderSettingsPanel() {
                   updateProviderInstance(row, next);
                 }
               }}
-              onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
-              headerAction={headerAction}
+              connectionManaged
               hiddenModels={modelPreferences.hiddenModels}
               favoriteModels={favoriteModels}
               modelOrder={modelPreferences.modelOrder}
@@ -2015,10 +1916,6 @@ export function ProviderSettingsPanel() {
           );
         })}
       </SettingsSection>
-
-      {isAddInstanceDialogOpen ? (
-        <AddProviderInstanceDialog open onOpenChange={setIsAddInstanceDialogOpen} />
-      ) : null}
     </SettingsPageContainer>
   );
 }

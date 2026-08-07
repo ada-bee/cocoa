@@ -1037,9 +1037,9 @@ it.live(
                 driver: "codex",
                 config: {
                   endpointTransport: {
-                    type: "direct-websocket",
+                    type: "cocoa-host",
                     url: "wss://macaroni.test:4500",
-                    authentication: { type: "none" },
+                    key: "test_host_key",
                   },
                 },
               },
@@ -1047,9 +1047,9 @@ it.live(
                 driver: "codex",
                 config: {
                   endpointTransport: {
-                    type: "direct-websocket",
+                    type: "cocoa-host",
                     url: "wss://rigatoni-alfredo.test:4500",
-                    authentication: { type: "none" },
+                    key: "test_host_key",
                   },
                 },
               },

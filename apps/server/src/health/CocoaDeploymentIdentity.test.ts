@@ -21,14 +21,9 @@ const settings: ServerSettings = {
       enabled: true,
       config: {
         endpointTransport: {
-          type: "direct-websocket",
+          type: "cocoa-host",
           url: "wss://macbook.example.test/codex",
-          authentication: {
-            type: "signed-bearer-token",
-            credential: { source: "file", path: "/run/secrets/codex-token" },
-            issuer: "cocoa",
-            audience: "codex",
-          },
+          key: "test_host_key",
         },
       },
     },
@@ -50,7 +45,9 @@ describe("Cocoa deployment identities", () => {
   it("is stable across object key order and changes with loaded provider configuration", () => {
     const reordered = {
       ...settings,
-      providerInstances: Object.fromEntries(Object.entries(settings.providerInstances).reverse()),
+      providerInstances: Object.fromEntries(
+        Object.entries(settings.providerInstances).toReversed(),
+      ),
     };
     expect(computeCocoaSettingsIdentity(reordered)).toBe(computeCocoaSettingsIdentity(settings));
     expect(
