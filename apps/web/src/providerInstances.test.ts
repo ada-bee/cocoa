@@ -1,4 +1,10 @@
-import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
+import {
+  CocoaHostKey,
+  ProviderDriverKind,
+  ProviderHostId,
+  ProviderInstanceId,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import {
   applyProviderInstanceSettings,
@@ -8,9 +14,65 @@ import {
   isProviderInstancePickerReady,
   isProviderInstancePickerVisible,
   resolveDefaultProviderModelSelection,
+  resolveProviderHostAppearance,
   resolveSelectableProviderInstance,
   resolveProviderDriverKindForInstanceSelection,
 } from "./providerInstances";
+
+describe("resolveProviderHostAppearance", () => {
+  it("resolves the configured semantic icon and normalized accent", () => {
+    const instanceId = ProviderInstanceId.make("codex_rigatoni");
+    const hostId = ProviderHostId.make("rigatoni");
+
+    expect(
+      resolveProviderHostAppearance(
+        {
+          providerInstances: {
+            [instanceId]: { driver: ProviderDriverKind.make("codex"), hostId },
+          },
+          providerHosts: {
+            [hostId]: {
+              transport: {
+                type: "cocoa-host",
+                url: "wss://rigatoni.test/socket",
+                key: CocoaHostKey.make("secret"),
+              },
+              icon: "database",
+              accentColor: "#7c3aed",
+            },
+          },
+        },
+        instanceId,
+      ),
+    ).toEqual({ icon: "database", accentColor: "#7c3aed" });
+  });
+
+  it("uses the default icon and ignores invalid accent values", () => {
+    const instanceId = ProviderInstanceId.make("codex_default");
+    const hostId = ProviderHostId.make("default_host");
+
+    expect(
+      resolveProviderHostAppearance(
+        {
+          providerInstances: {
+            [instanceId]: { driver: ProviderDriverKind.make("codex"), hostId },
+          },
+          providerHosts: {
+            [hostId]: {
+              transport: {
+                type: "cocoa-host",
+                url: "wss://default.test/socket",
+                key: CocoaHostKey.make("secret"),
+              },
+              accentColor: "not-a-color",
+            },
+          },
+        },
+        instanceId,
+      ),
+    ).toEqual({ icon: "server" });
+  });
+});
 
 function provider(input: {
   provider: ProviderDriverKind;

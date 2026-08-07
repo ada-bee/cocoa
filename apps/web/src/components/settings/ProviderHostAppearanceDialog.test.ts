@@ -5,10 +5,12 @@ import {
   filterProviderHostIconOptions,
   PROVIDER_HOST_ICON_OPTIONS,
 } from "./ProviderHostAppearanceDialog";
+import { PROVIDER_HOST_ICON_COMPONENTS } from "../ProviderHostIcon";
 
 describe("provider host appearance icon catalog", () => {
   it("maps every contract icon exactly once", () => {
     expect(PROVIDER_HOST_ICON_OPTIONS.map((option) => option.id)).toEqual(PROVIDER_HOST_ICONS);
+    expect(Object.keys(PROVIDER_HOST_ICON_COMPONENTS)).toEqual(PROVIDER_HOST_ICONS);
   });
 
   it("searches icon labels and infrastructure aliases", () => {

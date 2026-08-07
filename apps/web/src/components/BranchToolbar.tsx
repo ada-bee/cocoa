@@ -2,12 +2,10 @@ import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environ
 import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
-  CloudIcon,
   FolderGit2Icon,
   FolderGitIcon,
   FolderIcon,
   HistoryIcon,
-  MonitorIcon,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -26,7 +24,10 @@ import {
   shouldShowEnvironmentIndicator,
 } from "./BranchToolbar.logic";
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
-import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
+import {
+  BranchToolbarEnvironmentIcon,
+  BranchToolbarEnvironmentSelector,
+} from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
 import { Button } from "./ui/button";
 import {
@@ -113,12 +114,14 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
       ? resolveEnvModeLabel("worktree")
       : resolveCurrentWorkspaceLabel(activeWorktreePath);
   const isLocked = envLocked || envModeLocked;
-  const EnvironmentIcon = activeEnvironment?.isPrimary ? MonitorIcon : CloudIcon;
   const icon = showEnvironmentIndicator ? (
     // Button's base styles apply `-mx-0.5` to descendant SVGs, which eats 4px
     // out of whatever gap we set. mx-0! cancels that so gap-0.5 reads as 2px.
     <span className="inline-flex shrink-0 items-center gap-0.5">
-      <EnvironmentIcon className="size-3 shrink-0 mx-0!" />
+      <BranchToolbarEnvironmentIcon
+        environment={activeEnvironment}
+        className="size-3 shrink-0 mx-0!"
+      />
       <WorkspaceIcon className="size-3 shrink-0 mx-0!" />
     </span>
   ) : (
@@ -166,7 +169,6 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
                 }}
               >
                 {availableEnvironments.map((env) => {
-                  const Icon = env.isPrimary ? MonitorIcon : CloudIcon;
                   return (
                     <MenuRadioItem
                       key={env.selectionId ?? env.environmentId}
@@ -174,7 +176,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
                       value={env.selectionId ?? env.environmentId}
                     >
                       <span className="flex min-w-0 items-center gap-1.5">
-                        <Icon className="size-3" />
+                        <BranchToolbarEnvironmentIcon environment={env} className="size-3" />
                         <span className="min-w-0 truncate">{env.label}</span>
                       </span>
                     </MenuRadioItem>
@@ -404,6 +406,12 @@ export const BranchToolbar = memo(function BranchToolbar({
     providerHostLabel !== null &&
     providerHostLabel !== undefined &&
     (availableEnvironments?.length ?? 0) <= 1;
+  const providerHostEnvironment =
+    availableEnvironments?.find(
+      (environment) =>
+        environment.environmentId === environmentId &&
+        (activeProject === null || environment.projectId === activeProject.id),
+    ) ?? availableEnvironments?.find((environment) => environment.environmentId === environmentId);
   const effectiveEnvironmentOptions: readonly EnvironmentOption[] | undefined =
     useSingleProviderHostAdapter
       ? [
@@ -412,6 +420,12 @@ export const BranchToolbar = memo(function BranchToolbar({
             projectId: activeProject?.id ?? activeProjectRef!.projectId,
             label: providerHostLabel,
             isPrimary: false,
+            ...(providerHostEnvironment?.hostIcon
+              ? { hostIcon: providerHostEnvironment.hostIcon }
+              : {}),
+            ...(providerHostEnvironment?.hostAccentColor
+              ? { hostAccentColor: providerHostEnvironment.hostAccentColor }
+              : {}),
           },
         ]
       : availableEnvironments;

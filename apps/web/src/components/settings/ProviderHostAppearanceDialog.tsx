@@ -1,49 +1,11 @@
 "use client";
 
 import { DEFAULT_PROVIDER_HOST_ICON, type ProviderHostIcon } from "@t3tools/contracts";
-import {
-  BotIcon,
-  BoxesIcon,
-  BracesIcon,
-  BugIcon,
-  Building2Icon,
-  CloudIcon,
-  Code2Icon,
-  ContainerIcon,
-  CpuIcon,
-  DatabaseIcon,
-  FactoryIcon,
-  FlaskConicalIcon,
-  Gamepad2Icon,
-  GitBranchIcon,
-  GlobeIcon,
-  HardDriveIcon,
-  HouseIcon,
-  KeyRoundIcon,
-  LaptopIcon,
-  LockIcon,
-  MemoryStickIcon,
-  MonitorIcon,
-  NetworkIcon,
-  RadioTowerIcon,
-  RocketIcon,
-  RouterIcon,
-  SearchIcon,
-  ServerIcon,
-  SettingsIcon,
-  ShieldIcon,
-  SmartphoneIcon,
-  SparklesIcon,
-  TerminalIcon,
-  WifiIcon,
-  WorkflowIcon,
-  WrenchIcon,
-  ZapIcon,
-  type LucideIcon,
-} from "lucide-react";
-import { useMemo, useState, type CSSProperties } from "react";
+import { SearchIcon } from "lucide-react";
+import { useMemo, useState } from "react";
 
 import { cn } from "../../lib/utils";
+import { PROVIDER_HOST_ICON_COMPONENTS } from "../ProviderHostIcon";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -61,54 +23,50 @@ interface ProviderHostIconOption {
   readonly id: ProviderHostIcon;
   readonly label: string;
   readonly keywords: ReadonlyArray<string>;
-  readonly icon: LucideIcon;
 }
 
 export const PROVIDER_HOST_ICON_OPTIONS: ReadonlyArray<ProviderHostIconOption> = [
-  { id: "server", label: "Server", keywords: ["host", "machine"], icon: ServerIcon },
-  { id: "monitor", label: "Desktop", keywords: ["screen", "computer"], icon: MonitorIcon },
-  { id: "laptop", label: "Laptop", keywords: ["notebook", "computer"], icon: LaptopIcon },
-  { id: "smartphone", label: "Phone", keywords: ["mobile", "device"], icon: SmartphoneIcon },
-  { id: "cloud", label: "Cloud", keywords: ["remote", "hosted"], icon: CloudIcon },
-  { id: "database", label: "Database", keywords: ["storage", "data"], icon: DatabaseIcon },
-  { id: "hard-drive", label: "Drive", keywords: ["disk", "storage"], icon: HardDriveIcon },
-  { id: "container", label: "Container", keywords: ["docker", "pod"], icon: ContainerIcon },
-  { id: "boxes", label: "Cluster", keywords: ["stack", "nodes"], icon: BoxesIcon },
-  { id: "cpu", label: "Processor", keywords: ["chip", "compute"], icon: CpuIcon },
-  { id: "memory-stick", label: "Memory", keywords: ["ram", "hardware"], icon: MemoryStickIcon },
-  { id: "network", label: "Network", keywords: ["nodes", "lan"], icon: NetworkIcon },
-  { id: "router", label: "Router", keywords: ["network", "gateway"], icon: RouterIcon },
-  { id: "wifi", label: "Wireless", keywords: ["wifi", "network"], icon: WifiIcon },
-  { id: "terminal", label: "Terminal", keywords: ["shell", "console"], icon: TerminalIcon },
-  { id: "code", label: "Code", keywords: ["developer", "source"], icon: Code2Icon },
-  { id: "braces", label: "Braces", keywords: ["code", "json"], icon: BracesIcon },
-  { id: "bot", label: "Bot", keywords: ["agent", "robot"], icon: BotIcon },
-  { id: "sparkles", label: "Sparkles", keywords: ["ai", "magic"], icon: SparklesIcon },
-  { id: "globe", label: "Globe", keywords: ["world", "internet"], icon: GlobeIcon },
-  { id: "house", label: "Home", keywords: ["local", "personal"], icon: HouseIcon },
-  { id: "building", label: "Building", keywords: ["office", "work"], icon: Building2Icon },
-  { id: "factory", label: "Factory", keywords: ["production", "build"], icon: FactoryIcon },
-  { id: "shield", label: "Shield", keywords: ["secure", "protected"], icon: ShieldIcon },
-  { id: "lock", label: "Lock", keywords: ["private", "secure"], icon: LockIcon },
-  { id: "key", label: "Key", keywords: ["access", "credential"], icon: KeyRoundIcon },
-  { id: "rocket", label: "Rocket", keywords: ["launch", "deploy"], icon: RocketIcon },
-  { id: "zap", label: "Lightning", keywords: ["fast", "power"], icon: ZapIcon },
-  { id: "workflow", label: "Workflow", keywords: ["pipeline", "automation"], icon: WorkflowIcon },
+  { id: "server", label: "Server", keywords: ["host", "machine"] },
+  { id: "monitor", label: "Desktop", keywords: ["screen", "computer"] },
+  { id: "laptop", label: "Laptop", keywords: ["notebook", "computer"] },
+  { id: "smartphone", label: "Phone", keywords: ["mobile", "device"] },
+  { id: "cloud", label: "Cloud", keywords: ["remote", "hosted"] },
+  { id: "database", label: "Database", keywords: ["storage", "data"] },
+  { id: "hard-drive", label: "Drive", keywords: ["disk", "storage"] },
+  { id: "container", label: "Container", keywords: ["docker", "pod"] },
+  { id: "boxes", label: "Cluster", keywords: ["stack", "nodes"] },
+  { id: "cpu", label: "Processor", keywords: ["chip", "compute"] },
+  { id: "memory-stick", label: "Memory", keywords: ["ram", "hardware"] },
+  { id: "network", label: "Network", keywords: ["nodes", "lan"] },
+  { id: "router", label: "Router", keywords: ["network", "gateway"] },
+  { id: "wifi", label: "Wireless", keywords: ["wifi", "network"] },
+  { id: "terminal", label: "Terminal", keywords: ["shell", "console"] },
+  { id: "code", label: "Code", keywords: ["developer", "source"] },
+  { id: "braces", label: "Braces", keywords: ["code", "json"] },
+  { id: "bot", label: "Bot", keywords: ["agent", "robot"] },
+  { id: "sparkles", label: "Sparkles", keywords: ["ai", "magic"] },
+  { id: "globe", label: "Globe", keywords: ["world", "internet"] },
+  { id: "house", label: "Home", keywords: ["local", "personal"] },
+  { id: "building", label: "Building", keywords: ["office", "work"] },
+  { id: "factory", label: "Factory", keywords: ["production", "build"] },
+  { id: "shield", label: "Shield", keywords: ["secure", "protected"] },
+  { id: "lock", label: "Lock", keywords: ["private", "secure"] },
+  { id: "key", label: "Key", keywords: ["access", "credential"] },
+  { id: "rocket", label: "Rocket", keywords: ["launch", "deploy"] },
+  { id: "zap", label: "Lightning", keywords: ["fast", "power"] },
+  { id: "workflow", label: "Workflow", keywords: ["pipeline", "automation"] },
   {
     id: "git-branch",
     label: "Git branch",
     keywords: ["source", "repository"],
-    icon: GitBranchIcon,
   },
-  { id: "wrench", label: "Wrench", keywords: ["tools", "maintenance"], icon: WrenchIcon },
-  { id: "settings", label: "Settings", keywords: ["configuration", "gear"], icon: SettingsIcon },
-  { id: "flask", label: "Flask", keywords: ["experiment", "test"], icon: FlaskConicalIcon },
-  { id: "bug", label: "Bug", keywords: ["debug", "development"], icon: BugIcon },
-  { id: "gamepad", label: "Gamepad", keywords: ["gaming", "play"], icon: Gamepad2Icon },
-  { id: "radio-tower", label: "Radio tower", keywords: ["signal", "remote"], icon: RadioTowerIcon },
+  { id: "wrench", label: "Wrench", keywords: ["tools", "maintenance"] },
+  { id: "settings", label: "Settings", keywords: ["configuration", "gear"] },
+  { id: "flask", label: "Flask", keywords: ["experiment", "test"] },
+  { id: "bug", label: "Bug", keywords: ["debug", "development"] },
+  { id: "gamepad", label: "Gamepad", keywords: ["gaming", "play"] },
+  { id: "radio-tower", label: "Radio tower", keywords: ["signal", "remote"] },
 ];
-
-const ICON_BY_ID = new Map(PROVIDER_HOST_ICON_OPTIONS.map((option) => [option.id, option.icon]));
 
 export function filterProviderHostIconOptions(
   query: string,
@@ -120,15 +78,6 @@ export function filterProviderHostIconOptions(
       value.toLocaleLowerCase().includes(normalized),
     ),
   );
-}
-
-export function ProviderHostIconGlyph(props: {
-  readonly icon: ProviderHostIcon | undefined;
-  readonly className?: string;
-  readonly style?: CSSProperties;
-}) {
-  const Icon = ICON_BY_ID.get(props.icon ?? DEFAULT_PROVIDER_HOST_ICON) ?? ServerIcon;
-  return <Icon className={props.className} style={props.style} aria-hidden />;
 }
 
 export function ProviderHostAppearanceDialog(props: {
@@ -191,6 +140,7 @@ export function ProviderHostAppearanceDialog(props: {
             <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-8">
               {filteredIcons.map((option) => {
                 const selected = option.id === icon;
+                const Icon = PROVIDER_HOST_ICON_COMPONENTS[option.id];
                 return (
                   <button
                     key={option.id}
@@ -207,7 +157,7 @@ export function ProviderHostAppearanceDialog(props: {
                     aria-pressed={selected}
                     title={option.label}
                   >
-                    <option.icon className="size-4.5" aria-hidden />
+                    <Icon className="size-4.5" aria-hidden />
                   </button>
                 );
               })}

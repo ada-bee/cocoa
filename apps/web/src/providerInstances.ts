@@ -13,11 +13,13 @@
  * @module providerInstances
  */
 import {
+  DEFAULT_PROVIDER_HOST_ICON,
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   PROVIDER_DISPLAY_NAMES,
   type ModelSelection,
   type ProviderDriverKind,
+  type ProviderHostIcon,
   ProviderInstanceId,
   type ServerProvider,
   type ServerProviderModel,
@@ -123,6 +125,27 @@ export function normalizeProviderAccentColor(value: string | undefined): string 
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   return /^#[0-9a-fA-F]{6}$/u.test(trimmed) ? trimmed : undefined;
+}
+
+export interface ProviderHostAppearance {
+  readonly icon: ProviderHostIcon;
+  readonly accentColor?: string;
+}
+
+/** Resolve the host-owned identity for a provider-bound UI surface. */
+export function resolveProviderHostAppearance(
+  settings: Pick<ServerSettings, "providerHosts" | "providerInstances">,
+  instanceId: ProviderInstanceId,
+): ProviderHostAppearance | undefined {
+  const hostId = settings.providerInstances?.[instanceId]?.hostId;
+  const host = hostId ? settings.providerHosts?.[hostId] : undefined;
+  if (!host) return undefined;
+
+  const accentColor = normalizeProviderAccentColor(host.accentColor);
+  return {
+    icon: host.icon ?? DEFAULT_PROVIDER_HOST_ICON,
+    ...(accentColor ? { accentColor } : {}),
+  };
 }
 
 /**

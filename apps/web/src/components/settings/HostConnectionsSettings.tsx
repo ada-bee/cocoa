@@ -31,10 +31,8 @@ import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { toastManager } from "../ui/toast";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
-import {
-  ProviderHostAppearanceDialog,
-  ProviderHostIconGlyph,
-} from "./ProviderHostAppearanceDialog";
+import { ProviderHostIconGlyph } from "../ProviderHostIcon";
+import { ProviderHostAppearanceDialog } from "./ProviderHostAppearanceDialog";
 import { getDriverOption } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
 import {
