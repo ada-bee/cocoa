@@ -1,0 +1,80 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="128"
+  height="128"
+  viewBox="0 0 128 128"
+  fill="none"
+  role="img"
+  aria-labelledby="title description"
+>
+  <title id="title">Cocoa icon</title>
+  <desc id="description">Three pastel marshmallow cubes with restrained glass depth and highlights.</desc>
+
+  <defs>
+    <clipPath id="icon-mask">
+      <rect width="128" height="128" rx="28" />
+    </clipPath>
+    <linearGradient id="background" x1="12" y1="6" x2="116" y2="125" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#414B73" />
+      <stop offset="1" stop-color="#222944" />
+    </linearGradient>
+    <linearGradient id="peach" x1="53" y1="15" x2="95" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD5CE" />
+      <stop offset="0.5" stop-color="#F5B3A8" />
+      <stop offset="1" stop-color="#E49691" />
+    </linearGradient>
+    <linearGradient id="yellow" x1="27" y1="37" x2="74" y2="87" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF1B9" />
+      <stop offset="0.5" stop-color="#F3D887" />
+      <stop offset="1" stop-color="#DDBE69" />
+    </linearGradient>
+    <linearGradient id="mint" x1="39" y1="60" x2="98" y2="114" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#D4F3E9" />
+      <stop offset="0.5" stop-color="#A7DDCB" />
+      <stop offset="1" stop-color="#7CC1AE" />
+    </linearGradient>
+    <filter id="ambient-blur" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="12" />
+    </filter>
+    <filter id="soft-shadow" x="-35%" y="-35%" width="180%" height="190%">
+      <feDropShadow dx="0" dy="4" stdDeviation="3" flood-color="#10152A" flood-opacity="0.38" />
+    </filter>
+    <filter id="face-shadow" x="-30%" y="-30%" width="170%" height="180%">
+      <feDropShadow dx="0" dy="1" stdDeviation="0.7" flood-color="#FFFFFF" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <g clip-path="url(#icon-mask)">
+    <rect width="128" height="128" fill="url(#background)" />
+    <circle cx="101" cy="24" r="26" fill="#F492AA" opacity="0.2" filter="url(#ambient-blur)" />
+    <circle cx="25" cy="69" r="28" fill="#F3D476" opacity="0.16" filter="url(#ambient-blur)" />
+    <circle cx="94" cy="110" r="30" fill="#72CFBA" opacity="0.2" filter="url(#ambient-blur)" />
+
+    <g transform="rotate(12 74 37)" filter="url(#soft-shadow)">
+      <rect x="49" y="13" width="50" height="48" rx="17" fill="url(#peach)" fill-opacity="0.94" stroke="#FFFFFF" stroke-opacity="0.38" />
+      <path d="M58 20C67 16 82 17 91 24" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" opacity="0.62" />
+    </g>
+    <g transform="rotate(-10 50 61.5)" filter="url(#soft-shadow)">
+      <rect x="22" y="35" width="56" height="53" rx="18" fill="url(#yellow)" fill-opacity="0.94" stroke="#FFFFFF" stroke-opacity="0.38" />
+      <path d="M31 43C41 38 58 39 68 45" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" opacity="0.6" />
+    </g>
+    <g transform="rotate(5 68 86)" filter="url(#soft-shadow)">
+      <rect x="34" y="58" width="68" height="56" rx="20" fill="url(#mint)" fill-opacity="0.94" stroke="#FFFFFF" stroke-opacity="0.4" />
+      <path d="M45 66C57 61 77 62 91 69" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" opacity="0.64" />
+    </g>
+
+    <g filter="url(#face-shadow)">
+      <path
+        d="M47 72L55 79L47 86"
+        stroke="#29304D"
+        stroke-width="6"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <path d="M64 86H81" stroke="#29304D" stroke-width="6" stroke-linecap="round" />
+    </g>
+    <circle cx="41" cy="98" r="4" fill="#F17E9B" />
+    <circle cx="89" cy="102" r="4" fill="#F17E9B" />
+    <rect x="0.75" y="0.75" width="126.5" height="126.5" rx="27.25" stroke="#FFFFFF" stroke-width="1.5" opacity="0.15" />
+  </g>
+</svg>
