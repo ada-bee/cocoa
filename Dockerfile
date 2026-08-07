@@ -68,7 +68,7 @@ RUN test -n "${COCOA_BUILD_IDENTITY}" \
 
 COPY --from=build --chown=10001:10001 /opt/cocoa /opt/cocoa
 COPY --chown=10001:10001 --chmod=0640 \
-  deploy/raspberry-pi/settings.example.json \
+  docker/settings.json \
   /data/userdata/settings.json
 
 ENV HOME=/home/cocoa \

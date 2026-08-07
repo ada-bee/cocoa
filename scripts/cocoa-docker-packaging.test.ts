@@ -23,9 +23,9 @@ describe("Cocoa Docker packaging policy", () => {
     expect(dockerfile).not.toMatch(/FROM[^\n]+\b(nix|nixos)\b/i);
   });
 
-  it("preserves the hardened ARM64 gateway runtime contract", () => {
+  it("preserves the hardened gateway runtime contract", () => {
     const dockerfile = readRootFile("Dockerfile");
-    const compose = readRootFile("deploy/raspberry-pi/compose.yaml");
+    const compose = readRootFile("compose.yaml");
 
     for (const required of [
       "ARG COCOA_BUILD_IDENTITY",
@@ -40,16 +40,25 @@ describe("Cocoa Docker packaging policy", () => {
       expect(dockerfile).toContain(required);
     }
 
-    expect(compose).toContain("platform: linux/arm64");
-    expect(compose).toContain("pull_policy: never");
-    expect(compose).toContain("COCOA_GATEWAY_IMAGE_REFERENCE");
-    expect(compose).not.toContain("cocoa-gateway:latest");
+    expect(compose).toContain("image: ghcr.io/ada-bee/cocoa:${COCOA_VERSION:-latest}");
+    expect(compose).toContain("pull_policy: always");
+    expect(compose).not.toContain("platform:");
+    expect(compose).not.toContain("build:");
+    expect(compose).not.toContain("COCOA_CLIENT_AUTH_MODE: none");
     expect(compose).not.toContain("/var/run/docker.sock");
 
-    const verifier = readRootFile("deploy/raspberry-pi/verify-image.sh");
-    expect(verifier).toContain("forbidden provider-host or build executable");
-    expect(verifier).toContain("node-compatibility-target /usr/local/bin/bun");
-    expect(verifier).toContain("runtime credential material found in gateway image");
+    expect(readRootFile("docker/settings.json")).toBe("{}\n");
+  });
+
+  it("publishes each release as a multi-architecture GHCR image", () => {
+    const workflow = readRootFile(".github/workflows/publish-container.yml");
+
+    expect(workflow).toContain("types: [published]");
+    expect(workflow).toContain("IMAGE_NAME: ghcr.io/${{ github.repository }}");
+    expect(workflow).toContain("platforms: linux/amd64,linux/arm64");
+    expect(workflow).toContain("push: true");
+    expect(workflow).toContain("value=${{ github.event.release.tag_name }}");
+    expect(workflow).toContain("COCOA_BUILD_IDENTITY=git:${{ steps.source.outputs.sha }}");
   });
 
   it("keeps credentials, local state, and build products out of the context", () => {
@@ -63,7 +72,7 @@ describe("Cocoa Docker packaging policy", () => {
       "userdata",
       "worktrees",
       "caches",
-      "deploy/raspberry-pi/secrets",
+      "**/secrets",
     ]) {
       expect(dockerignore).toContain(excluded);
     }

@@ -509,7 +509,10 @@ tunnel path.
 
 ### Phase 9: Self-hosted packaging
 
-- Produce an ARM64-compatible gateway + web container.
+- Build an amd64/arm64 gateway + web image for each release and publish it to
+  GHCR.
+- Keep image production separate from deployment; all gateway hosts, including
+  the Raspberry Pi, run the published image through the sample Compose file.
 - Persist only SQLite, gateway configuration, and managed temporary uploads.
 - Add health/readiness endpoints for the gateway and configured provider endpoints.
 - Document configuration through generated help and example deployment files kept

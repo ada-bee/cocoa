@@ -14,7 +14,7 @@ import {
 
 export const COCOA_ACCEPTANCE_PREFLIGHT_SCHEMA_VERSION = 2 as const;
 export const DEFAULT_COCOA_ACCEPTANCE_GATEWAY = "http://127.0.0.1:7331/";
-export const DEFAULT_COCOA_ACCEPTANCE_SETTINGS = "deploy/raspberry-pi/settings.example.json";
+export const DEFAULT_COCOA_ACCEPTANCE_SETTINGS = "settings.json";
 export const DEFAULT_COCOA_ACCEPTANCE_TIMEOUT_MS = 5_000;
 export const COCOA_ACCEPTANCE_MAX_RESPONSE_BYTES = 1_048_576;
 export const COCOA_ENDPOINT_SECRET_MINIMUM_BYTES = 48;

@@ -3,8 +3,6 @@ import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import raspberryPiSettings from "../../../../deploy/raspberry-pi/settings.example.json" with { type: "json" };
-
 import {
   CocoaGatewayPolicyError,
   resolveCocoaGatewayProviderInstanceConfigMap,
@@ -50,38 +48,47 @@ const expectReason = (settings: ServerSettings, reason: CocoaGatewayPolicyError[
   });
 
 describe("Cocoa gateway provider policy", () => {
-  it.effect(
-    "decodes the Pi deployment endpoints with administrator-installed checkpoint helpers",
-    () =>
-      Effect.gen(function* () {
-        const settings = decodeSettings(raspberryPiSettings);
-        const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(settings);
+  it.effect("accepts administrator-installed endpoint tools", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({
+        providerInstances: {
+          macbook_air: {
+            driver: "codex",
+            config: {
+              endpointTransport: {
+                type: "cocoa-host",
+                url: "wss://macaroni.test:4500",
+                key: "test_host_key",
+              },
+              workspaceHelper: {
+                type: "inline-python3-v1",
+                executablePath: "/usr/bin/python3",
+              },
+              endpointGitExecutablePath: "/usr/bin/git",
+              checkpointHelper: {
+                type: "cocoa-checkpoint-helper-v1",
+                executablePath: "/opt/cocoa/bin/cocoa-workspace-helper",
+                expectedProtocol: 1,
+              },
+            },
+          },
+        },
+        textGenerationModelSelection: {
+          instanceId: "macbook_air",
+          model: "gpt-5.4",
+        },
+      });
+      const resolved = yield* resolveCocoaGatewayProviderInstanceConfigMap(settings);
 
-        expect(resolved[ProviderInstanceId.make("codex_macaroni")]?.config).toMatchObject({
-          endpointGitExecutablePath: "/usr/bin/git",
-          checkpointHelper: {
-            type: "cocoa-checkpoint-helper-v1",
-            executablePath: "/Users/ada-bee/.nix-profile/bin/cocoa-workspace-helper",
-            expectedProtocol: 1,
-          },
-        });
-        expect(resolved[ProviderInstanceId.make("codex_rigatoni")]?.config).toMatchObject({
-          endpointTransport: {
-            type: "cocoa-host",
-            url: "ws://192.168.20.60:4500",
-            allowInsecureTransport: true,
-            key: "test_host_key",
-          },
-        });
-        expect(resolved[ProviderInstanceId.make("codex_rigatoni_alfredo")]?.config).toMatchObject({
-          endpointGitExecutablePath: "/usr/bin/git",
-          checkpointHelper: {
-            type: "cocoa-checkpoint-helper-v1",
-            executablePath: "/home/ada-bee/.nix-profile/bin/cocoa-workspace-helper",
-            expectedProtocol: 1,
-          },
-        });
-      }),
+      expect(resolved[ProviderInstanceId.make("macbook_air")]?.config).toMatchObject({
+        endpointGitExecutablePath: "/usr/bin/git",
+        checkpointHelper: {
+          type: "cocoa-checkpoint-helper-v1",
+          executablePath: "/opt/cocoa/bin/cocoa-workspace-helper",
+          expectedProtocol: 1,
+        },
+      });
+    }),
   );
 
   it.effect("returns only explicitly configured endpoint-backed Codex instances", () =>
