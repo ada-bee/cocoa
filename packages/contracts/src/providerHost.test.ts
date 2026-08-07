@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
-import { ProviderHostConfig, ProviderHostConfigMap, ProviderHostId } from "./providerHost.ts";
+import {
+  ProviderHostConfig,
+  ProviderHostConfigMap,
+  ProviderHostIcon,
+  ProviderHostId,
+} from "./providerHost.ts";
 
 const decodeProviderHostId = Schema.decodeUnknownSync(ProviderHostId);
 const decodeProviderHostConfig = Schema.decodeUnknownSync(ProviderHostConfig);
 const decodeProviderHostConfigMap = Schema.decodeUnknownSync(ProviderHostConfigMap);
+const decodeProviderHostIcon = Schema.decodeUnknownSync(ProviderHostIcon);
 
 const transport = {
   type: "cocoa-host" as const,
@@ -34,6 +40,7 @@ describe("ProviderHostConfig", () => {
   it("decodes and normalizes a Cocoa host transport", () => {
     const decoded = decodeProviderHostConfig({
       displayName: "  Mac Studio  ",
+      icon: "server",
       iconSvg: "  <svg><path /></svg>  ",
       accentColor: "  #dc2626  ",
       transport,
@@ -41,10 +48,16 @@ describe("ProviderHostConfig", () => {
 
     expect(decoded).toEqual({
       displayName: "Mac Studio",
+      icon: "server",
       iconSvg: "<svg><path /></svg>",
       accentColor: "#dc2626",
       transport,
     });
+  });
+
+  it("accepts only the bounded semantic host icon catalog", () => {
+    expect(decodeProviderHostIcon("database")).toBe("database");
+    expect(() => decodeProviderHostIcon("custom-upload")).toThrow();
   });
 
   it("accepts a transport-only host config", () => {

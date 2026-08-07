@@ -11,7 +11,7 @@ import { createModelSelection } from "@t3tools/shared/model";
 import * as Arr from "effect/Array";
 import * as Equal from "effect/Equal";
 import * as Result from "effect/Result";
-import { ChevronDownIcon, ServerIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { ChevronDownIcon, ServerIcon, Trash2Icon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
@@ -31,6 +31,10 @@ import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { toastManager } from "../ui/toast";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import {
+  ProviderHostAppearanceDialog,
+  ProviderHostIconGlyph,
+} from "./ProviderHostAppearanceDialog";
 import { getDriverOption } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
 import {
@@ -45,9 +49,6 @@ import {
   buildUpdateCocoaHostSettingsPatch,
   deriveCocoaHostConnections,
   parseCocoaHostPairingInput,
-  readCocoaHostIconSvg,
-  sanitizeCocoaHostIconSvg,
-  withCocoaHostIconSvg,
 } from "./HostConnectionsSettings.logic";
 
 function providerStatusLabel(status: string | undefined): string {
@@ -61,10 +62,6 @@ function providerStatusLabel(status: string | undefined): string {
     default:
       return "Checking…";
   }
-}
-
-function svgDataUrl(svg: string): string {
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
 export function HostConnectionsSettings() {
@@ -83,7 +80,15 @@ export function HostConnectionsSection() {
   const [error, setError] = useState<string | null>(null);
   const [openHosts, setOpenHosts] = useState<Record<string, boolean>>({});
   const [openProviders, setOpenProviders] = useState<Record<string, boolean>>({});
+  const [appearanceHostId, setAppearanceHostId] = useState<ProviderHostId | null>(null);
   const connections = useMemo(() => deriveCocoaHostConnections(settings), [settings]);
+  const appearanceConnection = useMemo(
+    () =>
+      appearanceHostId === null
+        ? undefined
+        : connections.find((connection) => connection.hostId === appearanceHostId),
+    [appearanceHostId, connections],
+  );
   const providerByInstanceId = useMemo(
     () => new Map(providers.map((provider) => [provider.instanceId, provider])),
     [providers],
@@ -276,7 +281,6 @@ export function HostConnectionsSection() {
             : undefined;
           const hostName =
             connection.host.displayName ?? new URL(connection.transport.url).hostname;
-          const iconSvg = readCocoaHostIconSvg(connection.host);
           const isHostOpen = openHosts[hostId] ?? true;
           const preferences = (instanceId
             ? settings.providerModelPreferences?.[instanceId]
@@ -325,13 +329,18 @@ export function HostConnectionsSection() {
           return (
             <div key={hostId} className="rounded-xl border border-border/60 bg-card/30">
               <div className="flex items-center gap-3 px-3 py-3 sm:px-4">
-                <span className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border/60 bg-background text-muted-foreground">
-                  {iconSvg ? (
-                    <img className="size-full object-contain" src={svgDataUrl(iconSvg)} alt="" />
-                  ) : (
-                    <ServerIcon className="size-4" aria-hidden />
-                  )}
-                </span>
+                <button
+                  type="button"
+                  className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-background text-muted-foreground transition-colors hover:border-border hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  style={
+                    connection.host.accentColor ? { color: connection.host.accentColor } : undefined
+                  }
+                  onClick={() => setAppearanceHostId(hostId)}
+                  aria-label={`Change appearance for ${hostName}`}
+                  title="Change appearance"
+                >
+                  <ProviderHostIconGlyph icon={connection.host.icon} className="size-4" />
+                </button>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <h3 className="truncate text-sm font-semibold text-foreground">{hostName}</h3>
@@ -385,54 +394,6 @@ export function HostConnectionsSection() {
                       Label used by host selectors and project context controls.
                     </span>
                   </label>
-
-                  <div>
-                    <p className="text-xs font-medium text-foreground">Host icon</p>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                      <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-foreground hover:bg-muted/40">
-                        <UploadIcon className="size-3.5" aria-hidden />
-                        Upload SVG
-                        <input
-                          className="sr-only"
-                          type="file"
-                          accept="image/svg+xml,.svg"
-                          onChange={(event) => {
-                            const file = event.currentTarget.files?.[0];
-                            event.currentTarget.value = "";
-                            if (!file) return;
-                            void file
-                              .text()
-                              .then(sanitizeCocoaHostIconSvg)
-                              .then((svg) =>
-                                updateHost(hostId, withCocoaHostIconSvg(connection.host, svg)),
-                              )
-                              .catch((cause: unknown) =>
-                                toastManager.add({
-                                  type: "error",
-                                  title: "Could not use host icon",
-                                  description:
-                                    cause instanceof Error ? cause.message : "Choose a valid SVG.",
-                                }),
-                              );
-                          }}
-                        />
-                      </label>
-                      {iconSvg ? (
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          onClick={() =>
-                            updateHost(hostId, withCocoaHostIconSvg(connection.host, null))
-                          }
-                        >
-                          Remove icon
-                        </Button>
-                      ) : null}
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Used for this host only. Agent providers keep their own icons.
-                    </p>
-                  </div>
 
                   <div>
                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -523,6 +484,34 @@ export function HostConnectionsSection() {
           );
         })
       )}
+      {appearanceConnection ? (
+        <ProviderHostAppearanceDialog
+          key={appearanceConnection.hostId}
+          open
+          displayName={
+            appearanceConnection.host.displayName ??
+            new URL(appearanceConnection.transport.url).hostname
+          }
+          icon={appearanceConnection.host.icon}
+          accentColor={appearanceConnection.host.accentColor}
+          onOpenChange={(open) => {
+            if (!open) setAppearanceHostId(null);
+          }}
+          onSave={(appearance) => {
+            const {
+              icon: _icon,
+              iconSvg: _iconSvg,
+              accentColor: _accentColor,
+              ...host
+            } = appearanceConnection.host;
+            updateHost(appearanceConnection.hostId, {
+              ...host,
+              ...(appearance.icon ? { icon: appearance.icon } : {}),
+              ...(appearance.accentColor ? { accentColor: appearance.accentColor } : {}),
+            });
+          }}
+        />
+      ) : null}
     </SettingsSection>
   );
 }
