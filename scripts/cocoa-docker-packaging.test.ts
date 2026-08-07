@@ -33,12 +33,19 @@ describe("Cocoa Docker packaging policy", () => {
       "USER 10001:10001",
       "T3CODE_RUNTIME_PROFILE=cocoa-gateway",
       "T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false",
+      "RUN install -d -m 0755 -o cocoa -g cocoa /opt/cocoa/defaults",
       'VOLUME [\"/data\"]',
       "http://127.0.0.1:7331/readyz",
-      '[\"/usr/bin/tini\", \"--\", \"bun\", \"/opt/cocoa/dist/cocoa-bin.mjs\"]',
+      '[\"/usr/bin/tini\", \"--\", \"/usr/local/bin/cocoa-entrypoint\"]',
     ]) {
       expect(dockerfile).toContain(required);
     }
+
+    const entrypoint = readRootFile("docker/entrypoint.sh");
+    expect(entrypoint).toContain("data_dir=${T3CODE_HOME:-/data}");
+    expect(entrypoint).toContain('if [ ! -e "${settings_file}" ]');
+    expect(entrypoint).toContain('cp /opt/cocoa/defaults/settings.json "${settings_file}"');
+    expect(entrypoint).toContain('exec bun /opt/cocoa/dist/cocoa-bin.mjs "$@"');
 
     expect(compose).toContain("image: ghcr.io/ada-bee/cocoa:${COCOA_VERSION:-latest}");
     expect(compose).toContain("pull_policy: always");

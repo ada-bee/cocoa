@@ -67,9 +67,11 @@ RUN test -n "${COCOA_BUILD_IDENTITY}" \
     /data/worktrees
 
 COPY --from=build --chown=10001:10001 /opt/cocoa /opt/cocoa
-COPY --chown=10001:10001 --chmod=0640 \
+RUN install -d -m 0755 -o cocoa -g cocoa /opt/cocoa/defaults
+COPY --chown=10001:10001 --chmod=0444 \
   docker/settings.json \
-  /data/userdata/settings.json
+  /opt/cocoa/defaults/settings.json
+COPY --chmod=0555 docker/entrypoint.sh /usr/local/bin/cocoa-entrypoint
 
 ENV HOME=/home/cocoa \
   T3CODE_RUNTIME_PROFILE=cocoa-gateway \
@@ -90,4 +92,4 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["bun", "-e", "const r=await fetch('http://127.0.0.1:7331/readyz');if(!r.ok)process.exit(1)"]
 
-ENTRYPOINT ["/usr/bin/tini", "--", "bun", "/opt/cocoa/dist/cocoa-bin.mjs"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/cocoa-entrypoint"]
