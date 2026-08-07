@@ -33,10 +33,13 @@ import * as PreviewManager from "../preview/Manager.ts";
 import * as ProjectExecution from "../project/ProjectExecution.ts";
 import * as ProjectFaviconResolver from "../project/CocoaProjectFaviconResolver.ts";
 import * as ProjectRepository from "../project/ProjectRepository.ts";
+import * as ProviderRepositoryIdentityResolver from "../project/ProviderRepositoryIdentityResolver.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ProjectTerminal from "../project/ProjectTerminal.ts";
 import * as ProjectWorkspace from "../project/ProjectWorkspace.ts";
 import * as RepositoryReadService from "../project/RepositoryReadService.ts";
+import * as RepositoryMutationService from "../project/RepositoryMutationService.ts";
+import * as RepositoryGitActionService from "../project/RepositoryGitActionService.ts";
 import * as RepositoryStatusBroadcaster from "../project/RepositoryStatusBroadcaster.ts";
 import { ProviderAdapterRegistryLive } from "../provider/Layers/ProviderAdapterRegistry.ts";
 import * as ProviderEventLoggers from "../provider/Layers/ProviderEventLoggersService.ts";
@@ -88,6 +91,11 @@ const CocoaProjectRepositoryLayerLive = ProjectRepository.layer.pipe(
   Layer.provide(OrchestrationLayerLive),
 );
 
+const CocoaProviderRepositoryIdentityResolverLayerLive =
+  ProviderRepositoryIdentityResolver.layer.pipe(
+    Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
+  );
+
 const ProviderCheckpointOperationLayerLive = ProviderCheckpointOperationRepositoryLive.pipe(
   Layer.provide(PersistenceLayerLive),
 );
@@ -110,6 +118,7 @@ const ProviderConversationProjectionQueryLayerLive = ProviderConversationProject
   Layer.provide(OrchestrationLayerLive),
   Layer.provide(ProviderConversationCacheRepositoryLayerLive),
   Layer.provide(ProviderConversationCacheSyncLayerLive),
+  Layer.provide(CocoaProviderRepositoryIdentityResolverLayerLive),
 );
 
 const ProviderConversationAuthorityLayerLive = ProviderConversationAuthorityLive.pipe(
@@ -210,6 +219,14 @@ const CocoaRepositoryReadLayerLive = RepositoryReadService.layer.pipe(
   Layer.provide(CocoaProjectRepositoryLayerLive),
 );
 
+const CocoaRepositoryMutationLayerLive = RepositoryMutationService.layer.pipe(
+  Layer.provide(CocoaProjectRepositoryLayerLive),
+);
+
+const CocoaRepositoryGitActionLayerLive = RepositoryGitActionService.layer.pipe(
+  Layer.provide(CocoaProjectRepositoryLayerLive),
+);
+
 const CocoaRepositoryStatusLayerLive = RepositoryStatusBroadcaster.layer.pipe(
   Layer.provide(CocoaRepositoryReadLayerLive),
 );
@@ -254,6 +271,7 @@ const CocoaRuntimeBaseFoundationLive = CocoaReactorLayerLive.pipe(
 
 const CocoaRuntimeBaseDependenciesLive = CocoaRuntimeBaseFoundationLive.pipe(
   Layer.provideMerge(CocoaRepositoryReadLayerLive),
+  Layer.provideMerge(CocoaRepositoryMutationLayerLive),
   Layer.provideMerge(CocoaRepositoryStatusLayerLive),
   Layer.provideMerge(CocoaProjectTerminalLayerLive),
   Layer.provideMerge(CocoaTerminalLayerLive),
@@ -264,6 +282,7 @@ const CocoaRuntimeBaseDependenciesLive = CocoaRuntimeBaseFoundationLive.pipe(
 const CocoaRuntimeCoreDependenciesLive = CocoaRuntimeBaseDependenciesLive.pipe(
   Layer.provideMerge(CocoaProjectFaviconResolverLayerLive),
   Layer.provideMerge(CocoaTextGenerationLayerLive),
+  Layer.provideMerge(CocoaRepositoryGitActionLayerLive),
   Layer.provideMerge(ServerEnvironment.layer),
   Layer.provideMerge(AuthLayerLive),
   Layer.provideMerge(ServerSecretStore.layer),

@@ -92,6 +92,7 @@ import {
   observeRpcStreamEffect as instrumentRpcStreamEffect,
 } from "./observability/RpcInstrumentation.ts";
 import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
+import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
 import * as ProviderFilesystemBrowse from "./provider/ProviderFilesystemBrowse.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
@@ -104,7 +105,10 @@ import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import * as ProjectWorkspace from "./project/ProjectWorkspace.ts";
 import * as ProjectWorkspaceRpc from "./project/ProjectWorkspaceRpc.ts";
 import * as RepositoryReadService from "./project/RepositoryReadService.ts";
+import * as RepositoryMutationService from "./project/RepositoryMutationService.ts";
+import * as RepositoryGitActionService from "./project/RepositoryGitActionService.ts";
 import * as RepositoryStatusBroadcaster from "./project/RepositoryStatusBroadcaster.ts";
+import { discoverProviderSourceControl } from "./sourceControl/ProviderSourceControlDiscovery.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironmentService.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
@@ -326,11 +330,18 @@ const makeWsRpcLayer = (
       const checkpointDiffQuery = yield* CheckpointDiffQuery.CheckpointDiffQuery;
       const keybindings = yield* Keybindings.Keybindings;
       const repositoryReads = yield* RepositoryReadService.RepositoryReadService;
+      const repositoryMutations = yield* Effect.serviceOption(
+        RepositoryMutationService.RepositoryMutationService,
+      );
+      const repositoryGitActions = yield* Effect.serviceOption(
+        RepositoryGitActionService.RepositoryGitActionService,
+      );
       const repositoryStatusBroadcaster =
         yield* RepositoryStatusBroadcaster.RepositoryStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
       const previewManager = yield* PreviewManager.PreviewManager;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
+      const providerInstanceRegistry = yield* Effect.serviceOption(ProviderInstanceRegistry);
       const serverSelfUpdate = yield* WsRuntimeServices.ServerSelfUpdate;
       const config = yield* ServerConfig.ServerConfig;
       const lifecycleEvents = yield* ServerLifecycleEvents.ServerLifecycleEvents;
@@ -741,14 +752,11 @@ const makeWsRpcLayer = (
       ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
         Effect.gen(function* () {
           const bootstrap = command.bootstrap;
-          if (bootstrap?.prepareWorktree) {
-            return yield* new OrchestrationDispatchCommandError({
-              message: REMOTE_WORKSPACE_MUTATION_UNAVAILABLE,
-            });
-          }
           const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
           let createdThread = false;
+          let createdWorktree = false;
           let targetProjectId = bootstrap?.createThread?.projectId;
+          let targetBranch = bootstrap?.createThread?.branch ?? null;
           let targetWorktreePath = bootstrap?.createThread?.worktreePath ?? null;
 
           const cleanupCreatedThread = () =>
@@ -764,6 +772,26 @@ const makeWsRpcLayer = (
                   Effect.ignoreCause({ log: true }),
                 )
               : Effect.void;
+
+          const cleanupCreatedWorktree = () => {
+            if (
+              !createdWorktree ||
+              !bootstrap?.prepareWorktree ||
+              targetProjectId === undefined ||
+              targetWorktreePath === null ||
+              Option.isNone(repositoryMutations)
+            ) {
+              return Effect.void;
+            }
+            return repositoryMutations.value
+              .removeWorktree({
+                cwd: bootstrap.prepareWorktree.projectCwd,
+                target: { projectId: targetProjectId },
+                path: targetWorktreePath,
+                force: true,
+              })
+              .pipe(Effect.ignoreCause({ log: true }));
+          };
 
           const recordSetupScriptLaunchFailure = (input: {
             readonly error: ProjectSetupScriptRunner.ProjectSetupScriptRunnerError;
@@ -880,6 +908,65 @@ const makeWsRpcLayer = (
             });
 
           const bootstrapProgram = Effect.gen(function* () {
+            if (bootstrap?.prepareWorktree) {
+              if (targetProjectId === undefined) {
+                const thread = yield* projectionSnapshotQuery
+                  .getThreadShellById(command.threadId)
+                  .pipe(
+                    Effect.map(Option.getOrUndefined),
+                    Effect.mapError(
+                      () =>
+                        new OrchestrationDispatchCommandError({
+                          message: "The thread's provider-host project could not be resolved.",
+                          code: "dispatch_failed",
+                        }),
+                    ),
+                  );
+                if (thread === undefined) {
+                  return yield* new OrchestrationDispatchCommandError({
+                    message: "The thread's provider-host project could not be resolved.",
+                    code: "dispatch_failed",
+                  });
+                }
+                targetProjectId = thread.projectId;
+              }
+              if (Option.isNone(repositoryMutations)) {
+                return yield* new OrchestrationDispatchCommandError({
+                  message: REMOTE_WORKSPACE_MUTATION_UNAVAILABLE,
+                  code: "dispatch_failed",
+                });
+              }
+              const prepareWorktree = bootstrap.prepareWorktree;
+              const baseRef =
+                prepareWorktree.startFromOrigin === true &&
+                !prepareWorktree.baseBranch.startsWith("origin/")
+                  ? `origin/${prepareWorktree.baseBranch}`
+                  : prepareWorktree.baseBranch;
+              const created = yield* repositoryMutations.value
+                .createWorktree({
+                  cwd: prepareWorktree.projectCwd,
+                  target: { projectId: targetProjectId },
+                  refName: baseRef,
+                  ...(prepareWorktree.branch === undefined
+                    ? {}
+                    : { newRefName: prepareWorktree.branch }),
+                  baseRefName: prepareWorktree.baseBranch,
+                  path: null,
+                })
+                .pipe(
+                  Effect.mapError(
+                    () =>
+                      new OrchestrationDispatchCommandError({
+                        message: "The provider host could not create the requested worktree.",
+                        code: "dispatch_failed",
+                      }),
+                  ),
+                );
+              createdWorktree = true;
+              targetWorktreePath = created.worktree.path;
+              targetBranch = created.worktree.refName;
+            }
+
             if (bootstrap?.createThread) {
               yield* orchestrationEngine.dispatch({
                 type: "thread.create",
@@ -890,11 +977,19 @@ const makeWsRpcLayer = (
                 modelSelection: bootstrap.createThread.modelSelection,
                 runtimeMode: bootstrap.createThread.runtimeMode,
                 interactionMode: bootstrap.createThread.interactionMode,
-                branch: bootstrap.createThread.branch,
-                worktreePath: bootstrap.createThread.worktreePath,
+                branch: targetBranch,
+                worktreePath: targetWorktreePath,
                 createdAt: bootstrap.createThread.createdAt,
               });
               createdThread = true;
+            } else if (bootstrap?.prepareWorktree) {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.meta.update",
+                commandId: yield* serverCommandId("bootstrap-thread-worktree"),
+                threadId: command.threadId,
+                branch: targetBranch,
+                worktreePath: targetWorktreePath,
+              });
             }
 
             yield* runSetupProgram();
@@ -911,6 +1006,7 @@ const makeWsRpcLayer = (
               }
               return logFailure.pipe(
                 Effect.andThen(cleanupCreatedThread()),
+                Effect.andThen(cleanupCreatedWorktree()),
                 Effect.andThen(Effect.fail(dispatchError)),
               );
             }),
@@ -1591,12 +1687,30 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
-        [WS_METHODS.serverDiscoverSourceControl]: (_input) =>
+        [WS_METHODS.serverDiscoverSourceControl]: (input) =>
           observeRpcEffect(
             WS_METHODS.serverDiscoverSourceControl,
-            Effect.succeed({
-              versionControlSystems: [],
-              sourceControlProviders: [],
+            Effect.gen(function* () {
+              if (Option.isNone(providerInstanceRegistry)) {
+                return { versionControlSystems: [], sourceControlProviders: [] };
+              }
+              const instances = yield* providerInstanceRegistry.value.listInstances;
+              const providerInstanceId = input.providerInstanceId ?? instances[0]?.instanceId;
+              if (providerInstanceId === undefined) {
+                return { versionControlSystems: [], sourceControlProviders: [] };
+              }
+              const projects = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
+                Effect.map((shell) => shell.projects),
+                Effect.catch(() => Effect.succeed([])),
+              );
+              const instance = instances.find(
+                (candidate) => candidate.instanceId === providerInstanceId,
+              );
+              return discoverProviderSourceControl({
+                providerInstanceId,
+                projects,
+                vcsAvailable: instance?.vcs !== undefined,
+              });
             }),
             {
               "rpc.aggregate": "server",
@@ -1890,13 +2004,42 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsPull]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsPull,
-            Effect.fail(unsupportedGitCommand("vcs.pull", input.cwd)),
+            Option.match(repositoryMutations, {
+              onNone: () => Effect.fail(unsupportedGitCommand("vcs.pull", input.cwd)),
+              onSome: (mutations) => mutations.pull(input),
+            }),
             { "rpc.aggregate": "git" },
           ),
         [WS_METHODS.gitRunStackedAction]: (input) =>
           observeRpcStream(
             WS_METHODS.gitRunStackedAction,
-            Stream.fail(unsupportedGitManager("git.runStackedAction", input.cwd)),
+            Option.match(repositoryGitActions, {
+              onNone: () => Stream.fail(unsupportedGitManager("git.runStackedAction", input.cwd)),
+              onSome: (actions) =>
+                Stream.unwrap(
+                  Effect.gen(function* () {
+                    const events =
+                      yield* Queue.unbounded<import("@t3tools/contracts").GitActionProgressEvent>();
+                    yield* actions
+                      .run(input, (event) => Queue.offer(events, event).pipe(Effect.asVoid))
+                      .pipe(
+                        Effect.catch((error) =>
+                          Queue.offer(events, {
+                            actionId: input.actionId,
+                            cwd: input.cwd,
+                            action: input.action,
+                            kind: "action_failed" as const,
+                            phase: null,
+                            message: error.message || "Source-control action failed.",
+                          }),
+                        ),
+                        Effect.ensuring(Queue.shutdown(events)),
+                        Effect.forkScoped,
+                      );
+                    return Stream.fromQueue(events);
+                  }),
+                ),
+            }),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.gitResolvePullRequest]: (input) =>
@@ -1924,25 +2067,37 @@ const makeWsRpcLayer = (
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,
-            Effect.fail(unsupportedGitCommand("vcs.createWorktree", input.cwd)),
+            Option.match(repositoryMutations, {
+              onNone: () => Effect.fail(unsupportedGitCommand("vcs.createWorktree", input.cwd)),
+              onSome: (mutations) => mutations.createWorktree(input),
+            }),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsRemoveWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsRemoveWorktree,
-            Effect.fail(unsupportedGitCommand("vcs.removeWorktree", input.cwd)),
+            Option.match(repositoryMutations, {
+              onNone: () => Effect.fail(unsupportedGitCommand("vcs.removeWorktree", input.cwd)),
+              onSome: (mutations) => mutations.removeWorktree(input),
+            }),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateRef,
-            Effect.fail(unsupportedGitCommand("vcs.createRef", input.cwd)),
+            Option.match(repositoryMutations, {
+              onNone: () => Effect.fail(unsupportedGitCommand("vcs.createRef", input.cwd)),
+              onSome: (mutations) => mutations.createRef(input),
+            }),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsSwitchRef]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsSwitchRef,
-            Effect.fail(unsupportedGitCommand("vcs.switchRef", input.cwd)),
+            Option.match(repositoryMutations, {
+              onNone: () => Effect.fail(unsupportedGitCommand("vcs.switchRef", input.cwd)),
+              onSome: (mutations) => mutations.switchRef(input),
+            }),
             { "rpc.aggregate": "vcs" },
           ),
         [WS_METHODS.vcsInit]: (input) =>

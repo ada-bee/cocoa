@@ -151,6 +151,7 @@ export const RepositoryRef = Schema.Struct({
   target: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(128)),
   current: Schema.Boolean,
   isDefault: Schema.Boolean,
+  worktreePath: Schema.optionalKey(Schema.NullOr(Schema.String.check(Schema.isNonEmpty()))),
 });
 export type RepositoryRef = typeof RepositoryRef.Type;
 

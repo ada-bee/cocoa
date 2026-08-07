@@ -1,5 +1,5 @@
 /**
- * Provider-owned read-only version-control primitives.
+ * Provider-owned normalized version-control primitives.
  *
  * A driver resolves one provider-host path to a repository handle whose
  * operations remain permanently bound to that repository root and metadata
@@ -24,7 +24,11 @@ import {
   type CodexCheckpointHelperRestoreResult,
   type CodexCheckpointHelperSha256,
   ProviderInstanceId,
+  type VcsCreateRefResult,
+  type VcsCreateWorktreeResult,
   type VcsDriverKind,
+  type VcsPullResult,
+  type VcsSwitchRefResult,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -35,6 +39,14 @@ export const ProviderVcsOperation = Schema.Literals([
   "listRefs",
   "listRemotes",
   "getReviewDiff",
+  "pull",
+  "createWorktree",
+  "removeWorktree",
+  "createRef",
+  "switchRef",
+  "prepareCommit",
+  "commit",
+  "push",
   "captureCheckpoint",
   "diffCheckpoints",
   "restoreCheckpoint",
@@ -170,6 +182,8 @@ export interface ProviderVcsRef {
   readonly target: string;
   readonly current: boolean;
   readonly isDefault: boolean;
+  /** Provider-host absolute path when this local ref is checked out in a worktree. */
+  readonly worktreePath?: string | null;
 }
 
 export interface ProviderVcsRefListing {
@@ -210,6 +224,23 @@ export interface ProviderVcsReviewDiffResult {
   readonly sources: ReadonlyArray<ProviderVcsReviewDiffSource>;
   /** True when any source or the aggregate byte bound omitted patch bytes. */
   readonly truncated: boolean;
+}
+
+export interface ProviderVcsPreparedCommit {
+  readonly branch: string | null;
+  readonly stagedSummary: string;
+  readonly stagedPatch: string;
+}
+
+export interface ProviderVcsCommitResult {
+  readonly commitSha: string;
+}
+
+export interface ProviderVcsPushResult {
+  readonly status: "pushed" | "skipped_up_to_date";
+  readonly branch: string;
+  readonly upstreamBranch?: string;
+  readonly setUpstream?: boolean;
 }
 
 export class ProviderVcsDisconnectedError extends Schema.TaggedErrorClass<ProviderVcsDisconnectedError>()(
@@ -427,6 +458,33 @@ export interface ProviderVcsRepository {
     /** Aggregate UTF-8 patch byte limit across every returned source. */
     readonly maxBytes: ProviderVcsReviewDiffByteLimit;
   }) => Effect.Effect<ProviderVcsReviewDiffResult, ProviderVcsError>;
+  /** Optional normalized mutations. No caller-supplied argv is accepted. */
+  readonly pull?: () => Effect.Effect<VcsPullResult, ProviderVcsError>;
+  readonly createWorktree?: (input: {
+    readonly refName: string;
+    readonly newRefName?: string;
+    readonly baseRefName?: string;
+    readonly path: string | null;
+  }) => Effect.Effect<VcsCreateWorktreeResult, ProviderVcsError>;
+  readonly removeWorktree?: (input: {
+    readonly path: string;
+    readonly force: boolean;
+  }) => Effect.Effect<void, ProviderVcsError>;
+  readonly createRef?: (input: {
+    readonly refName: string;
+    readonly switchRef: boolean;
+  }) => Effect.Effect<VcsCreateRefResult, ProviderVcsError>;
+  readonly switchRef?: (input: {
+    readonly refName: string;
+  }) => Effect.Effect<VcsSwitchRefResult, ProviderVcsError>;
+  readonly prepareCommit?: (input: {
+    readonly filePaths?: ReadonlyArray<string>;
+  }) => Effect.Effect<ProviderVcsPreparedCommit | null, ProviderVcsError>;
+  readonly commit?: (input: {
+    readonly subject: string;
+    readonly body: string;
+  }) => Effect.Effect<ProviderVcsCommitResult, ProviderVcsError>;
+  readonly push?: () => Effect.Effect<ProviderVcsPushResult, ProviderVcsError>;
 }
 
 export type ProviderVcsOpenRepositoryResult =

@@ -12,6 +12,7 @@ import {
   type OrchestrationProject,
   type OrchestrationProposedPlan,
   type OrchestrationSession,
+  type OrchestrationShellSnapshot,
   type OrchestrationThreadActivity,
   type OrchestrationThreadDetailSnapshot,
   type OrchestrationThreadDetailWindow,
@@ -24,6 +25,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderRepositoryIdentityResolver } from "../../project/ProviderRepositoryIdentityResolver.ts";
 import type {
   ProviderConversationCacheMeta,
   ProviderConversationCacheThread,
@@ -395,6 +397,24 @@ export const makeProviderConversationProjectionQuery = Effect.gen(function* () {
   const base = yield* ProjectionSnapshotQuery;
   const cache = yield* ProviderConversationCacheRepository;
   const sync = yield* ProviderConversationCacheSync;
+  const repositoryIdentities = yield* Effect.serviceOption(ProviderRepositoryIdentityResolver);
+
+  const enrichProjects = (projects: OrchestrationShellSnapshot["projects"]) =>
+    Effect.forEach(
+      projects,
+      (project) =>
+        Option.match(repositoryIdentities, {
+          onNone: () => Effect.succeed(project),
+          onSome: (resolver) =>
+            resolver
+              .resolve({
+                providerInstanceId: project.providerInstanceId,
+                workspaceRoot: project.workspaceRoot,
+              })
+              .pipe(Effect.map((repositoryIdentity) => ({ ...project, repositoryIdentity }))),
+        }),
+      { concurrency: 8 },
+    );
 
   const providerShell = (archived: boolean) =>
     Effect.gen(function* () {
@@ -432,9 +452,10 @@ export const makeProviderConversationProjectionQuery = Effect.gen(function* () {
       );
       const threads = [...providerThreads, ...transientLocalThreads];
       const meta = yield* cache.getMeta;
+      const enrichedProjects = yield* enrichProjects(baseSnapshot.projects);
       return {
         snapshotSequence: baseSnapshot.snapshotSequence,
-        projects: baseSnapshot.projects,
+        projects: enrichedProjects,
         threads,
         updatedAt: threads.reduce(
           (latest, thread) => (thread.updatedAt > latest ? thread.updatedAt : latest),

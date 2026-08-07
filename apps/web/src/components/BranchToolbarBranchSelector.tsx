@@ -393,7 +393,7 @@ export function BranchToolbarBranchSelector({
   };
 
   const selectBranch = (refName: VcsRef) => {
-    if (!branchCwd || !activeProjectCwd || isBranchActionPending) return;
+    if (!branchCwd || !activeProjectCwd || !activeProject || isBranchActionPending) return;
 
     if (isSelectingWorktreeBase) {
       setThreadBranch(refName.name, null);
@@ -429,6 +429,10 @@ export function BranchToolbarBranchSelector({
         environmentId,
         input: {
           cwd: selectionTarget.checkoutCwd,
+          target: {
+            projectId: activeProject.id,
+            ...(activeThreadId === undefined ? {} : { threadId: activeThreadId }),
+          },
           refName: refName.name,
         },
       });
@@ -455,7 +459,7 @@ export function BranchToolbarBranchSelector({
 
   const createRef = (rawName: string) => {
     const name = rawName.trim();
-    if (!branchCwd || !name || isBranchActionPending) return;
+    if (!branchCwd || !activeProject || !name || isBranchActionPending) return;
 
     setIsBranchMenuOpen(false);
     onComposerFocusRequest?.();
@@ -467,6 +471,10 @@ export function BranchToolbarBranchSelector({
         environmentId,
         input: {
           cwd: branchCwd,
+          target: {
+            projectId: activeProject.id,
+            ...(activeThreadId === undefined ? {} : { threadId: activeThreadId }),
+          },
           refName: name,
           switchRef: true,
         },

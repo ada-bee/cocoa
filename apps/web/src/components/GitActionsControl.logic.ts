@@ -95,6 +95,7 @@ export function buildMenuItems(
   gitStatus: VcsStatusResult | null,
   isBusy: boolean,
   hasPrimaryRemote = true,
+  supportsChangeRequests = true,
 ): GitActionMenuItem[] {
   if (!gitStatus) return [];
   const terminology = resolveChangeRequestTerminology(gitStatus);
@@ -135,16 +136,19 @@ export function buildMenuItems(
     return [commitItem];
   }
 
+  const pushItem: GitActionMenuItem = {
+    id: "push",
+    label: "Push",
+    disabled: !canPush,
+    icon: "push",
+    kind: "open_dialog",
+    dialogAction: "push",
+  };
+  if (!supportsChangeRequests) return [commitItem, pushItem];
+
   return [
     commitItem,
-    {
-      id: "push",
-      label: "Push",
-      disabled: !canPush,
-      icon: "push",
-      kind: "open_dialog",
-      dialogAction: "push",
-    },
+    pushItem,
     hasOpenPr
       ? {
           id: "pr",
@@ -169,6 +173,7 @@ export function resolveQuickAction(
   isBusy: boolean,
   isDefaultRef = false,
   hasPrimaryRemote = true,
+  supportsChangeRequests = true,
 ): GitQuickAction {
   if (isBusy) {
     return { label: "Commit", disabled: true, kind: "show_hint", hint: "Git action in progress." };
@@ -205,7 +210,7 @@ export function resolveQuickAction(
     if (!gitStatus.hasUpstream && !hasPrimaryRemote) {
       return { label: "Commit", disabled: false, kind: "run_action", action: "commit" };
     }
-    if (hasOpenPr || isDefaultRef) {
+    if (!supportsChangeRequests || hasOpenPr || isDefaultRef) {
       return { label: "Commit & push", disabled: false, kind: "run_action", action: "commit_push" };
     }
     return {
@@ -238,7 +243,7 @@ export function resolveQuickAction(
         hint: "No local commits to push.",
       };
     }
-    if (hasOpenPr || isDefaultRef) {
+    if (!supportsChangeRequests || hasOpenPr || isDefaultRef) {
       return {
         label: "Push",
         disabled: false,
@@ -272,7 +277,7 @@ export function resolveQuickAction(
   }
 
   if (isAhead) {
-    if (hasOpenPr || isDefaultRef) {
+    if (!supportsChangeRequests || hasOpenPr || isDefaultRef) {
       return {
         label: "Push",
         disabled: false,
@@ -292,7 +297,7 @@ export function resolveQuickAction(
     return { label: `View ${terminology.shortLabel}`, disabled: false, kind: "open_pr" };
   }
 
-  if (hasDefaultBranchDelta && !isDefaultRef) {
+  if (supportsChangeRequests && hasDefaultBranchDelta && !isDefaultRef) {
     return {
       label: `Create ${terminology.shortLabel}`,
       disabled: false,

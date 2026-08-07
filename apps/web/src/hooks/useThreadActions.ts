@@ -420,6 +420,10 @@ export function useThreadActions() {
         environmentId: threadRef.environmentId,
         input: {
           cwd: threadProject.workspaceRoot,
+          target: {
+            projectId: threadProject.id,
+            threadId: thread.id,
+          },
           path: orphanedWorktreePath,
           force: true,
         },

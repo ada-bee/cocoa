@@ -47,6 +47,8 @@ export const CODEX_VCS_STATUS_OUTPUT_BYTES_CAP = 2 * 1024 * 1024;
 export const CODEX_VCS_REFS_OUTPUT_BYTES_CAP = 2 * 1024 * 1024;
 export const CODEX_VCS_REMOTES_OUTPUT_BYTES_CAP = 256 * 1024;
 export const CODEX_VCS_OPEN_OUTPUT_BYTES_CAP = 16 * 1024;
+export const CODEX_VCS_MUTATION_OUTPUT_BYTES_CAP = 256 * 1024;
+export const CODEX_VCS_PREPARED_PATCH_OUTPUT_BYTES_CAP = 64 * 1024;
 
 export const CODEX_VCS_COMMAND_ENV = {
   LANG: "C",
@@ -97,6 +99,14 @@ const isAbsoluteNormalizedPosixPath = (path: string): boolean => {
     .split("/")
     .slice(1)
     .every((part) => part !== "" && part !== "." && part !== "..");
+};
+
+const defaultWorktreePath = (rootPath: string, refName: string): string => {
+  const parts = rootPath.split("/");
+  const repositoryName = parts.at(-1) ?? "repository";
+  const parent = parts.slice(0, -1).join("/") || "/";
+  const safeRefName = refName.replaceAll("/", "-");
+  return `${parent === "/" ? "" : parent}/.cocoa-worktrees/${repositoryName}/${safeRefName}`;
 };
 
 const disconnected = (providerInstanceId: ProviderInstanceId, operation: ProviderVcsOperation) =>
@@ -483,19 +493,25 @@ const parseRefs = (
     for (const line of stdout.split("\n")) {
       if (line === "") continue;
       const fields = line.split("\0");
-      if (fields.length !== 3)
+      if (fields.length !== 3 && fields.length !== 4)
         return yield* protocol(
           providerInstanceId,
           "listRefs",
           "Git returned a malformed ref record.",
         );
-      const [refname, target, headMarker] = fields as [string, string, string];
+      const [refname, target, headMarker, worktreePath = ""] = fields as [
+        string,
+        string,
+        string,
+        string?,
+      ];
       const local = refname.startsWith("refs/heads/");
       const remote = refname.startsWith("refs/remotes/");
       if (
         (!local && !remote) ||
         !/^[0-9a-f]{40,64}$/.test(target) ||
-        (headMarker !== " " && headMarker !== "*")
+        (headMarker !== " " && headMarker !== "*") ||
+        (worktreePath !== "" && !isAbsoluteNormalizedPosixPath(worktreePath))
       ) {
         return yield* protocol(
           providerInstanceId,
@@ -512,6 +528,7 @@ const parseRefs = (
         target,
         current: headMarker === "*",
         isDefault: remote && name.endsWith("/HEAD"),
+        worktreePath: local && worktreePath !== "" ? worktreePath : null,
       });
     }
     return refs;
@@ -603,6 +620,58 @@ export const makeCodexVcsAdapter = (options: MakeCodexVcsAdapterOptions): Provid
     };
   });
 
+  const executeMutation = Effect.fn("CodexVcsAdapter.executeMutation")(function* (input: {
+    readonly borrowed: CodexEndpointConnectionBorrow;
+    readonly operation: ProviderVcsOperation;
+    readonly cwd: string;
+    readonly args: ReadonlyArray<string>;
+    readonly writableRoots: ReadonlyArray<string>;
+    readonly networkAccess?: boolean;
+    readonly allowNonZeroExit?: boolean;
+    readonly timeoutMs?: number;
+  }) {
+    yield* input.borrowed.ensureCurrent.pipe(
+      Effect.mapError(() => disconnected(options.providerInstanceId, input.operation)),
+    );
+    const exit = yield* input.borrowed.connection.client
+      .request("command/exec", {
+        command: command(input.args),
+        cwd: input.cwd,
+        env: CODEX_VCS_COMMAND_ENV,
+        sandboxPolicy: {
+          type: "workspaceWrite",
+          writableRoots: input.writableRoots,
+          networkAccess: input.networkAccess ?? false,
+          excludeSlashTmp: true,
+          excludeTmpdirEnvVar: true,
+        },
+        timeoutMs: input.timeoutMs ?? (input.networkAccess ? 30_000 : CODEX_VCS_COMMAND_TIMEOUT_MS),
+        outputBytesCap: CODEX_VCS_MUTATION_OUTPUT_BYTES_CAP,
+      })
+      .pipe(Effect.result);
+    if (exit._tag === "Failure") {
+      const current = yield* input.borrowed.ensureCurrent.pipe(Effect.result);
+      if (current._tag === "Failure") {
+        return yield* disconnected(options.providerInstanceId, input.operation);
+      }
+      return yield* mapCodexError(options.providerInstanceId, input.operation, exit.failure);
+    }
+    yield* input.borrowed.ensureCurrent.pipe(
+      Effect.mapError(() => disconnected(options.providerInstanceId, input.operation)),
+    );
+    if (exit.success.exitCode === 126 || exit.success.exitCode === 127) {
+      return yield* unsupported(options.providerInstanceId, input.operation);
+    }
+    if (exit.success.exitCode !== 0 && input.allowNonZeroExit !== true) {
+      return yield* operationFailed(
+        options.providerInstanceId,
+        input.operation,
+        "Git exited unsuccessfully.",
+      );
+    }
+    return exit.success;
+  });
+
   const openRepository: ProviderVcsAdapter["openRepository"] = Effect.fn(
     "CodexVcsAdapter.openRepository",
   )(function* (providerHostPath) {
@@ -689,6 +758,14 @@ export const makeCodexVcsAdapter = (options: MakeCodexVcsAdapterOptions): Provid
           );
     const checkpoints = checkpointResult?._tag === "Success" ? checkpointResult.success : undefined;
 
+    const validateBranchRef = (
+      operation: ProviderVcsOperation,
+      refName: string,
+    ): Effect.Effect<void, ProviderVcsError> =>
+      execute(borrowed, operation, rootPath, ["check-ref-format", "--branch", refName], 1).pipe(
+        Effect.asVoid,
+      );
+
     const repository: ProviderVcsRepository = {
       identity: { kind: "git", rootPath, commonDirectoryPath },
       capabilities: {
@@ -698,6 +775,196 @@ export const makeCodexVcsAdapter = (options: MakeCodexVcsAdapterOptions): Provid
         reviewDiff: true,
       },
       ...(checkpoints === undefined ? {} : { checkpoints }),
+      pull: Effect.fn("CodexVcsAdapter.pull")(function* () {
+        const branch = (yield* execute(
+          borrowed,
+          "pull",
+          rootPath,
+          ["branch", "--show-current"],
+          CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+        )).stdout.trim();
+        if (branch.length === 0) {
+          return yield* operationFailed(
+            options.providerInstanceId,
+            "pull",
+            "Cannot pull from detached HEAD.",
+          );
+        }
+        const upstreamResult = yield* executeMutation({
+          borrowed,
+          operation: "pull",
+          cwd: rootPath,
+          args: ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+          writableRoots: [rootPath],
+          allowNonZeroExit: true,
+        });
+        const upstreamRef =
+          upstreamResult.exitCode === 0 ? upstreamResult.stdout.trim() || null : null;
+        if (upstreamRef === null) {
+          return yield* operationFailed(
+            options.providerInstanceId,
+            "pull",
+            "Current branch has no upstream configured.",
+          );
+        }
+        const before = (yield* execute(
+          borrowed,
+          "pull",
+          rootPath,
+          ["rev-parse", "HEAD"],
+          CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+        )).stdout.trim();
+        yield* executeMutation({
+          borrowed,
+          operation: "pull",
+          cwd: rootPath,
+          args: ["pull", "--ff-only"],
+          writableRoots: [rootPath],
+          networkAccess: true,
+        });
+        const after = (yield* execute(
+          borrowed,
+          "pull",
+          rootPath,
+          ["rev-parse", "HEAD"],
+          CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+        )).stdout.trim();
+        return {
+          status: before === after ? "skipped_up_to_date" : "pulled",
+          refName: branch,
+          upstreamRef,
+        };
+      }),
+      createWorktree: Effect.fn("CodexVcsAdapter.createWorktree")(function* (input) {
+        yield* validateBranchRef("createWorktree", input.refName);
+        if (input.newRefName !== undefined) {
+          yield* validateBranchRef("createWorktree", input.newRefName);
+        }
+        const targetRef = input.newRefName ?? input.refName;
+        const worktreePath = input.path ?? defaultWorktreePath(rootPath, targetRef);
+        if (!isAbsoluteNormalizedPosixPath(worktreePath) || worktreePath === rootPath) {
+          return yield* pathFailed(
+            options.providerInstanceId,
+            "createWorktree",
+            worktreePath,
+            "expected_distinct_absolute_normalized_posix_path",
+          );
+        }
+        const args = input.newRefName
+          ? ["worktree", "add", "-b", input.newRefName, worktreePath, input.refName]
+          : ["worktree", "add", worktreePath, input.refName];
+        yield* executeMutation({
+          borrowed,
+          operation: "createWorktree",
+          cwd: rootPath,
+          args,
+          writableRoots: [rootPath, worktreePath],
+        });
+        if (input.newRefName !== undefined && input.baseRefName !== undefined) {
+          const baseBranch = input.baseRefName.includes("/")
+            ? input.baseRefName.slice(input.baseRefName.indexOf("/") + 1)
+            : input.baseRefName;
+          yield* executeMutation({
+            borrowed,
+            operation: "createWorktree",
+            cwd: rootPath,
+            args: ["config", `branch.${input.newRefName}.gh-merge-base`, baseBranch],
+            writableRoots: [rootPath],
+          });
+        }
+        return { worktree: { path: worktreePath, refName: targetRef } };
+      }),
+      removeWorktree: Effect.fn("CodexVcsAdapter.removeWorktree")(function* (input) {
+        if (!isAbsoluteNormalizedPosixPath(input.path) || input.path === rootPath) {
+          return yield* pathFailed(
+            options.providerInstanceId,
+            "removeWorktree",
+            input.path,
+            "expected_distinct_absolute_normalized_posix_path",
+          );
+        }
+        yield* executeMutation({
+          borrowed,
+          operation: "removeWorktree",
+          cwd: rootPath,
+          args: ["worktree", "remove", ...(input.force ? ["--force"] : []), input.path],
+          writableRoots: [rootPath, input.path],
+        });
+      }),
+      createRef: Effect.fn("CodexVcsAdapter.createRef")(function* (input) {
+        yield* validateBranchRef("createRef", input.refName);
+        yield* executeMutation({
+          borrowed,
+          operation: "createRef",
+          cwd: rootPath,
+          args: ["branch", input.refName],
+          writableRoots: [rootPath],
+        });
+        if (input.switchRef) {
+          yield* executeMutation({
+            borrowed,
+            operation: "createRef",
+            cwd: rootPath,
+            args: ["checkout", input.refName],
+            writableRoots: [rootPath],
+          });
+        }
+        return { refName: input.refName };
+      }),
+      switchRef: Effect.fn("CodexVcsAdapter.switchRef")(function* (input) {
+        yield* validateBranchRef("switchRef", input.refName);
+        const localRef = yield* executeMutation({
+          borrowed,
+          operation: "switchRef",
+          cwd: rootPath,
+          args: ["show-ref", "--verify", "--quiet", `refs/heads/${input.refName}`],
+          writableRoots: [rootPath],
+          allowNonZeroExit: true,
+        });
+        let checkoutArgs: ReadonlyArray<string> = ["checkout", input.refName];
+        if (localRef.exitCode !== 0) {
+          const remoteRef = yield* executeMutation({
+            borrowed,
+            operation: "switchRef",
+            cwd: rootPath,
+            args: ["show-ref", "--verify", "--quiet", `refs/remotes/${input.refName}`],
+            writableRoots: [rootPath],
+            allowNonZeroExit: true,
+          });
+          if (remoteRef.exitCode === 0) {
+            const separator = input.refName.indexOf("/");
+            const localName = separator < 0 ? input.refName : input.refName.slice(separator + 1);
+            yield* validateBranchRef("switchRef", localName);
+            const trackingLocalRef = yield* executeMutation({
+              borrowed,
+              operation: "switchRef",
+              cwd: rootPath,
+              args: ["show-ref", "--verify", "--quiet", `refs/heads/${localName}`],
+              writableRoots: [rootPath],
+              allowNonZeroExit: true,
+            });
+            checkoutArgs =
+              trackingLocalRef.exitCode === 0
+                ? ["checkout", localName]
+                : ["checkout", "--track", "-b", localName, input.refName];
+          }
+        }
+        yield* executeMutation({
+          borrowed,
+          operation: "switchRef",
+          cwd: rootPath,
+          args: checkoutArgs,
+          writableRoots: [rootPath],
+        });
+        const refName = (yield* execute(
+          borrowed,
+          "switchRef",
+          rootPath,
+          ["branch", "--show-current"],
+          CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+        )).stdout.trim();
+        return { refName: refName || null };
+      }),
       getStatus: Effect.fn("CodexVcsAdapter.getStatus")(function* (input) {
         const statusResult = yield* execute(
           borrowed,
@@ -761,7 +1028,7 @@ export const makeCodexVcsAdapter = (options: MakeCodexVcsAdapterOptions): Provid
             "for-each-ref",
             "--sort=refname",
             `--count=${PROVIDER_VCS_MAX_REFS + 1}`,
-            "--format=%(refname)%00%(objectname)%00%(HEAD)",
+            "--format=%(refname)%00%(objectname)%00%(HEAD)%00%(worktreepath)",
             ...prefixes,
           ],
           CODEX_VCS_REFS_OUTPUT_BYTES_CAP,
@@ -909,6 +1176,179 @@ export const makeCodexVcsAdapter = (options: MakeCodexVcsAdapterOptions): Provid
           );
         }
         return { sources, truncated: aggregateTruncated };
+      }),
+      prepareCommit: Effect.fn("CodexVcsAdapter.prepareCommit")(function* (input) {
+        if (input.filePaths !== undefined && input.filePaths.length > 0) {
+          if (!input.filePaths.every(isNormalizedRepositoryPath)) {
+            return yield* pathFailed(
+              options.providerInstanceId,
+              "prepareCommit",
+              rootPath,
+              "expected_normalized_repository_relative_paths",
+            );
+          }
+          yield* executeMutation({
+            borrowed,
+            operation: "prepareCommit",
+            cwd: rootPath,
+            args: ["reset"],
+            writableRoots: [rootPath],
+            allowNonZeroExit: true,
+          });
+          yield* executeMutation({
+            borrowed,
+            operation: "prepareCommit",
+            cwd: rootPath,
+            args: ["--literal-pathspecs", "add", "-A", "--", ...input.filePaths],
+            writableRoots: [rootPath],
+          });
+        } else {
+          yield* executeMutation({
+            borrowed,
+            operation: "prepareCommit",
+            cwd: rootPath,
+            args: ["add", "-A"],
+            writableRoots: [rootPath],
+          });
+        }
+
+        const stagedSummary = (yield* execute(
+          borrowed,
+          "prepareCommit",
+          rootPath,
+          ["diff", "--cached", "--name-status"],
+          CODEX_VCS_PREPARED_PATCH_OUTPUT_BYTES_CAP,
+        )).stdout.trim();
+        if (stagedSummary.length === 0) return null;
+        const patch = yield* execute(
+          borrowed,
+          "prepareCommit",
+          rootPath,
+          ["diff", "--no-ext-diff", "--cached", "--patch", "--minimal"],
+          CODEX_VCS_PREPARED_PATCH_OUTPUT_BYTES_CAP,
+        );
+        const branch = (yield* execute(
+          borrowed,
+          "prepareCommit",
+          rootPath,
+          ["branch", "--show-current"],
+          CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+        )).stdout.trim();
+        return {
+          branch: branch.length === 0 ? null : branch,
+          stagedSummary,
+          stagedPatch: patch.atOutputCap
+            ? `${patch.stdout}\n\n[diff truncated by provider]`
+            : patch.stdout,
+        };
+      }),
+      commit: Effect.fn("CodexVcsAdapter.commit")(function* (input) {
+        const args = ["commit", "-m", input.subject];
+        if (input.body.trim().length > 0) args.push("-m", input.body.trim());
+        yield* executeMutation({
+          borrowed,
+          operation: "commit",
+          cwd: rootPath,
+          args,
+          writableRoots: [rootPath],
+          timeoutMs: 10 * 60_000,
+        });
+        const commitSha = (yield* execute(
+          borrowed,
+          "commit",
+          rootPath,
+          ["rev-parse", "HEAD"],
+          CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+        )).stdout.trim();
+        if (commitSha.length === 0) {
+          return yield* protocol(
+            options.providerInstanceId,
+            "commit",
+            "Git returned an empty commit identifier.",
+          );
+        }
+        return { commitSha };
+      }),
+      push: Effect.fn("CodexVcsAdapter.push")(function* () {
+        const branch = (yield* execute(
+          borrowed,
+          "push",
+          rootPath,
+          ["branch", "--show-current"],
+          CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+        )).stdout.trim();
+        if (branch.length === 0) {
+          return yield* operationFailed(
+            options.providerInstanceId,
+            "push",
+            "Cannot push from detached HEAD.",
+          );
+        }
+        const upstream = yield* executeMutation({
+          borrowed,
+          operation: "push",
+          cwd: rootPath,
+          args: ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+          writableRoots: [rootPath],
+          allowNonZeroExit: true,
+        });
+        const upstreamBranch = upstream.exitCode === 0 ? upstream.stdout.trim() : "";
+        const ahead =
+          upstreamBranch.length === 0
+            ? 1
+            : Number.parseInt(
+                (yield* execute(
+                  borrowed,
+                  "push",
+                  rootPath,
+                  ["rev-list", "--count", `${upstreamBranch}..HEAD`],
+                  CODEX_VCS_OPEN_OUTPUT_BYTES_CAP,
+                )).stdout.trim(),
+                10,
+              );
+        if (upstreamBranch.length > 0 && ahead === 0) {
+          return { status: "skipped_up_to_date", branch, upstreamBranch };
+        }
+        if (upstreamBranch.length === 0) {
+          const origin = yield* executeMutation({
+            borrowed,
+            operation: "push",
+            cwd: rootPath,
+            args: ["remote", "get-url", "origin"],
+            writableRoots: [rootPath],
+            allowNonZeroExit: true,
+          });
+          if (origin.exitCode !== 0) {
+            return yield* operationFailed(
+              options.providerInstanceId,
+              "push",
+              "No upstream or origin remote is configured.",
+            );
+          }
+          yield* executeMutation({
+            borrowed,
+            operation: "push",
+            cwd: rootPath,
+            args: ["push", "--set-upstream", "origin", "HEAD"],
+            writableRoots: [rootPath],
+            networkAccess: true,
+          });
+          return {
+            status: "pushed",
+            branch,
+            upstreamBranch: `origin/${branch}`,
+            setUpstream: true,
+          };
+        }
+        yield* executeMutation({
+          borrowed,
+          operation: "push",
+          cwd: rootPath,
+          args: ["push"],
+          writableRoots: [rootPath],
+          networkAccess: true,
+        });
+        return { status: "pushed", branch, upstreamBranch, setUpstream: false };
       }),
     };
     return { _tag: "Repository", repository } as const;

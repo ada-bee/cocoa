@@ -469,6 +469,26 @@ it.effect("bounds status and refs, and rejects malformed structured output", () 
   }),
 );
 
+it.effect("reports provider-host worktree paths on local refs", () =>
+  Effect.gen(function* () {
+    const { adapter } = makeAdapter((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      if (argv.includes("--show-toplevel")) return Effect.succeed(repositoryIdentity());
+      return Effect.succeed({
+        exitCode: 0,
+        stderr: "",
+        stdout: `refs/heads/topic\0${"a".repeat(40)}\0 \0/srv/worktrees/topic\n`,
+      });
+    });
+    const repository = yield* open(adapter);
+    const refs = yield* repository.listRefs({
+      scope: "local",
+      maxRefs: ProviderVcsRefLimit.make(2),
+    });
+    assert.strictEqual(refs.refs[0]?.worktreePath, "/srv/worktrees/topic");
+  }),
+);
+
 it.effect("derives the primary remote and default ref without relying on branch upstream", () =>
   Effect.gen(function* () {
     const requests: Array<ReadonlyArray<string>> = [];
@@ -614,20 +634,240 @@ it.effect("marks exact-cap patches truncated and reports unborn HEAD without lea
   }),
 );
 
-it("requires an explicit absolute POSIX Git executable and exposes no mutating command", () => {
+it.effect("runs branch and worktree mutations only through provider command execution", () =>
+  Effect.gen(function* () {
+    const { adapter, requests } = makeAdapter((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      if (argv.includes("--show-toplevel")) return Effect.succeed(repositoryIdentity());
+      if (argv.at(-1) === "--show-current") {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "topic\n" });
+      }
+      return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
+    });
+    const repository = yield* open(adapter);
+    const created = yield* repository.createWorktree!({
+      refName: "origin/main",
+      newRefName: "topic",
+      baseRefName: "main",
+      path: null,
+    });
+    yield* repository.createRef!({ refName: "another-topic", switchRef: true });
+    const switched = yield* repository.switchRef!({ refName: "topic" });
+
+    assert.deepStrictEqual(created, {
+      worktree: { path: "/srv/.cocoa-worktrees/project/topic", refName: "topic" },
+    });
+    assert.deepStrictEqual(switched, { refName: "topic" });
+    const mutations = requests.slice(1).filter((payload) => {
+      const sandbox = payload.sandboxPolicy as { readonly type?: string };
+      return sandbox.type === "workspaceWrite";
+    });
+    assert.deepStrictEqual((mutations[0]!.command as ReadonlyArray<string>).slice(-6), [
+      "worktree",
+      "add",
+      "-b",
+      "topic",
+      "/srv/.cocoa-worktrees/project/topic",
+      "origin/main",
+    ]);
+    assert.deepStrictEqual((mutations[1]!.command as ReadonlyArray<string>).slice(-3), [
+      "config",
+      "branch.topic.gh-merge-base",
+      "main",
+    ]);
+    assert.deepStrictEqual((mutations[2]!.command as ReadonlyArray<string>).slice(-2), [
+      "branch",
+      "another-topic",
+    ]);
+    assert.deepStrictEqual((mutations[3]!.command as ReadonlyArray<string>).slice(-2), [
+      "checkout",
+      "another-topic",
+    ]);
+    const switchCheckout = mutations.find((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      return argv.at(-2) === "checkout" && argv.at(-1) === "topic";
+    });
+    assert.isDefined(switchCheckout);
+    assert.deepStrictEqual(mutations[0]!.sandboxPolicy, {
+      type: "workspaceWrite",
+      writableRoots: [ROOT, "/srv/.cocoa-worktrees/project/topic"],
+      networkAccess: false,
+      excludeSlashTmp: true,
+      excludeTmpdirEnvVar: true,
+    });
+  }),
+);
+
+it.effect("pulls with network access only on the provider host", () =>
+  Effect.gen(function* () {
+    let headReads = 0;
+    const { adapter, requests } = makeAdapter((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      if (argv.includes("--show-toplevel")) return Effect.succeed(repositoryIdentity());
+      if (argv.includes("--show-current")) {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "main\n" });
+      }
+      if (argv.includes("@{upstream}")) {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "origin/main\n" });
+      }
+      if (argv.at(-1) === "HEAD") {
+        headReads += 1;
+        return Effect.succeed({
+          exitCode: 0,
+          stderr: "",
+          stdout: `${headReads === 1 ? "a" : "b".repeat(40)}\n`,
+        });
+      }
+      return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
+    });
+    const repository = yield* open(adapter);
+    const result = yield* repository.pull!();
+    assert.deepStrictEqual(result, {
+      status: "pulled",
+      refName: "main",
+      upstreamRef: "origin/main",
+    });
+    const pullRequest = requests.find((payload) =>
+      (payload.command as ReadonlyArray<string>).includes("pull"),
+    );
+    assert.isDefined(pullRequest);
+    assert.strictEqual(
+      (pullRequest!.sandboxPolicy as { readonly networkAccess: boolean }).networkAccess,
+      true,
+    );
+    assert.isTrue(
+      requests
+        .filter((payload) => payload !== pullRequest)
+        .every(
+          (payload) =>
+            (payload.sandboxPolicy as { readonly networkAccess: boolean }).networkAccess === false,
+        ),
+    );
+  }),
+);
+
+it.effect("prepares, commits, and pushes through normalized provider-host operations", () =>
+  Effect.gen(function* () {
+    const { adapter, requests } = makeAdapter((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      if (argv.includes("--show-toplevel")) return Effect.succeed(repositoryIdentity());
+      if (argv.includes("--name-status")) {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "M\ta.txt\n" });
+      }
+      if (argv.includes("--patch")) {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "diff --git a/a.txt b/a.txt\n" });
+      }
+      if (argv.includes("--show-current")) {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "topic\n" });
+      }
+      if (argv.at(-1) === "HEAD") {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: `${"a".repeat(40)}\n` });
+      }
+      if (argv.includes("@{upstream}")) {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "origin/topic\n" });
+      }
+      if (argv.includes("rev-list")) {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "1\n" });
+      }
+      return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
+    });
+    const repository = yield* open(adapter);
+    const prepared = yield* repository.prepareCommit!({ filePaths: ["a.txt"] });
+    const committed = yield* repository.commit!({ subject: "Update a", body: "Details" });
+    const pushed = yield* repository.push!();
+
+    assert.deepStrictEqual(prepared, {
+      branch: "topic",
+      stagedSummary: "M\ta.txt",
+      stagedPatch: "diff --git a/a.txt b/a.txt\n",
+    });
+    assert.deepStrictEqual(committed, { commitSha: "a".repeat(40) });
+    assert.deepStrictEqual(pushed, {
+      status: "pushed",
+      branch: "topic",
+      upstreamBranch: "origin/topic",
+      setUpstream: false,
+    });
+    const commands = requests.map((request) => request.command as ReadonlyArray<string>);
+    assert.isTrue(commands.some((argv) => argv.includes("--literal-pathspecs")));
+    assert.isTrue(commands.some((argv) => argv.includes("commit") && argv.includes("Update a")));
+    const pushRequest = requests.find((request) =>
+      (request.command as ReadonlyArray<string>).includes("push"),
+    );
+    assert.isDefined(pushRequest);
+    assert.strictEqual(
+      (pushRequest!.sandboxPolicy as { readonly networkAccess: boolean }).networkAccess,
+      true,
+    );
+  }),
+);
+
+it.effect("rejects unsafe selected commit paths before dispatch", () =>
+  Effect.gen(function* () {
+    const { adapter, requests } = makeAdapter((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      if (argv.includes("--show-toplevel")) return Effect.succeed(repositoryIdentity());
+      return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
+    });
+    const repository = yield* open(adapter);
+    const error = yield* Effect.flip(repository.prepareCommit!({ filePaths: ["../secret"] }));
+    assert.strictEqual(error._tag, "ProviderVcsPathError");
+    assert.strictEqual(requests.length, 1);
+  }),
+);
+
+it.effect("materializes a local tracking branch when switching a known remote ref", () =>
+  Effect.gen(function* () {
+    const { adapter, requests } = makeAdapter((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      if (argv.includes("--show-toplevel")) return Effect.succeed(repositoryIdentity());
+      if (argv.includes("refs/heads/origin/topic")) {
+        return Effect.succeed({ exitCode: 1, stderr: "", stdout: "" });
+      }
+      if (argv.includes("refs/remotes/origin/topic")) {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
+      }
+      if (argv.includes("refs/heads/topic")) {
+        return Effect.succeed({ exitCode: 1, stderr: "", stdout: "" });
+      }
+      if (argv.at(-1) === "--show-current") {
+        return Effect.succeed({ exitCode: 0, stderr: "", stdout: "topic\n" });
+      }
+      return Effect.succeed({ exitCode: 0, stderr: "", stdout: "" });
+    });
+    const repository = yield* open(adapter);
+    assert.deepStrictEqual(yield* repository.switchRef!({ refName: "origin/topic" }), {
+      refName: "topic",
+    });
+    const checkout = requests.find((payload) => {
+      const argv = payload.command as ReadonlyArray<string>;
+      return argv.includes("--track");
+    });
+    assert.isDefined(checkout);
+    assert.deepStrictEqual((checkout!.command as ReadonlyArray<string>).slice(-5), [
+      "checkout",
+      "--track",
+      "-b",
+      "topic",
+      "origin/topic",
+    ]);
+  }),
+);
+
+it("requires an explicit absolute POSIX Git executable and keeps argv structured", () => {
   assert.throws(() => CodexGitExecutablePath.make("git"));
   assert.throws(() => CodexGitExecutablePath.make("/usr/../bin/git"));
-  const sourceCommands = new Set(["rev-parse", "status", "for-each-ref", "remote", "diff"]);
-  for (const forbidden of [
-    "fetch",
-    "push",
-    "add",
-    "commit",
+  const supportedCommands = new Set([
+    "rev-parse",
+    "status",
+    "for-each-ref",
+    "remote",
+    "diff",
+    "pull",
+    "branch",
     "checkout",
-    "reset",
-    "clean",
-    "update-ref",
-  ]) {
-    assert.isFalse(sourceCommands.has(forbidden));
-  }
+    "worktree",
+  ]);
+  assert.isFalse(supportedCommands.has("shell"));
+  assert.isFalse(supportedCommands.has("eval"));
 });

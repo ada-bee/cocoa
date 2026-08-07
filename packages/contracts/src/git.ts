@@ -2,6 +2,7 @@ import * as Schema from "effect/Schema";
 import { NonNegativeInt, PositiveInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { SourceControlProviderError, SourceControlProviderInfo } from "./sourceControl.ts";
 import { VcsDriverKind } from "./vcs.ts";
+import { RepositoryReadTarget } from "./repositoryRead.ts";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 const GIT_LIST_BRANCHES_MAX_LIMIT = 200;
@@ -106,12 +107,14 @@ export type VcsStatusInput = typeof VcsStatusInput.Type;
 
 export const VcsPullInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
+  target: Schema.optional(RepositoryReadTarget),
 });
 export type VcsPullInput = typeof VcsPullInput.Type;
 
 export const GitRunStackedActionInput = Schema.Struct({
   actionId: TrimmedNonEmptyStringSchema,
   cwd: TrimmedNonEmptyStringSchema,
+  target: Schema.optional(RepositoryReadTarget),
   action: GitStackedAction,
   commitMessage: Schema.optional(TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(10_000))),
   featureBranch: Schema.optional(Schema.Boolean),
@@ -136,6 +139,7 @@ export type VcsListRefsInput = typeof VcsListRefsInput.Type;
 
 export const VcsCreateWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
+  target: Schema.optional(RepositoryReadTarget),
   refName: TrimmedNonEmptyStringSchema,
   newRefName: Schema.optional(TrimmedNonEmptyStringSchema),
   baseRefName: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -159,6 +163,7 @@ export type GitPreparePullRequestThreadInput = typeof GitPreparePullRequestThrea
 
 export const VcsRemoveWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
+  target: Schema.optional(RepositoryReadTarget),
   path: TrimmedNonEmptyStringSchema,
   force: Schema.optional(Schema.Boolean),
 });
@@ -166,6 +171,7 @@ export type VcsRemoveWorktreeInput = typeof VcsRemoveWorktreeInput.Type;
 
 export const VcsCreateRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
+  target: Schema.optional(RepositoryReadTarget),
   refName: TrimmedNonEmptyStringSchema,
   switchRef: Schema.optional(Schema.Boolean),
 });
@@ -178,6 +184,7 @@ export type VcsCreateRefResult = typeof VcsCreateRefResult.Type;
 
 export const VcsSwitchRefInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
+  target: Schema.optional(RepositoryReadTarget),
   refName: TrimmedNonEmptyStringSchema,
 });
 export type VcsSwitchRefInput = typeof VcsSwitchRefInput.Type;

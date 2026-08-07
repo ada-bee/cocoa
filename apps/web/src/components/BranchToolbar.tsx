@@ -1,5 +1,5 @@
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import {
   ChevronDownIcon,
   CloudIcon,
@@ -56,7 +56,7 @@ interface BranchToolbarProps {
   onCheckoutPullRequestRequest?: (reference: string) => void;
   onComposerFocusRequest?: () => void;
   availableEnvironments?: readonly EnvironmentOption[];
-  onEnvironmentChange?: (environmentId: EnvironmentId) => void;
+  onEnvironmentChange?: (environmentId: EnvironmentId, projectId?: ProjectId) => void;
   /** Cocoa compatibility adapter: the provider host behind this gateway project. */
   providerHostLabel?: string | null;
 }
@@ -65,10 +65,11 @@ interface MobileRunContextSelectorProps {
   envLocked: boolean;
   envModeLocked: boolean;
   environmentId: EnvironmentId;
+  projectId: ProjectId | undefined;
   availableEnvironments: readonly EnvironmentOption[] | undefined;
   showEnvironmentPicker: boolean;
   showEnvironmentIndicator: boolean;
-  onEnvironmentChange: ((environmentId: EnvironmentId) => void) | undefined;
+  onEnvironmentChange: ((environmentId: EnvironmentId, projectId?: ProjectId) => void) | undefined;
   effectiveEnvMode: EnvMode;
   activeWorktreePath: string | null;
   onEnvModeChange: (mode: EnvMode) => void;
@@ -80,6 +81,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   envLocked,
   envModeLocked,
   environmentId,
+  projectId,
   availableEnvironments,
   showEnvironmentPicker,
   showEnvironmentIndicator,
@@ -91,8 +93,13 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
   onUsePreviousWorktree,
 }: MobileRunContextSelectorProps) {
   const activeEnvironment = useMemo(
-    () => availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null,
-    [availableEnvironments, environmentId],
+    () =>
+      availableEnvironments?.find(
+        (env) =>
+          env.environmentId === environmentId &&
+          (projectId === undefined || env.projectId === projectId),
+      ) ?? null,
+    [availableEnvironments, environmentId, projectId],
   );
   const WorkspaceIcon =
     effectiveEnvMode === "worktree"
@@ -149,16 +156,22 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
             <MenuGroup>
               <MenuGroupLabel>Run on</MenuGroupLabel>
               <MenuRadioGroup
-                value={environmentId}
-                onValueChange={(value) => onEnvironmentChange(value as EnvironmentId)}
+                value={activeEnvironment?.selectionId ?? environmentId}
+                onValueChange={(value) => {
+                  const selected = availableEnvironments.find(
+                    (environment) =>
+                      (environment.selectionId ?? environment.environmentId) === value,
+                  );
+                  if (selected) onEnvironmentChange(selected.environmentId, selected.projectId);
+                }}
               >
                 {availableEnvironments.map((env) => {
                   const Icon = env.isPrimary ? MonitorIcon : CloudIcon;
                   return (
                     <MenuRadioItem
-                      key={env.environmentId}
+                      key={env.selectionId ?? env.environmentId}
                       disabled={envLocked}
-                      value={env.environmentId}
+                      value={env.selectionId ?? env.environmentId}
                     >
                       <span className="flex min-w-0 items-center gap-1.5">
                         <Icon className="size-3" />
@@ -387,24 +400,33 @@ export const BranchToolbar = memo(function BranchToolbar({
     });
   }, [activeProjectRef, draftId, previousWorktreeSeed, setDraftThreadContext, threadRef]);
 
-  const effectiveEnvironmentOptions: readonly EnvironmentOption[] | undefined = providerHostLabel
-    ? [
-        {
-          environmentId,
-          projectId: activeProject?.id ?? activeProjectRef!.projectId,
-          label: providerHostLabel,
-          isPrimary: false,
-        },
-      ]
-    : availableEnvironments;
-  const effectiveEnvironmentChange = providerHostLabel ? undefined : onEnvironmentChange;
+  const useSingleProviderHostAdapter =
+    providerHostLabel !== null &&
+    providerHostLabel !== undefined &&
+    (availableEnvironments?.length ?? 0) <= 1;
+  const effectiveEnvironmentOptions: readonly EnvironmentOption[] | undefined =
+    useSingleProviderHostAdapter
+      ? [
+          {
+            environmentId,
+            projectId: activeProject?.id ?? activeProjectRef!.projectId,
+            label: providerHostLabel,
+            isPrimary: false,
+          },
+        ]
+      : availableEnvironments;
+  const effectiveEnvironmentChange = useSingleProviderHostAdapter ? undefined : onEnvironmentChange;
   const showEnvironmentPicker = Boolean(
     effectiveEnvironmentOptions &&
     effectiveEnvironmentOptions.length > 1 &&
     effectiveEnvironmentChange,
   );
   const activeEnvironmentOption =
-    effectiveEnvironmentOptions?.find((env) => env.environmentId === environmentId) ?? null;
+    effectiveEnvironmentOptions?.find(
+      (env) => env.environmentId === environmentId && env.projectId === activeProject?.id,
+    ) ??
+    effectiveEnvironmentOptions?.find((env) => env.environmentId === environmentId) ??
+    null;
   const showEnvironmentIndicator = shouldShowEnvironmentIndicator({
     activeEnvironment: activeEnvironmentOption,
     canPickEnvironment: showEnvironmentPicker,
@@ -426,6 +448,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           envLocked={envLocked}
           envModeLocked={envModeLocked}
           environmentId={environmentId}
+          projectId={activeProject?.id}
           availableEnvironments={effectiveEnvironmentOptions}
           showEnvironmentPicker={showEnvironmentPicker}
           showEnvironmentIndicator={showEnvironmentIndicator}
@@ -443,6 +466,7 @@ export const BranchToolbar = memo(function BranchToolbar({
               <BranchToolbarEnvironmentSelector
                 envLocked={envLocked}
                 environmentId={environmentId}
+                projectId={activeProject.id}
                 availableEnvironments={effectiveEnvironmentOptions}
                 {...(showEnvironmentPicker && effectiveEnvironmentChange
                   ? { onEnvironmentChange: effectiveEnvironmentChange }

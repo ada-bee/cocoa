@@ -6,6 +6,8 @@ import {
   type GitRunStackedActionInput,
   type GitRunStackedActionResult,
   GitStackedAction,
+  ProjectId,
+  ThreadId,
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -57,11 +59,15 @@ export interface VcsActionState {
 export interface VcsActionTarget {
   readonly environmentId: EnvironmentIdType | null;
   readonly cwd: string | null;
+  readonly projectId?: ProjectId | null | undefined;
+  readonly threadId?: ThreadId | null | undefined;
 }
 
 export interface ResolvedVcsActionTarget {
   readonly environmentId: EnvironmentIdType;
   readonly cwd: string;
+  readonly projectId?: ProjectId | undefined;
+  readonly threadId?: ThreadId | undefined;
 }
 
 export interface BeginVcsActionInput {
@@ -160,7 +166,11 @@ export const EMPTY_VCS_ACTION_STATE = Object.freeze<VcsActionState>({
 const nowMs = (): number => DateTime.toEpochMillis(DateTime.nowUnsafe());
 let nextLocalActionId = 0;
 const decodeVcsActionTargetKey = Schema.decodeUnknownSync(
-  Schema.Tuple([EnvironmentId, Schema.String]),
+  Schema.Union([
+    Schema.Tuple([EnvironmentId, Schema.String]),
+    Schema.Tuple([EnvironmentId, Schema.String, ProjectId]),
+    Schema.Tuple([EnvironmentId, Schema.String, ProjectId, ThreadId]),
+  ]),
 );
 
 export const vcsActionStateAtom = Atom.family((key: string) => {
@@ -179,13 +189,28 @@ export function getVcsActionTargetKey(target: VcsActionTarget): string | null {
   if (target.environmentId === null || target.cwd === null) {
     return null;
   }
-  return JSON.stringify([target.environmentId, target.cwd]);
+  if (target.projectId === undefined || target.projectId === null) {
+    return JSON.stringify([target.environmentId, target.cwd]);
+  }
+  return JSON.stringify(
+    target.threadId === undefined || target.threadId === null
+      ? [target.environmentId, target.cwd, target.projectId]
+      : [target.environmentId, target.cwd, target.projectId, target.threadId],
+  );
 }
 
 export function parseVcsActionTargetKey(key: string): ResolvedVcsActionTarget {
   try {
-    const [environmentId, cwd] = decodeVcsActionTargetKey(JSON.parse(key));
-    return { environmentId, cwd };
+    const decoded = decodeVcsActionTargetKey(JSON.parse(key));
+    const [environmentId, cwd] = decoded;
+    const projectId = decoded.length >= 3 ? decoded[2] : undefined;
+    const threadId = decoded.length >= 4 ? decoded[3] : undefined;
+    return {
+      environmentId,
+      cwd,
+      ...(projectId === undefined ? {} : { projectId }),
+      ...(threadId === undefined ? {} : { threadId }),
+    };
   } catch (cause) {
     throw new VcsActionTargetKeyParseError({ keyLength: key.length, cause });
   }
@@ -234,7 +259,7 @@ export function createVcsActionTransportId(
   target: ResolvedVcsActionTarget,
   actionId: string,
 ): string {
-  const targetKey = JSON.stringify([target.environmentId, target.cwd]);
+  const targetKey = getVcsActionTargetKey(target)!;
   return `${targetKey.length}:${targetKey}${actionId}`;
 }
 
@@ -459,6 +484,14 @@ export function createVcsActionManager<R, E>(
         const rpcInput: GitRunStackedActionInput = {
           actionId: transportActionId,
           cwd: target.cwd,
+          ...(target.projectId === undefined
+            ? {}
+            : {
+                target: {
+                  projectId: target.projectId,
+                  ...(target.threadId === undefined ? {} : { threadId: target.threadId }),
+                },
+              }),
           action: input.action,
           ...(input.commitMessage ? { commitMessage: input.commitMessage } : {}),
           ...(input.featureBranch ? { featureBranch: true } : {}),

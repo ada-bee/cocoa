@@ -151,7 +151,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
                 : {}),
               current: ref.current,
               isDefault: ref.isDefault,
-              worktreePath: null,
+              worktreePath: ref.worktreePath ?? null,
             }),
           )
         : EMPTY_REFS,

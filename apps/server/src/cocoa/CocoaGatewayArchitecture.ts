@@ -173,12 +173,7 @@ export const COCOA_GATEWAY_TRANSITIVE_CALLSITE_MANIFEST = [
     classification: "gateway-persistence",
     rationale: "Creates and opens the durable Cocoa SQLite database.",
   },
-  ...[
-    "provider/codexEndpoint/CodexEndpointFactory.ts",
-    "provider/codexEndpoint/CodexEndpointSupervisor.ts",
-    "provider/codexEndpoint/CocoaHostConnector.ts",
-    "provider/Drivers/CodexEndpointDriver.ts",
-  ].map(
+  ...["provider/Drivers/CodexEndpointDriver.ts"].map(
     (sourcePath) =>
       ({
         sourcePath,

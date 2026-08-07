@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { CloudIcon, MonitorIcon } from "lucide-react";
 import { memo, useMemo } from "react";
 
@@ -16,26 +16,39 @@ import {
 interface BranchToolbarEnvironmentSelectorProps {
   envLocked: boolean;
   environmentId: EnvironmentId;
+  projectId?: ProjectId;
   availableEnvironments: readonly EnvironmentOption[];
   // Absent when there is only one environment to show: the indicator still
   // renders (as a static label) so remote projects are always identifiable.
-  onEnvironmentChange?: (environmentId: EnvironmentId) => void;
+  onEnvironmentChange?: (environmentId: EnvironmentId, projectId?: ProjectId) => void;
 }
 
 export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvironmentSelector({
   envLocked,
   environmentId,
+  projectId,
   availableEnvironments,
   onEnvironmentChange,
 }: BranchToolbarEnvironmentSelectorProps) {
   const activeEnvironment = useMemo(() => {
-    return availableEnvironments.find((env) => env.environmentId === environmentId) ?? null;
-  }, [availableEnvironments, environmentId]);
+    return (
+      availableEnvironments.find(
+        (env) =>
+          env.environmentId === environmentId &&
+          (projectId === undefined || env.projectId === projectId),
+      ) ??
+      availableEnvironments.find((env) => env.environmentId === environmentId) ??
+      null
+    );
+  }, [availableEnvironments, environmentId, projectId]);
+
+  const activeSelectionId =
+    activeEnvironment?.selectionId ?? activeEnvironment?.environmentId ?? environmentId;
 
   const environmentItems = useMemo(
     () =>
       availableEnvironments.map((env) => ({
-        value: env.environmentId,
+        value: env.selectionId ?? env.environmentId,
         label: env.label,
       })),
     [availableEnvironments],
@@ -62,8 +75,13 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   return (
     <Select
       modal={false}
-      value={environmentId}
-      onValueChange={(value) => onEnvironmentChange(value as EnvironmentId)}
+      value={activeSelectionId}
+      onValueChange={(value) => {
+        const selected = availableEnvironments.find(
+          (environment) => (environment.selectionId ?? environment.environmentId) === value,
+        );
+        if (selected) onEnvironmentChange(selected.environmentId, selected.projectId);
+      }}
       items={environmentItems}
     >
       <SelectTrigger
@@ -88,7 +106,10 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         <SelectGroup>
           <SelectGroupLabel>Run on</SelectGroupLabel>
           {availableEnvironments.map((env) => (
-            <SelectItem key={env.environmentId} value={env.environmentId}>
+            <SelectItem
+              key={env.selectionId ?? env.environmentId}
+              value={env.selectionId ?? env.environmentId}
+            >
               <span className="inline-flex items-center gap-1.5">
                 {env.isPrimary ? (
                   <MonitorIcon className="size-3" />

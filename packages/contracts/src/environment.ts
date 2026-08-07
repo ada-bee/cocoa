@@ -78,6 +78,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   serverSelfUpdateProgress: Schema.optionalKey(Schema.Boolean),
   /** Workspace mutations are routed through the selected provider instance. */
   workspaceMutations: Schema.optionalKey(Schema.Boolean),
+  /** Branch and worktree mutations are routed through the selected provider instance. */
+  worktreeMutations: Schema.optionalKey(Schema.Boolean),
+  /** Commit and push mutations are routed through the selected provider instance. */
+  gitMutations: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

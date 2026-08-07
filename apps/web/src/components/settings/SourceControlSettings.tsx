@@ -1,7 +1,7 @@
 import { ChevronDownIcon, GitPullRequestIcon, InfoIcon, RefreshCwIcon } from "lucide-react";
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type {
   BackgroundActivitySettings,
   SourceControlProviderKind,
@@ -54,7 +54,14 @@ import {
 } from "../Icons";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SourceControlWritingSettingsSection } from "./SourceControlWritingSettings";
-import { SettingResetButton, SettingsPageContainer, SettingsSection } from "./settingsLayout";
+import { deriveCocoaHostConnections } from "./HostConnectionsSettings.logic";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import {
+  SettingResetButton,
+  SettingsPageContainer,
+  SettingsRow,
+  SettingsSection,
+} from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
 
 const EMPTY_DISCOVERY_RESULT: SourceControlDiscoveryResult = {
@@ -511,12 +518,18 @@ function EmptySourceControlDiscovery({
 
 export function SourceControlSettingsPanel() {
   const environmentId = usePrimaryEnvironment()?.environmentId ?? null;
+  const settings = usePrimarySettings();
+  const providerHosts = useMemo(() => deriveCocoaHostConnections(settings), [settings]);
+  const [selectedProviderHostId, setSelectedProviderHostId] = useState<string | null>(null);
+  const selectedProviderHost =
+    providerHosts.find((host) => host.instanceId === selectedProviderHostId) ?? providerHosts[0];
+  const providerInstanceId = selectedProviderHost?.instanceId ?? null;
   const discovery = useEnvironmentQuery(
-    environmentId === null
+    environmentId === null || providerInstanceId === null
       ? null
       : sourceControlEnvironment.discovery({
           environmentId,
-          input: {},
+          input: { providerInstanceId },
         }),
   );
   const result = discovery.data ?? EMPTY_DISCOVERY_RESULT;
@@ -548,6 +561,39 @@ export function SourceControlSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <SettingsSection title="Provider host">
+        <SettingsRow
+          title="Source control host"
+          description="Git, worktrees, and repository hosting integrations run on the selected provider host."
+          control={
+            providerHosts.length === 0 ? (
+              <span className="text-xs text-muted-foreground">No provider hosts configured</span>
+            ) : (
+              <Select
+                value={providerInstanceId ?? undefined}
+                onValueChange={(value) => setSelectedProviderHostId(value)}
+              >
+                <SelectTrigger className="w-full sm:w-56" aria-label="Source control provider host">
+                  <SelectValue>
+                    {selectedProviderHost?.instance.displayName ??
+                      (selectedProviderHost
+                        ? new URL(selectedProviderHost.transport.url).hostname
+                        : "Select a provider host")}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {providerHosts.map((host) => (
+                    <SelectItem key={host.instanceId} hideIndicator value={host.instanceId}>
+                      {host.instance.displayName ?? new URL(host.transport.url).hostname}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            )
+          }
+        />
+      </SettingsSection>
+
       {isInitialScanPending ? (
         <>
           <SourceControlSectionSkeleton title="Version Control" headerAction={scanButton} />

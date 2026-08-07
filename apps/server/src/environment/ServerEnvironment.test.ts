@@ -102,7 +102,8 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
 
         expect(second.environmentId).toBe(first.environmentId);
         expect(second.label).toBe("cocoa-pi");
-        expect(second.capabilities.repositoryIdentity).toBe(false);
+        expect(second.capabilities.repositoryIdentity).toBe(true);
+        expect(second.capabilities.worktreeMutations).toBe(true);
         expect(second.capabilities.connectionProbe).toBe(true);
         expect(second.capabilities.serverUpdateManagement).toBe("administrator-managed");
         expect(second.capabilities).not.toHaveProperty("serverSelfUpdate");

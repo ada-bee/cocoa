@@ -341,7 +341,7 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
 });
 
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
-  payload: Schema.Struct({}),
+  payload: Schema.Struct({ providerInstanceId: Schema.optional(ProviderInstanceId) }),
   success: SourceControlDiscoveryResult,
   error: EnvironmentAuthorizationError,
 });

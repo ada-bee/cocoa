@@ -185,7 +185,8 @@ export const makeCocoaGateway = Effect.gen(function* () {
     },
     serverVersion: packageJson.version,
     capabilities: {
-      repositoryIdentity: false,
+      repositoryIdentity: true,
+      worktreeMutations: true,
       connectionProbe: true,
       threadSettlement: true,
       threadSnooze: true,

@@ -13,6 +13,7 @@ import type {
   GitActionProgressEvent,
   GitResolvePullRequestResult,
   GitStackedAction,
+  ProjectId,
   SourceControlCloneProtocol,
   SourceControlRepositoryVisibility,
   ThreadId,
@@ -39,6 +40,8 @@ export type SourceControlActionKind =
 export interface SourceControlActionScope {
   readonly environmentId: EnvironmentId | null;
   readonly cwd: string | null;
+  readonly projectId?: ProjectId | null;
+  readonly threadId?: ThreadId | null;
 }
 
 interface SourceControlActionState<
@@ -123,6 +126,8 @@ function resolveScope(scope: SourceControlActionScope) {
   return {
     environmentId: scope.environmentId,
     cwd: scope.cwd,
+    projectId: scope.projectId ?? null,
+    threadId: scope.threadId ?? null,
   };
 }
 
@@ -178,7 +183,17 @@ export function useVcsPullAction(scope: SourceControlActionScope) {
     }
     return pull({
       environmentId: target.environmentId,
-      input: { cwd: target.cwd },
+      input: {
+        cwd: target.cwd,
+        ...(target.projectId === null
+          ? {}
+          : {
+              target: {
+                projectId: target.projectId,
+                ...(target.threadId === null ? {} : { threadId: target.threadId }),
+              },
+            }),
+      },
     });
   }, [pull, scope]);
   return useAction({

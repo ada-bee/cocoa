@@ -9,6 +9,8 @@ export {
 export interface EnvironmentOption {
   environmentId: EnvironmentId;
   projectId: ProjectId;
+  /** Distinguishes multiple provider-host projects behind one Cocoa gateway environment. */
+  selectionId?: string;
   label: string;
   isPrimary: boolean;
 }

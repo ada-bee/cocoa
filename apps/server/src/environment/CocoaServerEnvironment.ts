@@ -93,7 +93,9 @@ export const make = Effect.gen(function* () {
     platform: { os: platformOs(hostPlatform), arch: platformArch(hostArchitecture) },
     serverVersion: packageJson.version,
     capabilities: {
-      repositoryIdentity: false,
+      repositoryIdentity: true,
+      worktreeMutations: true,
+      gitMutations: true,
       connectionProbe: true,
       threadSettlement: true,
       threadSnooze: true,

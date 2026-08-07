@@ -12,6 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProviderRepositoryIdentityResolver } from "../../project/ProviderRepositoryIdentityResolver.ts";
 import { ProviderConversationCacheRepositoryLive } from "../../persistence/Layers/ProviderConversationCache.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import {
@@ -176,6 +177,37 @@ const cacheSync = ProviderConversationCacheSync.of({
 
 const persistenceLayer = ProviderConversationCacheRepositoryLive.pipe(
   Layer.provideMerge(SqlitePersistenceMemory),
+);
+
+it.effect("enriches Cocoa shell projects with provider-host repository identities", () =>
+  Effect.gen(function* () {
+    const query = yield* makeProviderConversationProjectionQuery.pipe(
+      Effect.provideService(ProjectionSnapshotQuery, base),
+      Effect.provideService(ProviderConversationCacheSync, cacheSync),
+      Effect.provideService(
+        ProviderRepositoryIdentityResolver,
+        ProviderRepositoryIdentityResolver.of({
+          resolve: ({ workspaceRoot }) =>
+            Effect.succeed({
+              canonicalKey: "github.com/ada-bee/cocoa",
+              locator: {
+                source: "git-remote",
+                remoteName: "origin",
+                remoteUrl: "git@github.com:ada-bee/cocoa.git",
+              },
+              rootPath: workspaceRoot,
+              displayName: "ada-bee/cocoa",
+              provider: "github",
+              owner: "ada-bee",
+              name: "cocoa",
+            }),
+        }),
+      ),
+    );
+
+    const shell = yield* query.getShellSnapshot();
+    assert.equal(shell.projects[0]?.repositoryIdentity?.canonicalKey, "github.com/ada-bee/cocoa");
+  }).pipe(Effect.provide(persistenceLayer)),
 );
 
 it.effect("projects provider-owned catalog and history into Cocoa shell/detail contracts", () =>

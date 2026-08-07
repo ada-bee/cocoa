@@ -119,9 +119,11 @@ export const ChatHeader = memo(function ChatHeader({
   onDeleteProjectScript,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const workspaceMutationsSupported =
-    useServerConfigs().get(activeThreadEnvironmentId)?.environment.capabilities
-      .workspaceMutations === true;
+  const environmentCapabilities =
+    useServerConfigs().get(activeThreadEnvironmentId)?.environment.capabilities;
+  const workspaceMutationsSupported = environmentCapabilities?.workspaceMutations === true;
+  const gitMutationsSupported =
+    workspaceMutationsSupported || environmentCapabilities?.gitMutations === true;
   const fileScripts = useT3ProjectFileScripts(
     activeThreadEnvironmentId,
     activeProjectScripts && activeProjectId
@@ -329,10 +331,11 @@ export const ChatHeader = memo(function ChatHeader({
             openInCwd={openInCwd}
           />
         )}
-        {workspaceMutationsSupported && activeProjectName && (
+        {gitMutationsSupported && activeProjectName && (
           <GitActionsControl
             gitCwd={gitCwd}
             activeThreadRef={scopeThreadRef(activeThreadEnvironmentId, activeThreadId)}
+            supportsChangeRequests={workspaceMutationsSupported}
             {...(draftId ? { draftId } : {})}
           />
         )}

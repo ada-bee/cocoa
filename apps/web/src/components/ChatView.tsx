@@ -176,6 +176,7 @@ import { getProviderModelCapabilities, resolveSelectableProvider } from "../prov
 import {
   isProviderInstanceAllowedForProject,
   NO_PROVIDER_MODEL_SELECTION,
+  resolveDefaultProviderModelSelection,
 } from "../providerInstances";
 import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -1744,17 +1745,23 @@ function ChatViewContent(props: ChatViewProps) {
     const envs: Array<{
       environmentId: EnvironmentId;
       projectId: ProjectId;
+      selectionId: string;
       label: string;
       isPrimary: boolean;
     }> = [];
     for (const p of memberProjects) {
-      if (seen.has(p.environmentId)) continue;
-      seen.add(p.environmentId);
-      const isPrimary = p.environmentId === primaryEnvironmentId;
-      const label = environmentById.get(p.environmentId)?.label ?? p.environmentId;
+      const hostKey = `${p.environmentId}:${p.providerInstanceId}`;
+      if (seen.has(hostKey)) continue;
+      seen.add(hostKey);
+      const configuredHostLabel =
+        settings.providerInstances?.[p.providerInstanceId]?.displayName?.trim();
+      const isPrimary = configuredHostLabel ? false : p.environmentId === primaryEnvironmentId;
+      const label =
+        configuredHostLabel || environmentById.get(p.environmentId)?.label || p.environmentId;
       envs.push({
         environmentId: p.environmentId,
         projectId: p.id,
+        selectionId: `${p.environmentId}:${p.id}`,
         label,
         isPrimary,
       });
@@ -1765,11 +1772,20 @@ function ChatViewContent(props: ChatViewProps) {
       return a.label.localeCompare(b.label);
     });
     return envs;
-  }, [activeProject, allProjects, projectGroupingSettings, primaryEnvironmentId, environmentById]);
+  }, [
+    activeProject,
+    allProjects,
+    environmentById,
+    primaryEnvironmentId,
+    projectGroupingSettings,
+    settings.providerInstances,
+  ]);
   const hasMultipleEnvironments = logicalProjectEnvironments.length > 1;
   const activeEnvironmentOption =
     logicalProjectEnvironments.find(
-      (environment) => environment.environmentId === activeThread?.environmentId,
+      (environment) =>
+        environment.environmentId === activeThread?.environmentId &&
+        environment.projectId === activeProject?.id,
     ) ?? null;
   const showComposerEnvironmentIndicator = shouldShowEnvironmentIndicator({
     activeEnvironment: activeEnvironmentOption,
@@ -2509,8 +2525,10 @@ function ChatViewContent(props: ChatViewProps) {
         worktreePath: activeThread?.worktreePath ?? null,
       })
     : null;
+  const environmentCapabilities = useServerConfigs().get(environmentId)?.environment.capabilities;
   const workspaceMutationsSupported =
-    useServerConfigs().get(environmentId)?.environment.capabilities.workspaceMutations === true;
+    environmentCapabilities?.worktreeMutations === true ||
+    environmentCapabilities?.workspaceMutations === true;
   const gitStatusQuery = useEnvironmentQuery(
     activeProject === null
       ? null
@@ -2624,17 +2642,47 @@ function ChatViewContent(props: ChatViewProps) {
   // different environment we update the draft context to point at the physical
   // project in that environment while keeping the same logical project.
   const onEnvironmentChange = useCallback(
-    (nextEnvironmentId: EnvironmentId) => {
+    (nextEnvironmentId: EnvironmentId, nextProjectId?: ProjectId) => {
       if (envLocked || !draftId) return;
       const target = logicalProjectEnvironments.find(
-        (env) => env.environmentId === nextEnvironmentId,
+        (env) =>
+          env.environmentId === nextEnvironmentId &&
+          (nextProjectId === undefined || env.projectId === nextProjectId),
       );
       if (!target) return;
       setDraftThreadContext(draftId, {
         projectRef: scopeProjectRef(target.environmentId, target.projectId),
       });
+      const targetProject = allProjects.find(
+        (project) =>
+          project.environmentId === target.environmentId && project.id === target.projectId,
+      );
+      if (targetProject) {
+        const candidateSelection =
+          targetProject.defaultModelSelection ??
+          settings.defaultModelSelections?.[targetProject.providerInstanceId];
+        const nextSelection = resolveDefaultProviderModelSelection(
+          (primaryEnvironment?.serverConfig?.providers ?? EMPTY_PROVIDERS).filter(
+            (provider) => provider.instanceId === targetProject.providerInstanceId,
+          ),
+          candidateSelection,
+        );
+        setComposerDraftModelSelection(draftId, nextSelection, {
+          replaceOptions: true,
+          providerInstanceBoundary: targetProject.providerInstanceId,
+        });
+      }
     },
-    [draftId, envLocked, logicalProjectEnvironments, setDraftThreadContext],
+    [
+      allProjects,
+      draftId,
+      envLocked,
+      logicalProjectEnvironments,
+      primaryEnvironment?.serverConfig?.providers,
+      setComposerDraftModelSelection,
+      setDraftThreadContext,
+      settings.defaultModelSelections,
+    ],
   );
 
   const activeTerminalGroup =
@@ -4167,6 +4215,7 @@ function ChatViewContent(props: ChatViewProps) {
   const handleSwitchCheckoutToThread = useCallback(async () => {
     if (
       !activeProjectCwd ||
+      !activeProject ||
       !activeThread ||
       !localCheckoutBranchMismatch ||
       isRestoringThreadBranch
@@ -4178,6 +4227,7 @@ function ChatViewContent(props: ChatViewProps) {
       environmentId,
       input: {
         cwd: activeProjectCwd,
+        target: { projectId: activeProject.id, threadId: activeThread.id },
         refName: localCheckoutBranchMismatch.threadBranch,
       },
     });

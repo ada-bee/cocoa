@@ -100,6 +100,7 @@ interface GitActionsControlProps {
   gitCwd: string | null;
   activeThreadRef: ScopedThreadRef | null;
   draftId?: DraftId;
+  supportsChangeRequests?: boolean;
 }
 
 interface PendingDefaultBranchAction {
@@ -977,6 +978,7 @@ export default function GitActionsControl({
   gitCwd,
   activeThreadRef,
   draftId,
+  supportsChangeRequests = true,
 }: GitActionsControlProps) {
   const updateThreadMetadata = useAtomCommand(
     threadEnvironment.updateMetadata,
@@ -1012,8 +1014,19 @@ export default function GitActionsControl({
     useState<PendingDefaultBranchAction | null>(null);
   const activeGitActionProgressRef = useRef<ActiveGitActionProgress | null>(null);
   const sourceControlScope = useMemo(
-    () => ({ environmentId: activeEnvironmentId, cwd: gitCwd }),
-    [activeEnvironmentId, gitCwd],
+    () => ({
+      environmentId: activeEnvironmentId,
+      cwd: gitCwd,
+      projectId: activeServerThread?.projectId ?? activeDraftThread?.projectId ?? null,
+      threadId: activeThreadRef?.threadId ?? null,
+    }),
+    [
+      activeDraftThread?.projectId,
+      activeEnvironmentId,
+      activeServerThread?.projectId,
+      activeThreadRef,
+      gitCwd,
+    ],
   );
   let runGitActionWithToast: (input: RunGitActionWithToastInput) => Promise<void>;
 
@@ -1149,13 +1162,31 @@ export default function GitActionsControl({
   }, [gitStatusForActions?.isDefaultRef]);
 
   const gitActionMenuItems = useMemo(
-    () => buildMenuItems(gitStatusForActions, isGitActionRunning, hasPrimaryRemote),
-    [gitStatusForActions, hasPrimaryRemote, isGitActionRunning],
+    () =>
+      buildMenuItems(
+        gitStatusForActions,
+        isGitActionRunning,
+        hasPrimaryRemote,
+        supportsChangeRequests,
+      ),
+    [gitStatusForActions, hasPrimaryRemote, isGitActionRunning, supportsChangeRequests],
   );
   const quickAction = useMemo(
     () =>
-      resolveQuickAction(gitStatusForActions, isGitActionRunning, isDefaultRef, hasPrimaryRemote),
-    [gitStatusForActions, hasPrimaryRemote, isDefaultRef, isGitActionRunning],
+      resolveQuickAction(
+        gitStatusForActions,
+        isGitActionRunning,
+        isDefaultRef,
+        hasPrimaryRemote,
+        supportsChangeRequests,
+      ),
+    [
+      gitStatusForActions,
+      hasPrimaryRemote,
+      isDefaultRef,
+      isGitActionRunning,
+      supportsChangeRequests,
+    ],
   );
   const quickActionDisabledReason = quickAction.disabled
     ? (quickAction.hint ?? "This action is currently unavailable.")
