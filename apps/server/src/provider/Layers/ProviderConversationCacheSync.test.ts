@@ -1,5 +1,10 @@
 import { assert, it } from "@effect/vitest";
-import { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  type OrchestrationCommand,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -10,6 +15,8 @@ import * as Stream from "effect/Stream";
 import { ProviderConversationCacheRepositoryLive } from "../../persistence/Layers/ProviderConversationCache.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { ProviderConversationCacheRepository } from "../../persistence/Services/ProviderConversationCache.ts";
+import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type {
   ProviderConversationCatalog,
   ProviderConversationInvalidation,
@@ -36,7 +43,7 @@ const thread = (
   title: `Title ${providerThreadId}`,
   preview: `Preview ${providerThreadId}`,
   createdAt: 10,
-  updatedAt: turns.length === 0 ? 20 : 30,
+  updatedAt: 20,
   recencyAt: 20,
   status: "idle",
   activeFlags: [],
@@ -66,29 +73,40 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
       const invalidations = yield* PubSub.unbounded<ProviderConversationInvalidation>();
       const registryChanges = yield* PubSub.unbounded<void>();
       const listCalls: Array<boolean> = [];
+      const readCalls: Array<string> = [];
+      const projectCommands: Array<OrchestrationCommand> = [];
+      const materializedWorkspaces = new Set<string>();
+      let providerUpdatedAt = 20;
+      let readItemsView: "full" | "summary" = "full";
       const catalog: ProviderConversationCatalog = {
         providerInstanceId: INSTANCE_ID,
         listThreads: ({ archived }) =>
           Effect.sync(() => {
             listCalls.push(archived);
             return {
-              threads: archived ? [thread("archived-thread")] : [thread("active-thread")],
+              threads: (archived ? [thread("archived-thread")] : [thread("active-thread")]).map(
+                (entry) => ({ ...entry, updatedAt: providerUpdatedAt }),
+              ),
               nextCursor: null,
             };
           }),
         readThread: (providerThreadId) =>
-          Effect.succeed(
-            thread(providerThreadId, [
-              {
-                id: "turn-1",
-                status: "completed",
-                startedAt: 11,
-                completedAt: 12,
-                items: [{ type: "userMessage", content: "hello" }],
-                itemsView: "full",
-              },
-            ]),
-          ),
+          Effect.sync(() => {
+            readCalls.push(providerThreadId);
+            return {
+              ...thread(providerThreadId, [
+                {
+                  id: "turn-1",
+                  status: "completed",
+                  startedAt: 11,
+                  completedAt: 12,
+                  items: [{ type: "userMessage", content: "hello" }],
+                  itemsView: readItemsView,
+                },
+              ]),
+              updatedAt: providerUpdatedAt,
+            };
+          }),
         setThreadName: () => Effect.void,
         archiveThread: () => Effect.void,
         unarchiveThread: () => Effect.void,
@@ -107,7 +125,9 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
         streamChanges: Stream.fromPubSub(registryChanges),
         subscribeChanges: PubSub.subscribe(registryChanges),
       };
-      const sync = yield* makeProviderConversationCacheSync({ refreshInterval: "1 hour" }).pipe(
+      const sync = yield* makeProviderConversationCacheSync({
+        refreshInterval: "1 hour",
+      }).pipe(
         Effect.provideService(ProviderInstanceRegistry, registry),
         Effect.provideService(
           ProviderSessionDirectory,
@@ -124,17 +144,45 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
               ]),
           } as never),
         ),
+        Effect.provideService(
+          ProjectionSnapshotQuery,
+          ProjectionSnapshotQuery.of({
+            getActiveProjectByWorkspaceRoot: ({
+              workspaceRoot,
+            }: {
+              readonly workspaceRoot: string;
+            }) =>
+              Effect.succeed(
+                materializedWorkspaces.has(workspaceRoot)
+                  ? Option.some({ workspaceRoot })
+                  : Option.none(),
+              ),
+          } as never),
+        ),
+        Effect.provideService(
+          OrchestrationEngineService,
+          OrchestrationEngineService.of({
+            dispatch: (command: OrchestrationCommand) =>
+              Effect.sync(() => {
+                projectCommands.push(command);
+                if (command.type === "project.create") {
+                  materializedWorkspaces.add(command.workspaceRoot);
+                }
+                return { sequence: projectCommands.length };
+              }),
+          } as never),
+        ),
       );
       const repository = yield* ProviderConversationCacheRepository;
 
       yield* sync.refreshInstance(INSTANCE_ID);
       assert.isTrue(Option.isSome(yield* repository.getSyncState(INSTANCE_ID)));
       assert.deepEqual(listCalls, [false, true]);
+      assert.deepEqual(readCalls.toSorted(), ["active-thread", "archived-thread"]);
       assert.deepEqual(
-        (yield* repository.listThreads({ providerInstanceId: INSTANCE_ID })).map((entry) => [
-          entry.providerThreadId,
-          entry.archived,
-        ]),
+        (yield* repository.listThreads({
+          providerInstanceId: INSTANCE_ID,
+        })).map((entry) => [entry.providerThreadId, entry.archived]),
         [
           ["active-thread", false],
           ["archived-thread", true],
@@ -149,10 +197,29 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
         ).threadId,
         EXISTING_THREAD_ID,
       );
+      assert.equal(projectCommands.length, 1);
+      const projectCommand = projectCommands[0];
+      assert.equal(projectCommand?.type, "project.create");
+      if (projectCommand?.type === "project.create") {
+        assert.equal(projectCommand.workspaceRoot, "/provider/workspace");
+        assert.equal(projectCommand.title, "workspace");
+        assert.isFalse(projectCommand.createWorkspaceRootIfMissing ?? true);
+      }
+
+      assert.isTrue(
+        Option.getOrThrow(
+          yield* repository.getThread({
+            providerInstanceId: INSTANCE_ID,
+            providerThreadId: "archived-thread",
+          }),
+        ).detailLoaded,
+      );
 
       yield* sync.start();
       yield* Effect.yieldNow;
       yield* sync.drain;
+      assert.deepEqual(readCalls.toSorted(), ["active-thread", "archived-thread"]);
+      assert.equal(projectCommands.length, 1);
 
       yield* sync.refreshThread(INSTANCE_ID, "active-thread");
       yield* sync.drain;
@@ -171,14 +238,29 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
       });
       yield* Effect.yieldNow;
       yield* sync.drain;
-      assert.isTrue(
-        Option.isNone(
-          yield* repository.getThread({
-            providerInstanceId: INSTANCE_ID,
-            providerThreadId: "archived-thread",
-          }),
-        ),
+      const retainedAfterProviderDeletion = Option.getOrThrow(
+        yield* repository.getThread({
+          providerInstanceId: INSTANCE_ID,
+          providerThreadId: "archived-thread",
+        }),
       );
+      assert.isTrue(retainedAfterProviderDeletion.detailLoaded);
+      assert.equal(retainedAfterProviderDeletion.thread.turns[0]?.id, "turn-1");
+
+      providerUpdatedAt = 21;
+      readItemsView = "summary";
+      yield* sync.refreshInstance(INSTANCE_ID);
+      const staleState = Option.getOrThrow(yield* repository.getSyncState(INSTANCE_ID));
+      assert.equal(staleState.status, "stale");
+      const retainedAfterIncompleteRefresh = Option.getOrThrow(
+        yield* repository.getThread({
+          providerInstanceId: INSTANCE_ID,
+          providerThreadId: "active-thread",
+        }),
+      );
+      assert.isTrue(retainedAfterIncompleteRefresh.detailLoaded);
+      assert.equal(retainedAfterIncompleteRefresh.thread.updatedAt, 20);
+      assert.equal(retainedAfterIncompleteRefresh.thread.turns[0]?.id, "turn-1");
     }).pipe(Effect.provideService(Crypto.Crypto, testCrypto), Effect.provide(persistenceLayer)),
   ),
 );

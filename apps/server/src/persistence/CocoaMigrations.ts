@@ -10,6 +10,7 @@ import Migration0004 from "./CocoaMigrations/004_CheckpointRevertSagas.ts";
 import Migration0005 from "./CocoaMigrations/005_CheckpointRevertIntents.ts";
 import Migration0006 from "./CocoaMigrations/006_CheckpointRevertIntentActiveThread.ts";
 import Migration0007 from "./CocoaMigrations/007_ProviderConversationCache.ts";
+import Migration0008 from "./CocoaMigrations/008_RetainProviderConversationHistory.ts";
 
 export const cocoaMigrationEntries = [
   [1, "ProviderCheckpointOperations", Migration0001],
@@ -19,6 +20,7 @@ export const cocoaMigrationEntries = [
   [5, "CheckpointRevertIntents", Migration0005],
   [6, "CheckpointRevertIntentActiveThread", Migration0006],
   [7, "ProviderConversationCache", Migration0007],
+  [8, "RetainProviderConversationHistory", Migration0008],
 ] as const;
 
 export const cocoaMigrationManifest = cocoaMigrationEntries.map(
@@ -46,7 +48,9 @@ export const runCocoaMigrations = Effect.fn("runCocoaMigrations")(function* (
   yield* executed.length === 0
     ? Effect.logDebug("Cocoa database schema is current")
     : Effect.log("Cocoa migrations ran successfully").pipe(
-        Effect.annotateLogs({ migrations: executed.map(([id, name]) => `${id}_${name}`) }),
+        Effect.annotateLogs({
+          migrations: executed.map(([id, name]) => `${id}_${name}`),
+        }),
       );
   return executed;
 });

@@ -1,4 +1,4 @@
-import type { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { CommandId, ProjectId, type ProviderInstanceId, type ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -6,6 +6,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
@@ -14,6 +15,8 @@ import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 
+import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderConversationCacheRepository,
   ProviderConversationSyncEpoch,
@@ -30,16 +33,12 @@ import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.t
 
 const DEFAULT_REFRESH_INTERVAL = Duration.minutes(1);
 const MAX_CATALOG_PAGES_PER_SWEEP = 10_000;
+const DETAIL_HYDRATION_CONCURRENCY = 4;
 
 type WorkItem =
   | { readonly type: "full"; readonly providerInstanceId: ProviderInstanceId }
   | {
       readonly type: "thread";
-      readonly providerInstanceId: ProviderInstanceId;
-      readonly providerThreadId: string;
-    }
-  | {
-      readonly type: "delete";
       readonly providerInstanceId: ProviderInstanceId;
       readonly providerThreadId: string;
     };
@@ -59,12 +58,18 @@ function catalogFailureReason(error: ProviderConversationCatalogError) {
   return error.reason;
 }
 
+function projectTitleFromRemotePath(workspaceRoot: string): string {
+  return workspaceRoot.split(/[/\\]/).findLast(Boolean) ?? workspaceRoot;
+}
+
 export const makeProviderConversationCacheSync = Effect.fn("ProviderConversationCacheSync.make")(
   function* (options: ProviderConversationCacheSyncOptions = {}) {
     const registry = yield* ProviderInstanceRegistry;
     const repository = yield* ProviderConversationCacheRepository;
     const crypto = yield* Crypto.Crypto;
     const sessionDirectory = yield* ProviderSessionDirectory;
+    const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const orchestrationEngine = yield* OrchestrationEngineService;
     const startedRef = yield* Ref.make(false);
     const changes = yield* PubSub.sliding<void>(1);
     yield* Effect.addFinalizer(() => PubSub.shutdown(changes));
@@ -105,17 +110,53 @@ export const makeProviderConversationCacheSync = Effect.fn("ProviderConversation
         yield* Effect.forEach(
           page.threads,
           (thread) =>
-            repository.upsertCatalogThread({
-              ...(threadIdsByProviderId.get(thread.providerThreadId) === undefined
-                ? {}
-                : { threadId: threadIdsByProviderId.get(thread.providerThreadId)! }),
-              providerInstanceId: catalog.providerInstanceId,
-              thread,
-              archived,
-              syncEpoch,
-              observedAt,
+            Effect.gen(function* () {
+              const cached = yield* repository.getThread({
+                providerInstanceId: catalog.providerInstanceId,
+                providerThreadId: thread.providerThreadId,
+              });
+              const detailIsCurrent =
+                Option.isSome(cached) &&
+                cached.value.detailLoaded &&
+                cached.value.thread.updatedAt === thread.updatedAt;
+              yield* repository.upsertCatalogThread({
+                ...(threadIdsByProviderId.get(thread.providerThreadId) === undefined
+                  ? {}
+                  : {
+                      threadId: threadIdsByProviderId.get(thread.providerThreadId)!,
+                    }),
+                providerInstanceId: catalog.providerInstanceId,
+                thread,
+                archived,
+                syncEpoch,
+                observedAt,
+              });
+              if (detailIsCurrent) return;
+
+              const detail = yield* catalog.readThread(thread.providerThreadId);
+              if (detail.turns.some((turn) => turn.itemsView !== "full")) {
+                return yield* new ProviderConversationCatalogError({
+                  providerInstanceId: catalog.providerInstanceId,
+                  operation: "thread/read",
+                  reason: "protocol",
+                  detail: `Provider returned incomplete history for thread '${thread.providerThreadId}'.`,
+                });
+              }
+              const updated = yield* repository.upsertThreadDetail({
+                providerInstanceId: catalog.providerInstanceId,
+                thread: detail,
+                observedAt,
+              });
+              if (!updated) {
+                return yield* new ProviderConversationCatalogError({
+                  providerInstanceId: catalog.providerInstanceId,
+                  operation: "thread/read",
+                  reason: "protocol",
+                  detail: `Provider thread '${thread.providerThreadId}' disappeared during reconciliation.`,
+                });
+              }
             }),
-          { concurrency: 8, discard: true },
+          { concurrency: DETAIL_HYDRATION_CONCURRENCY, discard: true },
         );
         if (page.nextCursor === null) return;
         if (seenCursors.has(page.nextCursor)) {
@@ -137,6 +178,60 @@ export const makeProviderConversationCacheSync = Effect.fn("ProviderConversation
       });
     });
 
+    const materializeProjects = Effect.fn("ProviderConversationCacheSync.materializeProjects")(
+      function* (providerInstanceId: ProviderInstanceId, createdAt: string) {
+        const cachedThreads = yield* repository.listThreads({ providerInstanceId });
+        const incomplete = cachedThreads.find((entry) => !entry.detailLoaded);
+        if (incomplete) {
+          return yield* new ProviderConversationCatalogError({
+            providerInstanceId,
+            operation: "thread/read",
+            reason: "protocol",
+            detail: `Cocoa does not have complete history for retained thread '${incomplete.providerThreadId}'.`,
+          });
+        }
+        const workspaceRoots = new Set(cachedThreads.map((entry) => entry.thread.cwd));
+        for (const workspaceRoot of workspaceRoots) {
+          const existing = yield* projectionSnapshotQuery.getActiveProjectByWorkspaceRoot({
+            providerInstanceId,
+            workspaceRoot,
+          });
+          if (Option.isSome(existing)) continue;
+
+          const projectId = ProjectId.make(yield* crypto.randomUUIDv4);
+          yield* orchestrationEngine
+            .dispatch({
+              type: "project.create",
+              commandId: CommandId.make(yield* crypto.randomUUIDv4),
+              projectId,
+              providerInstanceId,
+              title: projectTitleFromRemotePath(workspaceRoot),
+              workspaceRoot,
+              createWorkspaceRootIfMissing: false,
+              defaultModelSelection: null,
+              createdAt,
+            })
+            .pipe(
+              Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+                projectionSnapshotQuery
+                  .getActiveProjectByWorkspaceRoot({
+                    providerInstanceId,
+                    workspaceRoot,
+                  })
+                  .pipe(
+                    Effect.flatMap(
+                      Option.match({
+                        onNone: () => Effect.fail(error),
+                        onSome: () => Effect.void,
+                      }),
+                    ),
+                  ),
+              ),
+            );
+        }
+      },
+    );
+
     const fullSync = Effect.fn("ProviderConversationCacheSync.fullSync")(function* (
       providerInstanceId: ProviderInstanceId,
     ) {
@@ -149,11 +244,16 @@ export const makeProviderConversationCacheSync = Effect.fn("ProviderConversation
       yield* repository.beginSync({ providerInstanceId, syncEpoch, startedAt });
       const result = yield* readCatalog(catalog, false, syncEpoch, startedAt).pipe(
         Effect.andThen(readCatalog(catalog, true, syncEpoch, startedAt)),
+        Effect.andThen(materializeProjects(providerInstanceId, startedAt)),
         Effect.result,
       );
       const completedAt = yield* nowIso;
       if (Result.isSuccess(result)) {
-        yield* repository.completeSync({ providerInstanceId, syncEpoch, completedAt });
+        yield* repository.completeSync({
+          providerInstanceId,
+          syncEpoch,
+          completedAt,
+        });
         return;
       }
       yield* repository.failSync({
@@ -176,6 +276,14 @@ export const makeProviderConversationCacheSync = Effect.fn("ProviderConversation
       const catalog = instance?.conversationCatalog;
       if (!catalog) return;
       const thread = yield* catalog.readThread(providerThreadId);
+      if (thread.turns.some((turn) => turn.itemsView !== "full")) {
+        return yield* new ProviderConversationCatalogError({
+          providerInstanceId,
+          operation: "thread/read",
+          reason: "protocol",
+          detail: `Provider returned incomplete history for thread '${providerThreadId}'.`,
+        });
+      }
       const observedAt = yield* nowIso;
       const updated = yield* repository.upsertThreadDetail({
         providerInstanceId,
@@ -184,29 +292,31 @@ export const makeProviderConversationCacheSync = Effect.fn("ProviderConversation
       });
       if (updated) return;
       yield* fullSync(providerInstanceId);
-      yield* repository.upsertThreadDetail({ providerInstanceId, thread, observedAt });
+      yield* repository.upsertThreadDetail({
+        providerInstanceId,
+        thread,
+        observedAt,
+      });
     });
 
-    const process = (item: WorkItem) =>
-      Effect.gen(function* () {
-        switch (item.type) {
-          case "full":
-            yield* fullSync(item.providerInstanceId);
-            break;
-          case "thread":
-            yield* refreshDetail(item.providerInstanceId, item.providerThreadId);
-            break;
-          case "delete":
-            yield* repository.deleteThread(item);
-            break;
-        }
-      }).pipe(Effect.withSpan("ProviderConversationCacheSync.process"));
+    const process = Effect.fn("ProviderConversationCacheSync.process")(function* (item: WorkItem) {
+      switch (item.type) {
+        case "full":
+          yield* fullSync(item.providerInstanceId);
+          break;
+        case "thread":
+          yield* refreshDetail(item.providerInstanceId, item.providerThreadId);
+          break;
+      }
+    });
     const processSafely = (item: WorkItem) =>
       process(item).pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
             ? Effect.interrupt
-            : Effect.logWarning("Provider conversation cache refresh failed", { cause }),
+            : Effect.logWarning("Provider conversation cache refresh failed", {
+                cause,
+              }),
         ),
       );
     const locksRef = yield* Ref.make<ReadonlyMap<ProviderInstanceId, Semaphore.Semaphore>>(
@@ -268,11 +378,8 @@ export const makeProviderConversationCacheSync = Effect.fn("ProviderConversation
               case "thread-changed":
                 return refreshThread(instance.instanceId, invalidation.providerThreadId);
               case "thread-deleted":
-                return run({
-                  type: "delete",
-                  providerInstanceId: instance.instanceId,
-                  providerThreadId: invalidation.providerThreadId,
-                });
+                // Provider removal must never remove Cocoa's durable archive.
+                return Effect.void;
             }
           }),
         ),

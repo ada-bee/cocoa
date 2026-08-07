@@ -13,6 +13,7 @@ import {
 } from "../Services/ProviderConversationCache.ts";
 
 const INSTANCE_ID = ProviderInstanceId.make("codex_remote");
+const FAILED_SYNC_INSTANCE_ID = ProviderInstanceId.make("codex_failed_sync");
 const FIRST_SYNC = ProviderConversationSyncEpoch.make("sync-1");
 const SECOND_SYNC = ProviderConversationSyncEpoch.make("sync-2");
 const NOW = "2026-08-07T10:00:00.000Z";
@@ -44,7 +45,7 @@ const layer = ProviderConversationCacheRepositoryLive.pipe(
 );
 
 it.layer(layer)("ProviderConversationCacheRepository", (it) => {
-  it.effect("rebuilds catalog state, retains details, and tombstones absent provider threads", () =>
+  it.effect("rebuilds catalog state and retains threads absent from later provider sweeps", () =>
     Effect.gen(function* () {
       const repository = yield* ProviderConversationCacheRepository;
       const initialMeta = yield* repository.getMeta;
@@ -130,18 +131,18 @@ it.layer(layer)("ProviderConversationCacheRepository", (it) => {
       assert.isTrue(retained.detailLoaded);
       assert.equal(retained.deletedAt, null);
 
-      const tombstoned = Option.getOrThrow(
+      const retainedAbsent = Option.getOrThrow(
         yield* repository.getThread({
           providerInstanceId: INSTANCE_ID,
           providerThreadId: "provider-thread-2",
         }),
       );
-      assert.equal(tombstoned.deletedAt, LATER);
+      assert.equal(retainedAbsent.deletedAt, null);
       assert.deepEqual(
-        (yield* repository.listThreads({ providerInstanceId: INSTANCE_ID })).map(
-          (entry) => entry.providerThreadId,
-        ),
-        ["provider-thread-1"],
+        (yield* repository.listThreads({
+          providerInstanceId: INSTANCE_ID,
+        })).map((entry) => entry.providerThreadId),
+        ["provider-thread-1", "provider-thread-2"],
       );
 
       const syncState = Option.getOrThrow(yield* repository.getSyncState(INSTANCE_ID));
@@ -155,37 +156,43 @@ it.layer(layer)("ProviderConversationCacheRepository", (it) => {
     Effect.gen(function* () {
       const repository = yield* ProviderConversationCacheRepository;
       yield* repository.beginSync({
-        providerInstanceId: INSTANCE_ID,
+        providerInstanceId: FAILED_SYNC_INSTANCE_ID,
         syncEpoch: FIRST_SYNC,
         startedAt: NOW,
       });
       yield* repository.upsertCatalogThread({
-        providerInstanceId: INSTANCE_ID,
+        providerInstanceId: FAILED_SYNC_INSTANCE_ID,
         thread: thread("provider-thread-1", 20),
         archived: false,
         syncEpoch: FIRST_SYNC,
         observedAt: NOW,
       });
       yield* repository.completeSync({
-        providerInstanceId: INSTANCE_ID,
+        providerInstanceId: FAILED_SYNC_INSTANCE_ID,
         syncEpoch: FIRST_SYNC,
         completedAt: NOW,
       });
 
       yield* repository.beginSync({
-        providerInstanceId: INSTANCE_ID,
+        providerInstanceId: FAILED_SYNC_INSTANCE_ID,
         syncEpoch: SECOND_SYNC,
         startedAt: LATER,
       });
       yield* repository.failSync({
-        providerInstanceId: INSTANCE_ID,
+        providerInstanceId: FAILED_SYNC_INSTANCE_ID,
         syncEpoch: SECOND_SYNC,
         failedAt: LATER,
         reason: "disconnected",
       });
 
-      assert.equal(Option.getOrThrow(yield* repository.getSyncState(INSTANCE_ID)).status, "stale");
-      assert.lengthOf(yield* repository.listThreads({ providerInstanceId: INSTANCE_ID }), 1);
+      assert.equal(
+        Option.getOrThrow(yield* repository.getSyncState(FAILED_SYNC_INSTANCE_ID)).status,
+        "stale",
+      );
+      assert.lengthOf(
+        yield* repository.listThreads({ providerInstanceId: FAILED_SYNC_INSTANCE_ID }),
+        1,
+      );
     }),
   );
 });

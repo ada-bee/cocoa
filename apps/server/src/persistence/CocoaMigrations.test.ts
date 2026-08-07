@@ -15,7 +15,26 @@ layer("Cocoa migrations", (it) => {
       const sql = yield* SqlClient.SqlClient;
 
       yield* runMigrations();
+      yield* runCocoaMigrations({ toMigrationInclusive: 7 });
+      yield* sql`
+        INSERT INTO provider_conversation_cache_threads (
+          provider_instance_id, provider_thread_id, cocoa_thread_id, cwd, title, preview,
+          provider_created_at, provider_updated_at, provider_recency_at, archived,
+          summary_json, detail_json, sync_epoch, observed_at, deleted_at
+        ) VALUES (
+          'migration-provider', 'migration-thread', 'migration-cocoa-thread', '/workspace',
+          NULL, '', 0, 0, NULL, 0, '{}', NULL, 'migration-sync',
+          '2026-08-07T10:00:00.000Z', '2026-08-07T10:01:00.000Z'
+        )
+      `;
       yield* runCocoaMigrations();
+
+      const restored = yield* sql<{ readonly deletedAt: string | null }>`
+        SELECT deleted_at AS "deletedAt"
+        FROM provider_conversation_cache_threads
+        WHERE provider_instance_id = 'migration-provider'
+      `;
+      assert.deepStrictEqual(restored, [{ deletedAt: null }]);
 
       assert.equal(migrationManifest.at(-1)?.[0], 35);
       assert.deepStrictEqual(cocoaMigrationManifest, [
@@ -26,6 +45,7 @@ layer("Cocoa migrations", (it) => {
         [5, "CheckpointRevertIntents"],
         [6, "CheckpointRevertIntentActiveThread"],
         [7, "ProviderConversationCache"],
+        [8, "RetainProviderConversationHistory"],
       ]);
 
       yield* sql`
@@ -33,12 +53,18 @@ layer("Cocoa migrations", (it) => {
         VALUES (36, 'FutureUpstreamMigration')
       `;
 
-      const upstream = yield* sql<{ readonly migrationId: number; readonly name: string }>`
+      const upstream = yield* sql<{
+        readonly migrationId: number;
+        readonly name: string;
+      }>`
         SELECT migration_id AS "migrationId", name
         FROM effect_sql_migrations
         WHERE migration_id = 36
       `;
-      const cocoa = yield* sql<{ readonly migrationId: number; readonly name: string }>`
+      const cocoa = yield* sql<{
+        readonly migrationId: number;
+        readonly name: string;
+      }>`
         SELECT migration_id AS "migrationId", name
         FROM cocoa_sql_migrations
         ORDER BY migration_id
@@ -53,6 +79,7 @@ layer("Cocoa migrations", (it) => {
         { migrationId: 5, name: "CheckpointRevertIntents" },
         { migrationId: 6, name: "CheckpointRevertIntentActiveThread" },
         { migrationId: 7, name: "ProviderConversationCache" },
+        { migrationId: 8, name: "RetainProviderConversationHistory" },
       ]);
     }),
   );

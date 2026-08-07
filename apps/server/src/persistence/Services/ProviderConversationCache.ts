@@ -156,9 +156,6 @@ export interface ProviderConversationCacheRepositoryShape {
   readonly failSync: (
     input: FailProviderConversationSyncInput,
   ) => Effect.Effect<void, ProviderConversationCacheRepositoryError>;
-  readonly deleteThread: (
-    input: GetProviderConversationCacheThreadInput,
-  ) => Effect.Effect<void, ProviderConversationCacheRepositoryError>;
   readonly getThread: (
     input: GetProviderConversationCacheThreadInput,
   ) => Effect.Effect<

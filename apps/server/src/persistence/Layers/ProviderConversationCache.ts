@@ -185,11 +185,7 @@ const make = Effect.gen(function* () {
         provider_recency_at = excluded.provider_recency_at,
         archived = excluded.archived,
         summary_json = excluded.summary_json,
-        detail_json = CASE
-          WHEN provider_conversation_cache_threads.provider_updated_at = excluded.provider_updated_at
-          THEN provider_conversation_cache_threads.detail_json
-          ELSE NULL
-        END,
+        detail_json = provider_conversation_cache_threads.detail_json,
         provider_updated_at = excluded.provider_updated_at,
         sync_epoch = excluded.sync_epoch,
         observed_at = excluded.observed_at,
@@ -216,23 +212,6 @@ const make = Effect.gen(function* () {
       `,
   });
 
-  const completeSyncRows = SqlSchema.void({
-    Request: CompleteProviderConversationSyncInput,
-    execute: (input) => sql`
-      UPDATE provider_conversation_cache_threads
-      SET deleted_at = ${input.completedAt}
-      WHERE provider_instance_id = ${input.providerInstanceId}
-        AND sync_epoch <> ${input.syncEpoch}
-        AND deleted_at IS NULL
-        AND EXISTS (
-          SELECT 1 FROM provider_conversation_cache_sync sync
-          WHERE sync.provider_instance_id = ${input.providerInstanceId}
-            AND sync.status = 'syncing'
-            AND sync.active_sync_epoch = ${input.syncEpoch}
-        )
-    `,
-  });
-
   const completeSyncState = SqlSchema.void({
     Request: CompleteProviderConversationSyncInput,
     execute: (input) => sql`
@@ -254,15 +233,6 @@ const make = Effect.gen(function* () {
       WHERE provider_instance_id = ${input.providerInstanceId}
         AND status = 'syncing'
         AND active_sync_epoch = ${input.syncEpoch}
-    `,
-  });
-
-  const deleteThreadRow = SqlSchema.void({
-    Request: GetProviderConversationCacheThreadInput,
-    execute: (input) => sql`
-      DELETE FROM provider_conversation_cache_threads
-      WHERE provider_instance_id = ${input.providerInstanceId}
-        AND provider_thread_id = ${input.providerThreadId}
     `,
   });
 
@@ -404,23 +374,13 @@ const make = Effect.gen(function* () {
 
   const completeSync: ProviderConversationCacheRepositoryShape["completeSync"] = (input) =>
     sql
-      .withTransaction(
-        completeSyncRows(input).pipe(
-          Effect.andThen(completeSyncState(input)),
-          Effect.andThen(bumpRevision),
-        ),
-      )
+      .withTransaction(completeSyncState(input).pipe(Effect.andThen(bumpRevision)))
       .pipe(Effect.mapError(mapError("ProviderConversationCacheRepository.completeSync")));
 
   const failSync: ProviderConversationCacheRepositoryShape["failSync"] = (input) =>
     sql
       .withTransaction(failSyncState(input).pipe(Effect.andThen(bumpRevision)))
       .pipe(Effect.mapError(mapError("ProviderConversationCacheRepository.failSync")));
-
-  const deleteThread: ProviderConversationCacheRepositoryShape["deleteThread"] = (input) =>
-    sql
-      .withTransaction(deleteThreadRow(input).pipe(Effect.andThen(bumpRevision)))
-      .pipe(Effect.mapError(mapError("ProviderConversationCacheRepository.deleteThread")));
 
   const getThread: ProviderConversationCacheRepositoryShape["getThread"] = (input) =>
     getThreadRow(input).pipe(
@@ -476,7 +436,6 @@ const make = Effect.gen(function* () {
     upsertThreadDetail,
     completeSync,
     failSync,
-    deleteThread,
     getThread,
     getThreadById,
     getThreadByIdSnapshot,

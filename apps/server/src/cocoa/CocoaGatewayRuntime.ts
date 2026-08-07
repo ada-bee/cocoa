@@ -103,6 +103,7 @@ const ProviderConversationCacheSyncLayerLive = ProviderConversationCacheSyncLive
   Layer.provide(ProviderConversationCacheRepositoryLayerLive),
   Layer.provide(CocoaProviderInstanceRegistryHydrationLive),
   Layer.provide(ProviderSessionDirectoryLayerLive),
+  Layer.provide(OrchestrationLayerLive),
 );
 
 const ProviderConversationProjectionQueryLayerLive = ProviderConversationProjectionQueryLive.pipe(
