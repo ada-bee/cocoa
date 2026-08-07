@@ -23,6 +23,14 @@ describe("Cocoa Docker packaging policy", () => {
     expect(dockerfile).not.toMatch(/FROM[^\n]+\b(nix|nixos)\b/i);
   });
 
+  it("ships every external dependency required by the endpoint-only gateway bundle", () => {
+    const runtimePackage = JSON.parse(
+      readRootFile("packages/cocoa-gateway-runtime/package.json"),
+    ) as { readonly dependencies?: Readonly<Record<string, string>> };
+
+    expect(runtimePackage.dependencies?.["@opencode-ai/sdk"]).toBe("^1.3.15");
+  });
+
   it("preserves the hardened gateway runtime contract", () => {
     const dockerfile = readRootFile("Dockerfile");
     const compose = readRootFile("compose.yaml");
