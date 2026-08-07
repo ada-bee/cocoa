@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   type OrchestrationCommand,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -153,6 +154,11 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
           ProjectionSnapshotQuery.of({
             getCommandReadModel: () =>
               Effect.succeed({
+                projects: [...materializedProjects.values()].map((project) => ({
+                  ...project,
+                  providerInstanceId: INSTANCE_ID,
+                  deletedAt: null,
+                })),
                 threads: [...materializedThreadIds].map((id) => ({ id })),
               } as never),
             getActiveProjectByWorkspaceRoot: ({
@@ -285,6 +291,99 @@ it.effect("sweeps active and archived provider catalogs and refreshes details", 
       assert.isTrue(retainedAfterIncompleteRefresh.detailLoaded);
       assert.equal(retainedAfterIncompleteRefresh.thread.updatedAt, 20);
       assert.equal(retainedAfterIncompleteRefresh.thread.turns[0]?.id, "turn-1");
+    }).pipe(Effect.provideService(Crypto.Crypto, testCrypto), Effect.provide(persistenceLayer)),
+  ),
+);
+
+it.effect("does not rematerialize a Cocoa-deleted provider workspace", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const invalidations = yield* PubSub.unbounded<ProviderConversationInvalidation>();
+      const registryChanges = yield* PubSub.unbounded<void>();
+      const commands: Array<OrchestrationCommand> = [];
+      const retainedThread = thread("retained-provider-thread", [
+        {
+          id: "turn-1",
+          status: "completed",
+          startedAt: 11,
+          completedAt: 12,
+          items: [{ type: "userMessage", content: "retained history" }],
+          itemsView: "full",
+        },
+      ]);
+      const catalog: ProviderConversationCatalog = {
+        providerInstanceId: INSTANCE_ID,
+        listThreads: ({ archived }) =>
+          Effect.succeed({
+            threads: archived ? [] : [retainedThread],
+            nextCursor: null,
+          }),
+        readThread: () => Effect.succeed(retainedThread),
+        setThreadName: () => Effect.void,
+        archiveThread: () => Effect.void,
+        unarchiveThread: () => Effect.void,
+        deleteThread: () => Effect.void,
+        subscribeInvalidations: PubSub.subscribe(invalidations),
+      };
+      const instance = {
+        instanceId: INSTANCE_ID,
+        conversationCatalog: catalog,
+      } as ProviderInstance;
+      const registry: ProviderInstanceRegistryShape = {
+        getInstance: (instanceId) =>
+          Effect.succeed(instanceId === INSTANCE_ID ? instance : undefined),
+        listInstances: Effect.succeed([instance]),
+        listUnavailable: Effect.succeed([]),
+        streamChanges: Stream.fromPubSub(registryChanges),
+        subscribeChanges: PubSub.subscribe(registryChanges),
+      };
+      const sync = yield* makeProviderConversationCacheSync({ refreshInterval: "1 hour" }).pipe(
+        Effect.provideService(ProviderInstanceRegistry, registry),
+        Effect.provideService(
+          ProviderSessionDirectory,
+          ProviderSessionDirectory.of({
+            listBindings: () => Effect.succeed([]),
+          } as never),
+        ),
+        Effect.provideService(
+          ProjectionSnapshotQuery,
+          ProjectionSnapshotQuery.of({
+            getCommandReadModel: () =>
+              Effect.succeed({
+                projects: [
+                  {
+                    id: ProjectId.make("deleted-project"),
+                    providerInstanceId: INSTANCE_ID,
+                    workspaceRoot: "/provider/workspace",
+                    deletedAt: "2026-08-07T09:00:00.000Z",
+                  },
+                ],
+                threads: [],
+              } as never),
+            getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+          } as never),
+        ),
+        Effect.provideService(
+          OrchestrationEngineService,
+          OrchestrationEngineService.of({
+            dispatch: (command: OrchestrationCommand) =>
+              Effect.sync(() => {
+                commands.push(command);
+                return { sequence: commands.length };
+              }),
+          } as never),
+        ),
+      );
+      const repository = yield* ProviderConversationCacheRepository;
+
+      yield* sync.refreshInstance(INSTANCE_ID);
+
+      assert.deepEqual(commands, []);
+      const retained = yield* repository.listThreads({ providerInstanceId: INSTANCE_ID });
+      assert.lengthOf(retained, 1);
+      assert.equal(retained[0]?.providerThreadId, "retained-provider-thread");
+      assert.isTrue(retained[0]?.detailLoaded);
+      assert.equal(Option.getOrThrow(yield* repository.getSyncState(INSTANCE_ID)).status, "fresh");
     }).pipe(Effect.provideService(Crypto.Crypto, testCrypto), Effect.provide(persistenceLayer)),
   ),
 );

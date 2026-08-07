@@ -200,13 +200,21 @@ export const makeProviderConversationCacheSync = Effect.fn("ProviderConversation
         }
         const commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
         const materializedThreadIds = new Set(commandReadModel.threads.map((thread) => thread.id));
+        const tombstonedWorkspaceRoots = new Set(
+          commandReadModel.projects
+            .filter(
+              (project) =>
+                project.providerInstanceId === providerInstanceId && project.deletedAt !== null,
+            )
+            .map((project) => project.workspaceRoot),
+        );
         const workspaceRoots = new Set(cachedThreads.map((entry) => entry.thread.cwd));
         for (const workspaceRoot of workspaceRoots) {
           const existing = yield* projectionSnapshotQuery.getActiveProjectByWorkspaceRoot({
             providerInstanceId,
             workspaceRoot,
           });
-          if (Option.isSome(existing)) continue;
+          if (Option.isSome(existing) || tombstonedWorkspaceRoots.has(workspaceRoot)) continue;
 
           const projectId = ProjectId.make(yield* crypto.randomUUIDv4);
           yield* orchestrationEngine
@@ -247,6 +255,7 @@ export const makeProviderConversationCacheSync = Effect.fn("ProviderConversation
             workspaceRoot: cachedThread.thread.cwd,
           });
           if (Option.isNone(project)) {
+            if (tombstonedWorkspaceRoots.has(cachedThread.thread.cwd)) continue;
             return yield* new ProviderConversationCatalogError({
               providerInstanceId,
               operation: "project/materialize",
