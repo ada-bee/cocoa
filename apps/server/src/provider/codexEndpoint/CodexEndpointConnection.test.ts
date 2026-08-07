@@ -14,8 +14,8 @@ import { TestClock } from "effect/testing";
 import * as CodexEndpointConnection from "./CodexEndpointConnection.ts";
 
 const PROVIDER_INSTANCE_ID = ProviderInstanceId.make("codex_remote");
-const decodeJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
-const encodeJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 const makeInMemoryTransport = Effect.fn("CodexEndpointConnectionTest.makeTransport")(function* () {
   const input = yield* Queue.unbounded<string, Cause.Done<void>>();

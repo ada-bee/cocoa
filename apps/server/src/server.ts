@@ -198,6 +198,12 @@ const HttpServerLive = Layer.unwrap(
         port: config.port,
         hostname: config.host ?? "127.0.0.1",
         gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
+        websocket: {
+          perMessageDeflate: {
+            compress: "dedicated",
+            decompress: "shared",
+          },
+        },
       });
     } else {
       const [NodeHttpServer, NodeHttp] = yield* Effect.all([
@@ -208,6 +214,7 @@ const HttpServerLive = Layer.unwrap(
         host: config.host ?? "127.0.0.1",
         port: config.port,
         gracefulShutdownTimeout: HTTP_PREEMPTIVE_SHUTDOWN_GRACE_MS,
+        websocket: { perMessageDeflate: true },
       });
     }
   }),

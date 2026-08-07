@@ -1016,6 +1016,9 @@ const makeWsRpcLayer = (
           settings,
           shellResumeCompletionMarker: true,
           threadResumeCompletionMarker: true,
+          ...(Option.isSome(providerProjectionSnapshotQuery)
+            ? { threadSnapshotPagination: true as const }
+            : {}),
         };
       });
 
@@ -1342,15 +1345,22 @@ const makeWsRpcLayer = (
                       stream,
                       Stream.fromSubscription(cacheChanges).pipe(
                         Stream.mapEffect(() =>
-                          projectionSnapshotQuery.getThreadDetailSnapshot(input.threadId).pipe(
-                            Effect.mapError(
-                              (cause) =>
-                                new OrchestrationGetSnapshotError({
-                                  message: `Failed to refresh thread ${input.threadId}`,
-                                  cause,
-                                }),
+                          projectionSnapshotQuery
+                            .getThreadDetailSnapshot(
+                              input.threadId,
+                              input.turnLimit === undefined
+                                ? undefined
+                                : { turnLimit: input.turnLimit },
+                            )
+                            .pipe(
+                              Effect.mapError(
+                                (cause) =>
+                                  new OrchestrationGetSnapshotError({
+                                    message: `Failed to refresh thread ${input.threadId}`,
+                                    cause,
+                                  }),
+                              ),
                             ),
-                          ),
                         ),
                         Stream.filterMap((value) =>
                           Option.isSome(value)
@@ -1428,7 +1438,10 @@ const makeWsRpcLayer = (
               }
 
               const snapshot = yield* projectionSnapshotQuery
-                .getThreadDetailSnapshot(input.threadId)
+                .getThreadDetailSnapshot(
+                  input.threadId,
+                  input.turnLimit === undefined ? undefined : { turnLimit: input.turnLimit },
+                )
                 .pipe(
                   Effect.mapError(
                     (cause) =>

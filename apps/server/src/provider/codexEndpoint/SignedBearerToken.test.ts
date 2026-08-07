@@ -6,7 +6,7 @@ import {
   mintCodexSignedBearerToken,
 } from "./SignedBearerToken.ts";
 
-const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 it("mints the exact Codex HS256 JWT header, claims, and signature", () => {
   const token = mintCodexSignedBearerToken({

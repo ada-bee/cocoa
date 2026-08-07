@@ -68,9 +68,9 @@ const REQUIRED_CAPABILITIES = [
 
 const decodeRequest = Schema.decodeUnknownEffect(CodexCheckpointHelperRequest);
 const decodeResponse = Schema.decodeUnknownEffect(CodexCheckpointHelperResponse);
-const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
-const encodeJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
-const encodeJsonSync = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const encodeJsonSync = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const operationName = (
   operation: CodexCheckpointHelperRequestShape["operation"],

@@ -434,6 +434,18 @@ const make = Effect.gen(function* () {
       Effect.mapError(mapError("ProviderConversationCacheRepository.getThreadById")),
     );
 
+  const getThreadByIdSnapshot: ProviderConversationCacheRepositoryShape["getThreadByIdSnapshot"] = (
+    input,
+  ) =>
+    sql
+      .withTransaction(
+        Effect.all({
+          meta: readMeta(),
+          thread: getThreadByIdRow(input).pipe(Effect.map(Option.map(toCacheThread))),
+        }),
+      )
+      .pipe(Effect.mapError(mapError("ProviderConversationCacheRepository.getThreadByIdSnapshot")));
+
   const listThreads: ProviderConversationCacheRepositoryShape["listThreads"] = (input) =>
     listThreadRows({
       providerInstanceId: input.providerInstanceId,
@@ -467,6 +479,7 @@ const make = Effect.gen(function* () {
     deleteThread,
     getThread,
     getThreadById,
+    getThreadByIdSnapshot,
     listThreads,
     searchThreads,
   } satisfies ProviderConversationCacheRepositoryShape;

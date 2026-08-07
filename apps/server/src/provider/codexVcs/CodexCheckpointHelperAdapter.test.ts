@@ -74,8 +74,8 @@ type Handler = (
   request: CodexCheckpointHelperRequest,
 ) => Effect.Effect<CommandExecResponse, CodexErrors.CodexAppServerError>;
 
-const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
-const encodeJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const normalizeRequest = Schema.decodeUnknownSync(CodexCheckpointHelperRequest);
 
 const requestDigest = (request: CodexCheckpointHelperRequest): string =>

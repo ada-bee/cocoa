@@ -130,8 +130,8 @@ interface NativeLifecycle {
 
 type TurnCompleted = CodexRpc.ServerNotificationParamsByMethod["turn/completed"];
 
-const decodeStructuredJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
-const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeStructuredJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
+const encodeUnknownJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeJsonValue = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json));
 const isStructuredGenerationError = Schema.is(CodexEndpointStructuredGenerationError);
 const isBorrowUnavailable = Schema.is(CodexEndpointBorrowUnavailableError);

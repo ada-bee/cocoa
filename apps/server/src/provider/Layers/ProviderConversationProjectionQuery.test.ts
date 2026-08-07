@@ -75,6 +75,63 @@ const providerThread: ProviderConversationThread = {
   ],
 };
 
+const paginatedProviderThread: ProviderConversationThread = {
+  ...providerThread,
+  providerThreadId: "provider-thread-paginated",
+  title: "Paginated provider history",
+  turns: [
+    {
+      id: "turn-1",
+      status: "completed",
+      startedAt: 11,
+      completedAt: 12,
+      itemsView: "full",
+      items: [
+        { id: "user-1", type: "userMessage", content: [{ type: "text", text: "prompt 1" }] },
+        { id: "agent-1", type: "agentMessage", text: "reply 1" },
+      ],
+    },
+    {
+      id: "turn-2",
+      status: "completed",
+      startedAt: 13,
+      completedAt: 14,
+      itemsView: "full",
+      items: [{ id: "agent-2", type: "agentMessage", text: "subagent 2" }],
+    },
+    {
+      id: "turn-3",
+      status: "completed",
+      startedAt: 15,
+      completedAt: 16,
+      itemsView: "full",
+      items: [{ id: "agent-3", type: "agentMessage", text: "subagent 3" }],
+    },
+    {
+      id: "turn-4",
+      status: "completed",
+      startedAt: 17,
+      completedAt: 18,
+      itemsView: "full",
+      items: [
+        { id: "user-4", type: "userMessage", content: [{ type: "text", text: "prompt 4" }] },
+        { id: "agent-4", type: "agentMessage", text: "reply 4" },
+      ],
+    },
+    {
+      id: "turn-5",
+      status: "completed",
+      startedAt: 19,
+      completedAt: 20,
+      itemsView: "full",
+      items: [
+        { id: "user-5", type: "userMessage", content: [{ type: "text", text: "prompt 5" }] },
+        { id: "agent-5", type: "agentMessage", text: "reply 5" },
+      ],
+    },
+  ],
+};
+
 const emptyShell: OrchestrationShellSnapshot = {
   snapshotSequence: 7,
   projects: [
@@ -176,5 +233,93 @@ it.effect("projects provider-owned catalog and history into Cocoa shell/detail c
     const assistantSearch = yield* query.searchThreads({ query: "from provider" });
     assert.equal(assistantSearch.matches[0]?.source, "assistant");
     assert.equal(assistantSearch.matches[0]?.snippet, "hi from provider");
+  }).pipe(Effect.provide(persistenceLayer)),
+);
+
+it.effect("pages provider history by user-anchored turn windows without changing full reads", () =>
+  Effect.gen(function* () {
+    const repository = yield* ProviderConversationCacheRepository;
+    yield* repository.beginSync({
+      providerInstanceId: INSTANCE_ID,
+      syncEpoch: SYNC,
+      startedAt: NOW,
+    });
+    yield* repository.upsertCatalogThread({
+      providerInstanceId: INSTANCE_ID,
+      thread: { ...paginatedProviderThread, turns: [] },
+      archived: false,
+      syncEpoch: SYNC,
+      observedAt: NOW,
+    });
+    yield* repository.completeSync({
+      providerInstanceId: INSTANCE_ID,
+      syncEpoch: SYNC,
+      completedAt: NOW,
+    });
+    yield* repository.upsertThreadDetail({
+      providerInstanceId: INSTANCE_ID,
+      thread: paginatedProviderThread,
+      observedAt: NOW,
+    });
+
+    const query = yield* makeProviderConversationProjectionQuery.pipe(
+      Effect.provideService(ProjectionSnapshotQuery, base),
+      Effect.provideService(ProviderConversationCacheSync, cacheSync),
+    );
+    const threadId = (yield* query.getShellSnapshot()).threads[0]!.id;
+
+    const full = Option.getOrThrow(yield* query.getThreadDetailSnapshot(threadId));
+    assert.isUndefined(full.page);
+    assert.deepEqual(
+      full.thread.messages.map((message) => message.text),
+      [
+        "prompt 1",
+        "reply 1",
+        "subagent 2",
+        "subagent 3",
+        "prompt 4",
+        "reply 4",
+        "prompt 5",
+        "reply 5",
+      ],
+    );
+
+    const recent = Option.getOrThrow(
+      yield* query.getThreadDetailSnapshot(threadId, { turnLimit: 2 }),
+    );
+    assert.deepEqual(
+      recent.thread.messages.map((message) => message.text),
+      ["prompt 4", "reply 4", "prompt 5", "reply 5"],
+    );
+    assert.isTrue(recent.page?.hasMore);
+    assert.isString(recent.page?.beforeCursor);
+    assert.equal(recent.page?.cacheEpoch, recent.cacheEpoch);
+    assert.equal(recent.page?.cacheRevision, recent.cacheRevision);
+    assert.isString(recent.page?.historyVersion);
+    assert.equal(recent.thread.latestTurn?.turnId, `${threadId}:turn-5`);
+
+    const older = Option.getOrThrow(
+      yield* query.getThreadDetailSnapshot(threadId, {
+        turnLimit: 1,
+        beforeCursor: recent.page!.beforeCursor!,
+      }),
+    );
+    assert.deepEqual(
+      older.thread.messages.map((message) => message.text),
+      ["prompt 1", "reply 1", "subagent 2", "subagent 3"],
+    );
+    assert.isFalse(older.page?.hasMore);
+    assert.equal(older.page?.beforeCursor, null);
+
+    const malformed = Option.getOrThrow(
+      yield* query.getThreadDetailSnapshot(threadId, {
+        turnLimit: 2,
+        beforeCursor: "not-a-provider-cursor",
+      }),
+    );
+    assert.deepEqual(
+      malformed.thread.messages.map((message) => message.text),
+      recent.thread.messages.map((message) => message.text),
+    );
   }).pipe(Effect.provide(persistenceLayer)),
 );

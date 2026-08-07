@@ -32,7 +32,7 @@ const testLayer = Layer.mergeAll(
   ServerSecretStore.layer.pipe(Layer.provide(configLayer)),
   Layer.succeed(ProjectWorkspace.ProjectWorkspace, unavailableProjectWorkspace),
 ).pipe(Layer.provideMerge(NodeServices.layer));
-const encodeUnknownJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const encodeUnknownJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const parseAssetUrl = (relativeUrl: string) => {
   const suffix = relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);

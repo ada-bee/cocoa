@@ -15,8 +15,8 @@ import {
 } from "./CodexEndpointFactory.ts";
 
 const PROVIDER_INSTANCE_ID = ProviderInstanceId.make("remote_codex");
-const decodeJson = Schema.decodeSync(Schema.UnknownFromJsonString);
-const encodeJson = Schema.encodeSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const dependencies = FileSystem.layerNoop({});
 

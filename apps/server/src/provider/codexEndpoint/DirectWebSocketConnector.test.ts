@@ -173,7 +173,7 @@ const signedBearerAuthentication = {
 } satisfies CodexDirectWebSocketTransport;
 
 const signingSecret = "0123456789abcdef0123456789abcdef";
-const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 const makeHarness = () => {
   const socket = new FakeWebSocket();

@@ -36,6 +36,24 @@ const activityOrder = O.combineAll<OrchestrationThreadActivity>([
 ]);
 
 /**
+ * Matches the validity rule in `deriveLatestContextWindowSnapshot` (and the
+ * server's snapshot-side `dropStaleContextWindowActivities`): rows without a
+ * finite, non-negative `usedTokens` are skipped during the consumer's backward
+ * walk, so they must not replace an earlier resolvable row here.
+ */
+function isResolvableContextWindowActivity(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "context-window.updated") {
+    return false;
+  }
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  const usedTokens = payload?.usedTokens;
+  return typeof usedTokens === "number" && Number.isFinite(usedTokens) && usedTokens >= 0;
+}
+
+/**
  * Apply a single orchestration event to an `OrchestrationThread`, returning
  * the updated thread, a deletion signal, or an "unchanged" marker when the
  * event doesn't affect this thread.
@@ -509,10 +527,24 @@ export function applyThreadDetailEvent(
 
     // ── Activities ──────────────────────────────────────────────────
     case "thread.activity-appended": {
+      const activity = event.payload.activity;
+      // Context-window updates are cumulative samples. Keeping every streamed
+      // sample grows long-running threads by thousands of rows even though
+      // consumers only use the latest resolvable value. Retain one such row
+      // per turn so reverting later turns still exposes the preceding value.
+      const supersedesContextWindow = isResolvableContextWindowActivity(activity);
       const activities = pipe(
         thread.activities,
-        Arr.filter((activity) => activity.id !== event.payload.activity.id),
-        Arr.append(event.payload.activity),
+        Arr.filter(
+          (entry) =>
+            entry.id !== activity.id &&
+            !(
+              supersedesContextWindow &&
+              entry.turnId === activity.turnId &&
+              isResolvableContextWindowActivity(entry)
+            ),
+        ),
+        Arr.append(activity),
         Arr.sort(activityOrder),
       );
 

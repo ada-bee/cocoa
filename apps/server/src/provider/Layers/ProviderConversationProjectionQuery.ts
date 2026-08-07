@@ -13,6 +13,8 @@ import {
   type OrchestrationProposedPlan,
   type OrchestrationSession,
   type OrchestrationThreadActivity,
+  type OrchestrationThreadDetailSnapshot,
+  type OrchestrationThreadDetailWindow,
   type OrchestrationThreadSearchMatch,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -22,10 +24,18 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import type { ProviderConversationCacheThread } from "../../persistence/Services/ProviderConversationCache.ts";
+import type {
+  ProviderConversationCacheMeta,
+  ProviderConversationCacheThread,
+} from "../../persistence/Services/ProviderConversationCache.ts";
 import { ProviderConversationCacheRepository } from "../../persistence/Services/ProviderConversationCache.ts";
 import { ProviderConversationCacheSync } from "../Services/ProviderConversationCacheSync.ts";
 import { ProviderConversationProjectionQuery } from "../Services/ProviderConversationProjectionQuery.ts";
+import {
+  decodeProviderConversationDetailCursor,
+  encodeProviderConversationDetailCursor,
+} from "../ProviderConversationDetailCursor.ts";
+import type { ProviderConversationTurn } from "../ProviderConversationCatalog.ts";
 
 const epochSecondsIso = (seconds: number | null, fallback: string): string => {
   if (seconds === null) return fallback;
@@ -53,13 +63,116 @@ const userMessageText = (item: Record<string, unknown>): string => {
     .join("\n");
 };
 
-function projectProviderHistory(entry: ProviderConversationCacheThread) {
+const turnHasUserMessage = (turn: ProviderConversationTurn): boolean =>
+  turn.items.some((item) => itemRecord(item)?.type === "userMessage");
+
+interface ProviderTurnWindow {
+  readonly turns: ReadonlyArray<ProviderConversationTurn>;
+  readonly beforeCursor: string | null;
+  readonly hasMore: boolean;
+  readonly isFirstPage: boolean;
+}
+
+interface LoadedThreadDetail {
+  readonly thread: OrchestrationThread;
+  readonly turnWindow: ProviderTurnWindow | undefined;
+  readonly cacheMeta: ProviderConversationCacheMeta | undefined;
+  readonly cacheThread: ProviderConversationCacheThread | undefined;
+}
+
+function selectProviderTurnWindow(
+  entry: ProviderConversationCacheThread,
+  window: OrchestrationThreadDetailWindow,
+): ProviderTurnWindow {
+  const allTurns = entry.thread.turns;
+  let endExclusive = allTurns.length;
+  let isFirstPage = true;
+  if (window.beforeCursor !== undefined) {
+    const cursor = decodeProviderConversationDetailCursor(window.beforeCursor);
+    if (cursor !== null && cursor.threadId === entry.threadId) {
+      const boundaryIndex = allTurns.findIndex((turn) => turn.id === cursor.beforeTurnId);
+      if (boundaryIndex >= 0) {
+        endExclusive = boundaryIndex;
+        isFirstPage = false;
+      }
+    }
+  }
+
+  let start = endExclusive;
+  let userTurnCount = 0;
+  for (let index = endExclusive - 1; index >= 0; index--) {
+    start = index;
+    if (turnHasUserMessage(allTurns[index]!)) {
+      userTurnCount += 1;
+      if (userTurnCount >= window.turnLimit) break;
+    }
+  }
+
+  const hasMore = start > 0;
+  return {
+    turns: allTurns.slice(start, endExclusive),
+    beforeCursor: hasMore
+      ? encodeProviderConversationDetailCursor({
+          threadId: entry.threadId,
+          beforeTurnId: allTurns[start]!.id,
+        })
+      : null,
+    hasMore,
+    isFirstPage,
+  };
+}
+
+function providerHistoryVersion(entry: ProviderConversationCacheThread): string {
+  return Buffer.from(
+    JSON.stringify({ thread: entry.providerThreadId, updatedAt: entry.thread.updatedAt }),
+  ).toString("base64url");
+}
+
+function projectLatestProviderTurn(
+  entry: ProviderConversationCacheThread,
+): OrchestrationLatestTurn | null {
+  const turn = entry.thread.turns.at(-1);
+  if (turn === undefined) return null;
+  const turnId = TurnId.make(`${entry.threadId}:${turn.id}`);
+  const startedAt = epochSecondsIso(
+    turn.startedAt,
+    epochSecondsIso(entry.thread.createdAt, entry.observedAt),
+  );
+  const completedAt =
+    turn.completedAt === null ? null : epochSecondsIso(turn.completedAt, startedAt);
+  let assistantMessageId: ReturnType<typeof MessageId.make> | null = null;
+  for (let index = 0; index < turn.items.length; index++) {
+    const item = turn.items[index];
+    if (itemRecord(item)?.type === "agentMessage") {
+      assistantMessageId = MessageId.make(itemId(entry.threadId, turn.id, index, item));
+    }
+  }
+  return {
+    turnId,
+    state:
+      turn.status === "in-progress"
+        ? "running"
+        : turn.status === "interrupted"
+          ? "interrupted"
+          : turn.status === "failed"
+            ? "error"
+            : "completed",
+    requestedAt: startedAt,
+    startedAt,
+    completedAt,
+    assistantMessageId,
+  };
+}
+
+function projectProviderHistory(
+  entry: ProviderConversationCacheThread,
+  turns: ReadonlyArray<ProviderConversationTurn> = entry.thread.turns,
+) {
   const messages: Array<OrchestrationMessage> = [];
   const proposedPlans: Array<OrchestrationProposedPlan> = [];
   const activities: Array<OrchestrationThreadActivity> = [];
-  let latestTurn: OrchestrationLatestTurn | null = null;
 
-  for (const turn of entry.thread.turns) {
+  for (const turn of turns) {
     const turnId = TurnId.make(`${entry.threadId}:${turn.id}`);
     const startedAt = epochSecondsIso(
       turn.startedAt,
@@ -67,8 +180,6 @@ function projectProviderHistory(entry: ProviderConversationCacheThread) {
     );
     const completedAt =
       turn.completedAt === null ? null : epochSecondsIso(turn.completedAt, startedAt);
-    let assistantMessageId: ReturnType<typeof MessageId.make> | null = null;
-
     for (let index = 0; index < turn.items.length; index++) {
       const item = turn.items[index];
       const record = itemRecord(item);
@@ -90,7 +201,6 @@ function projectProviderHistory(entry: ProviderConversationCacheThread) {
       }
       if (record.type === "agentMessage" && Predicate.isString(record.text)) {
         const id = MessageId.make(nativeItemId);
-        assistantMessageId = id;
         messages.push({
           id,
           role: "assistant",
@@ -133,24 +243,13 @@ function projectProviderHistory(entry: ProviderConversationCacheThread) {
         createdAt: completedAt ?? startedAt,
       });
     }
-
-    latestTurn = {
-      turnId,
-      state:
-        turn.status === "in-progress"
-          ? "running"
-          : turn.status === "interrupted"
-            ? "interrupted"
-            : turn.status === "failed"
-              ? "error"
-              : "completed",
-      requestedAt: startedAt,
-      startedAt,
-      completedAt,
-      assistantMessageId,
-    };
   }
-  return { messages, proposedPlans, activities, latestTurn };
+  return {
+    messages,
+    proposedPlans,
+    activities,
+    latestTurn: projectLatestProviderTurn(entry),
+  };
 }
 
 const providerSession = (entry: ProviderConversationCacheThread): OrchestrationSession => ({
@@ -214,8 +313,9 @@ function toThread(
   entry: ProviderConversationCacheThread,
   project: OrchestrationProject,
   overlay: OrchestrationThread | undefined,
+  window?: ProviderTurnWindow,
 ): OrchestrationThread {
-  const history = projectProviderHistory(entry);
+  const history = projectProviderHistory(entry, window?.turns);
   const createdAt = epochSecondsIso(entry.thread.createdAt, entry.observedAt);
   const updatedAt = epochSecondsIso(entry.thread.updatedAt, entry.observedAt);
   return {
@@ -243,8 +343,11 @@ function toThread(
     deletedAt: entry.deletedAt,
     messages: history.messages,
     proposedPlans: history.proposedPlans,
-    activities: [...history.activities, ...(overlay?.activities ?? [])],
-    checkpoints: overlay?.checkpoints ?? [],
+    activities: [
+      ...history.activities,
+      ...(window === undefined || window.isFirstPage ? (overlay?.activities ?? []) : []),
+    ],
+    checkpoints: window === undefined || window.isFirstPage ? (overlay?.checkpoints ?? []) : [],
     session: overlay?.session ?? providerSession(entry),
   };
 }
@@ -338,21 +441,45 @@ export const makeProviderConversationProjectionQuery = Effect.gen(function* () {
       };
     });
 
-  const getThreadDetailById = (threadId: Parameters<typeof base.getThreadDetailById>[0]) =>
+  const loadThreadDetail = (
+    threadId: Parameters<typeof base.getThreadDetailById>[0],
+    window?: OrchestrationThreadDetailWindow,
+  ) =>
     Effect.gen(function* () {
-      let cached = yield* cache.getThreadById({ threadId });
-      if (Option.isNone(cached)) return yield* base.getThreadDetailById(threadId);
+      let cachedSnapshot = yield* cache.getThreadByIdSnapshot({ threadId });
+      let cached = cachedSnapshot.thread;
+      if (Option.isNone(cached)) {
+        const baseThread = yield* base.getThreadDetailById(threadId);
+        if (Option.isNone(baseThread)) return Option.none<LoadedThreadDetail>();
+        return Option.some<LoadedThreadDetail>({
+          thread: baseThread.value,
+          turnWindow: undefined,
+          cacheMeta: undefined,
+          cacheThread: undefined,
+        });
+      }
       if (!cached.value.detailLoaded) {
         yield* sync.refreshThread(cached.value.providerInstanceId, cached.value.providerThreadId);
-        cached = yield* cache.getThreadById({ threadId });
+        cachedSnapshot = yield* cache.getThreadByIdSnapshot({ threadId });
+        cached = cachedSnapshot.thread;
       }
-      if (Option.isNone(cached)) return Option.none();
+      if (Option.isNone(cached)) return Option.none<LoadedThreadDetail>();
       const projects = (yield* base.getCommandReadModel()).projects;
       const project = selectProject(projects, cached.value);
-      if (project === undefined) return Option.none();
+      if (project === undefined) return Option.none<LoadedThreadDetail>();
       const overlay = yield* base.getThreadDetailById(threadId);
-      return Option.some(toThread(cached.value, project, Option.getOrUndefined(overlay)));
+      const turnWindow =
+        window === undefined ? undefined : selectProviderTurnWindow(cached.value, window);
+      return Option.some<LoadedThreadDetail>({
+        thread: toThread(cached.value, project, Option.getOrUndefined(overlay), turnWindow),
+        turnWindow,
+        cacheMeta: cachedSnapshot.meta,
+        cacheThread: cached.value,
+      });
     });
+
+  const getThreadDetailById = (threadId: Parameters<typeof base.getThreadDetailById>[0]) =>
+    loadThreadDetail(threadId).pipe(Effect.map(Option.map(({ thread }) => thread)));
 
   const searchThreads: typeof base.searchThreads = Effect.fn(
     "ProviderConversationProjectionQuery.searchThreads",
@@ -476,17 +603,38 @@ export const makeProviderConversationProjectionQuery = Effect.gen(function* () {
         ),
       ),
     getThreadDetailById,
-    getThreadDetailSnapshot: (threadId) =>
+    getThreadDetailSnapshot: (threadId, window) =>
       Effect.gen(function* () {
-        const thread = yield* getThreadDetailById(threadId);
-        if (Option.isNone(thread)) return Option.none();
+        const detail = yield* loadThreadDetail(threadId, window);
+        if (Option.isNone(detail)) return Option.none<OrchestrationThreadDetailSnapshot>();
         const sequence = yield* base.getSnapshotSequence();
-        const meta = yield* cache.getMeta;
+        const meta = detail.value.cacheMeta ?? (yield* cache.getMeta);
+        let page:
+          | {
+              readonly beforeCursor: string | null;
+              readonly hasMore: boolean;
+              readonly snapshotSequence: number;
+              readonly cacheEpoch: string;
+              readonly cacheRevision: number;
+              readonly historyVersion: string;
+            }
+          | undefined;
+        if (detail.value.turnWindow !== undefined && detail.value.cacheThread !== undefined) {
+          page = {
+            beforeCursor: detail.value.turnWindow.beforeCursor,
+            hasMore: detail.value.turnWindow.hasMore,
+            snapshotSequence: sequence.snapshotSequence,
+            cacheEpoch: meta.cacheEpoch,
+            cacheRevision: meta.revision,
+            historyVersion: providerHistoryVersion(detail.value.cacheThread),
+          };
+        }
         return Option.some({
           snapshotSequence: sequence.snapshotSequence,
           cacheEpoch: meta.cacheEpoch,
           cacheRevision: meta.revision,
-          thread: thread.value,
+          thread: detail.value.thread,
+          ...(page === undefined ? {} : { page }),
         });
       }),
     searchThreads,

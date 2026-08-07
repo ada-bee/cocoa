@@ -120,7 +120,7 @@ const REVERT_COMMAND_ID = CommandId.make("native-restore-command");
 const RESTORE_OPERATION_ID = makeRestoreCheckpointOperationId({ revertEventId: REVERT_EVENT_ID });
 const PREPARED_AT = "2026-08-06T10:00:00.000Z";
 const UPDATED_AT = "2026-08-06T10:01:00.000Z";
-const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const isOutcomeUnknown = Schema.is(ProviderVcsCheckpointOutcomeUnknownError);
 
 const resolveExecutable = (name: string): string => {

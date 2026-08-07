@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as Electron from "electron";
 import { vi } from "vite-plus/test";
@@ -213,6 +214,33 @@ describe("DesktopWindow", () => {
         yield* desktopWindow.dispatchMenuAction("open-settings");
         assert.equal(yield* Ref.get(createCount), 1);
         assert.deepEqual(fake.send.mock.calls, [[MENU_ACTION_CHANNEL, "open-settings"]]);
+      }).pipe(Effect.provide(layer));
+    }),
+  );
+
+  it.effect("bounds renderer crash recovery reloads", () =>
+    Effect.gen(function* () {
+      const fake = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const revealed = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeLayer({ window: fake.window, createCount, mainWindow, revealed });
+
+      yield* Effect.gen(function* () {
+        const desktopWindow = yield* DesktopWindow.DesktopWindow;
+        yield* desktopWindow.activate;
+        const renderProcessGone = fake.webContentsListeners.get("render-process-gone");
+        assert.isDefined(renderProcessGone);
+
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          renderProcessGone(undefined, { reason: "oom", exitCode: 137 });
+        }
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("500 millis");
+        yield* Effect.yieldNow;
+
+        // One initial navigation plus the three permitted recovery attempts.
+        assert.equal(fake.loadURL.mock.calls.length, 4);
       }).pipe(Effect.provide(layer));
     }),
   );

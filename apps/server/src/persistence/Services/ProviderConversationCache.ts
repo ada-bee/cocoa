@@ -32,6 +32,11 @@ export const ProviderConversationCacheThread = Schema.Struct({
 });
 export type ProviderConversationCacheThread = typeof ProviderConversationCacheThread.Type;
 
+export interface ProviderConversationCacheThreadSnapshot {
+  readonly meta: ProviderConversationCacheMeta;
+  readonly thread: Option.Option<ProviderConversationCacheThread>;
+}
+
 export const ProviderConversationCacheSyncState = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   status: Schema.Literals(["never", "syncing", "fresh", "stale"]),
@@ -164,6 +169,13 @@ export interface ProviderConversationCacheRepositoryShape {
     input: GetProviderConversationCacheThreadByIdInput,
   ) => Effect.Effect<
     Option.Option<ProviderConversationCacheThread>,
+    ProviderConversationCacheRepositoryError
+  >;
+  /** Read detail and cache generation atomically for page consistency checks. */
+  readonly getThreadByIdSnapshot: (
+    input: GetProviderConversationCacheThreadByIdInput,
+  ) => Effect.Effect<
+    ProviderConversationCacheThreadSnapshot,
     ProviderConversationCacheRepositoryError
   >;
   readonly listThreads: (

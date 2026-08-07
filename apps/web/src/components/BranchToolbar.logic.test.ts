@@ -17,6 +17,7 @@ import {
   resolvePreviousWorktreeLabel,
   resolvePreviousWorktreeSeed,
   shouldIncludeBranchPickerItem,
+  shouldShowComposerContextStrip,
   shouldShowEnvironmentIndicator,
 } from "./BranchToolbar.logic";
 
@@ -416,6 +417,48 @@ describe("shouldShowEnvironmentIndicator", () => {
       shouldShowEnvironmentIndicator({
         activeEnvironment: null,
         canPickEnvironment: false,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("shouldShowComposerContextStrip", () => {
+  it("keeps the provider indicator visible for a remote non-Git project", () => {
+    expect(
+      shouldShowComposerContextStrip({
+        hasActiveProject: true,
+        isGitRepo: false,
+        showEnvironmentIndicator: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("hides the strip when a non-Git project has no provider indicator", () => {
+    expect(
+      shouldShowComposerContextStrip({
+        hasActiveProject: true,
+        isGitRepo: false,
+        showEnvironmentIndicator: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("shows Git controls without requiring a provider indicator", () => {
+    expect(
+      shouldShowComposerContextStrip({
+        hasActiveProject: true,
+        isGitRepo: true,
+        showEnvironmentIndicator: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("never shows the strip without an active provider-bound project", () => {
+    expect(
+      shouldShowComposerContextStrip({
+        hasActiveProject: false,
+        isGitRepo: true,
+        showEnvironmentIndicator: true,
       }),
     ).toBe(false);
   });

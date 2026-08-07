@@ -96,6 +96,11 @@ it.layer(layer)("ProviderConversationCacheRepository", (it) => {
       );
       assert.isTrue(loaded.detailLoaded);
       assert.equal(loaded.thread.turns[0]?.id, "provider-turn-1");
+      const detailSnapshot = yield* repository.getThreadByIdSnapshot({
+        threadId: loaded.threadId,
+      });
+      assert.equal(detailSnapshot.meta.revision, (yield* repository.getMeta).revision);
+      assert.equal(Option.getOrThrow(detailSnapshot.thread).thread.turns[0]?.id, "provider-turn-1");
 
       yield* repository.beginSync({
         providerInstanceId: INSTANCE_ID,

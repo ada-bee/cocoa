@@ -1,5 +1,4 @@
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -14,6 +13,7 @@ import {
   IsoDateTime,
   MessageId,
   NonNegativeInt,
+  PositiveInt,
   ProjectId,
   ProviderItemId,
   ThreadId,
@@ -548,14 +548,44 @@ export const OrchestrationSubscribeThreadInput = Schema.Struct({
    * snapshot or catch-up replay and before it begins emitting live events.
    */
   requestCompletionMarker: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Opts the fallback snapshot into a bounded provider-history window. Absent
+   * preserves the full snapshot behavior expected by older clients.
+   */
+  turnLimit: Schema.optionalKey(PositiveInt),
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
+
+/** Opt-in window for provider-authoritative thread history reads. */
+export const OrchestrationThreadDetailWindow = Schema.Struct({
+  turnLimit: PositiveInt,
+  beforeCursor: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type OrchestrationThreadDetailWindow = typeof OrchestrationThreadDetailWindow.Type;
+
+/** Metadata for an adjacent, disjoint page of older provider turns. */
+export const OrchestrationThreadDetailPage = Schema.Struct({
+  beforeCursor: Schema.NullOr(TrimmedNonEmptyString),
+  hasMore: Schema.Boolean,
+  snapshotSequence: NonNegativeInt,
+  /** Provider-cache generation captured with this page. */
+  cacheEpoch: Schema.optionalKey(Schema.String),
+  /** Provider-cache revision captured with this page. */
+  cacheRevision: Schema.optionalKey(NonNegativeInt),
+  /** Opaque thread-scoped provider history version used to validate page merges. */
+  historyVersion: Schema.optionalKey(Schema.String),
+  /** Optional thread-scoped event watermark for non-cache-backed projections. */
+  threadSequence: Schema.optionalKey(NonNegativeInt),
+});
+export type OrchestrationThreadDetailPage = typeof OrchestrationThreadDetailPage.Type;
 
 export const OrchestrationThreadDetailSnapshot = Schema.Struct({
   snapshotSequence: NonNegativeInt,
   cacheEpoch: Schema.optionalKey(Schema.String),
   cacheRevision: Schema.optionalKey(NonNegativeInt),
   thread: OrchestrationThread,
+  /** Present only when the caller explicitly requests a history window. */
+  page: Schema.optionalKey(OrchestrationThreadDetailPage),
 });
 export type OrchestrationThreadDetailSnapshot = typeof OrchestrationThreadDetailSnapshot.Type;
 
@@ -1389,7 +1419,7 @@ export const TurnCountRange = Schema.Struct({
   Schema.makeFilter(
     (input) =>
       input.fromTurnCount <= input.toTurnCount ||
-      new SchemaIssue.InvalidValue(Option.some(input.fromTurnCount), {
+      new SchemaIssue.InvalidValue({
         message: "fromTurnCount must be less than or equal to toTurnCount",
       }),
     { identifier: "OrchestrationTurnDiffRange" },

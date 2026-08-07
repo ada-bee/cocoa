@@ -52,7 +52,7 @@ const CHECKPOINT_BINDING = {
   objectFormat: "sha1" as const,
   fingerprint: "f".repeat(64),
 };
-const decodeUnknownJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeUnknownJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 type CommandExecResponse = {
   readonly exitCode: number;

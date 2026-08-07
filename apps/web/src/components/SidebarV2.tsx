@@ -424,6 +424,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   onUnsettle: (threadRef: ScopedThreadRef) => void;
   onSnooze: (threadRef: ScopedThreadRef, preset: SnoozePreset) => void;
   onUnsnooze: (threadRef: ScopedThreadRef) => void;
+  onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
   onChangeRequestState: (threadKey: string, state: "open" | "closed" | "merged" | null) => void;
 }) {
   const {
@@ -432,6 +433,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
     onCancelRename,
     onCommitRename,
     onContextMenu,
+    onAcknowledgeWoke,
     onRenameTitleChange,
     onSettle,
     onSnooze,
@@ -461,19 +463,37 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const terminalProcessCount = runningTerminalIds.length;
 
+  const gitStatus = useEnvironmentQuery(
+    vcsEnvironment.status({
+      environmentId: thread.environmentId,
+      input: repositoryStatusInput(thread.projectId, thread.id),
+    }),
+  );
+  const pr = resolveThreadPr({
+    threadBranch: thread.branch,
+    gitStatus: repositoryStatusForLegacyUi(gitStatus.data),
+  });
+  const prState = pr?.state ?? null;
+
   // Same semantics as v1 (never-visited counts as read): flipping the beta
   // flag must not light up every historical thread as unread.
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarV2Status(thread);
   // A woken thread reappears at its original position (the sort is
   // deliberately static), so the pill has to carry the weight. Snoozing is
-  // an explicit act, so unlike Done, a never-visited woke thread still
-  // shows the pill; visiting clears it. An unparseable visit timestamp
-  // counts as never-visited — corrupt local data must not eat the wake
-  // signal.
+  // an explicit act, so the pill clears only when the user re-engages:
+  // reading a completion-triggered wake, clicking the pill, sending a
+  // message, settling, archiving — or finishing the work outright (merged
+  // or closed PR). Timer wakes survive a mere visit. An unparseable visit
+  // timestamp counts as never-visited — corrupt local data must not eat
+  // the wake signal.
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
-  const isWoke = wokeAtDate !== null && (lastVisitedDate === null || lastVisitedDate < wokeAtDate);
+  const isWoke =
+    wokeAtDate !== null &&
+    (lastVisitedDate === null || lastVisitedDate < wokeAtDate) &&
+    prState !== "merged" &&
+    prState !== "closed";
   // In-flight rows (working, or waiting on approval/input) fade as a whole:
   // there is nothing for the user to do yet, so prominence is reserved for
   // rows that need a human — done (unread), read-but-unsettled, failed, and
@@ -492,8 +512,12 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       ? {
           label: "Working",
           icon: "working" as const,
-          className:
-            "animate-sidebar-working-text text-sky-600 motion-reduce:animate-none dark:text-sky-400",
+          // No shimmer: a label that animates forever is noise in a sidebar
+          // full of them (and repaints every vsync on high-refresh displays).
+          // Working is a background state, so it rests at the dim end of what
+          // the old pulse cycled through; only the thread you have open gets
+          // the label at full strength.
+          className: cn("text-sky-600 dark:text-sky-400", !props.isActive && "opacity-75"),
         }
       : status === "approval"
         ? {
@@ -526,28 +550,18 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     className: "text-emerald-700 dark:text-emerald-300",
                   }
                 : null;
+  const isWokeStatus = topStatus?.icon === "woke";
 
-  const gitStatus = useEnvironmentQuery(
-    vcsEnvironment.status({
-      environmentId: thread.environmentId,
-      input: repositoryStatusInput(thread.projectId, thread.id),
-    }),
-  );
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
     effectiveEnvMode: thread.worktreePath === null ? "local" : "worktree",
     activeWorktreePath: thread.worktreePath,
     activeThreadBranch: thread.branch,
     currentGitBranch: repositoryStatusRefName(gitStatus.data),
   });
-  const pr = resolveThreadPr({
-    threadBranch: thread.branch,
-    gitStatus: repositoryStatusForLegacyUi(gitStatus.data),
-  });
   const prStatus = prStatusIndicator(pr, undefined);
   const settledPrHoverClass = pr ? settledPrHoverColorClass(pr.state) : undefined;
   // Report the PR state up: the parent partitions rows with effectiveSettled,
   // and a merged/closed PR auto-settles a thread — data only rows have.
-  const prState = pr?.state ?? null;
   useEffect(() => {
     onChangeRequestState(threadKey, prState);
   }, [onChangeRequestState, prState, threadKey]);
@@ -585,6 +599,15 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
       onThreadClick(event, threadRef);
     },
     [onThreadClick, threadRef],
+  );
+  const handleAcknowledgeWokeClick = useCallback(
+    (event: ReactMouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (props.wokeAt === null) return;
+      onAcknowledgeWoke(threadRef, props.wokeAt);
+    },
+    [onAcknowledgeWoke, props.wokeAt, threadRef],
   );
   const handleContextMenu = useCallback(
     (event: ReactMouseEvent) => {
@@ -832,7 +855,12 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
               the time/jump label yields to the settle affordance. */}
             {prBadge}
             <span className="relative ml-auto flex h-6 min-w-8 shrink-0 items-center justify-end">
-              <span className="inline-flex justify-end tabular-nums text-muted-foreground/55 transition-opacity group-hover/v2-row:opacity-0">
+              <span
+                className={cn(
+                  "inline-flex justify-end tabular-nums text-muted-foreground/55 transition-opacity",
+                  !isWoke && "group-hover/v2-row:opacity-0",
+                )}
+              >
                 {variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
                   // Snoozed rows show when they come BACK, not when they were
                   // last touched — the return ticket is the row's whole story.
@@ -842,14 +870,16 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                 ) : isWoke ? (
                   // A wake can land straight in the settled tail (e.g. PR
                   // merged while snoozed); the signal must survive the trip.
-                  <span
-                    role="status"
-                    aria-label="Woke from snooze"
-                    className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 dark:text-amber-300"
+                  <button
+                    type="button"
+                    aria-label="Dismiss Woke notification"
+                    title="Dismiss Woke notification"
+                    onClick={handleAcknowledgeWokeClick}
+                    className="inline-flex cursor-pointer items-center gap-1 rounded-sm text-xs font-medium text-amber-700 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring dark:text-amber-300"
                   >
                     <AlarmClockIcon aria-hidden className="size-3" />
-                    Woke
-                  </span>
+                    <span role="status">Woke</span>
+                  </button>
                 ) : (
                   <span className="text-xs">
                     {variantAction === "unsettle"
@@ -864,7 +894,10 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                     type="button"
                     aria-label="Wake thread now"
                     onClick={handleUnsnoozeClick}
-                    className="absolute inset-y-0 right-0 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
+                    className={cn(
+                      "pointer-events-none absolute inset-y-0 right-0 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/v2-row:pointer-events-auto group-hover/v2-row:opacity-100",
+                      isWoke && "group-hover/v2-row:static",
+                    )}
                   >
                     <AlarmClockOffIcon className="size-3" />
                   </button>
@@ -874,7 +907,10 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   type="button"
                   aria-label="Un-settle thread"
                   onClick={handleUnsettleClick}
-                  className="absolute inset-y-0 right-0 -mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
+                  className={cn(
+                    "pointer-events-none absolute inset-y-0 right-0 -mr-1 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-1.5 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/v2-row:pointer-events-auto group-hover/v2-row:opacity-100",
+                    isWoke && "group-hover/v2-row:static",
+                  )}
                 >
                   <Undo2Icon className="mb-px size-3.5" />
                 </button>
@@ -883,7 +919,10 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   type="button"
                   aria-label="Settle thread"
                   onClick={handleSettleClick}
-                  className="absolute inset-y-0 right-0 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/v2-row:opacity-100"
+                  className={cn(
+                    "pointer-events-none absolute inset-y-0 right-0 inline-flex cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 text-xs text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/v2-row:pointer-events-auto group-hover/v2-row:opacity-100",
+                    isWoke && "group-hover/v2-row:static",
+                  )}
                 >
                   <CheckIcon className="size-3" />
                 </button>
@@ -944,39 +983,56 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                   the hidden state out of flow lets the project label reclaim
                   space without either state overlapping it. */}
               <span className="group/v2-status-slot relative ml-auto flex h-5 min-w-8 shrink-0 items-stretch justify-end text-xs">
-                {/* pointer-events-none: while hovered this label is absolute
-                    + opacity-0, which paints it ABOVE the in-flow settle/snooze
-                    buttons; without it the invisible label eats their clicks. */}
+                {/* Read-only status labels yield to the hover actions. Woke is
+                    itself an action, so it stays pointer-enabled and visible
+                    while the other controls appear beside it. */}
                 <span
                   className={cn(
-                    "pointer-events-none self-center justify-self-end tabular-nums text-muted-foreground/65 transition-opacity group-has-[:focus-visible]/v2-status-slot:absolute group-has-[:focus-visible]/v2-status-slot:right-0 group-has-[:focus-visible]/v2-status-slot:opacity-0 group-hover/v2-row:absolute group-hover/v2-row:right-0 group-hover/v2-row:opacity-0",
-                    snoozeMenuOpen && "absolute right-0 opacity-0",
+                    isWokeStatus
+                      ? "pointer-events-auto"
+                      : "pointer-events-none group-has-[:focus-visible]/v2-status-slot:absolute group-has-[:focus-visible]/v2-status-slot:right-0 group-has-[:focus-visible]/v2-status-slot:opacity-0 group-hover/v2-row:absolute group-hover/v2-row:right-0 group-hover/v2-row:opacity-0",
+                    "self-center justify-self-end tabular-nums text-muted-foreground/65 transition-opacity",
+                    snoozeMenuOpen && "pointer-events-none absolute right-0 opacity-0",
                   )}
                 >
                   {topStatus ? (
-                    <span
-                      className={cn(
-                        "inline-flex items-center gap-1 font-medium",
-                        topStatus.className,
-                      )}
-                    >
-                      {topStatus.icon === "working" ? (
-                        <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
-                      ) : topStatus.icon === "done" ? (
-                        <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
-                      ) : topStatus.icon === "woke" ? (
+                    isWokeStatus ? (
+                      <button
+                        type="button"
+                        aria-label="Dismiss Woke notification"
+                        title="Dismiss Woke notification"
+                        onClick={handleAcknowledgeWokeClick}
+                        className={cn(
+                          "inline-flex cursor-pointer items-center gap-1 rounded-sm font-medium outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring",
+                          topStatus.className,
+                        )}
+                      >
                         <AlarmClockIcon aria-hidden className="size-4 shrink-0" />
-                      ) : null}
-                      {/* The label alone is the live region: a role="status"
-                          wrapper around the ticking duration would make
-                          screen readers announce every second. */}
-                      <span role="status">{topStatus.label}</span>
-                      {status === "working" ? (
-                        <span aria-hidden>
-                          <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
-                        </span>
-                      ) : null}
-                    </span>
+                        <span role="status">{topStatus.label}</span>
+                      </button>
+                    ) : (
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-1 font-medium",
+                          topStatus.className,
+                        )}
+                      >
+                        {topStatus.icon === "working" ? (
+                          <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
+                        ) : topStatus.icon === "done" ? (
+                          <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
+                        ) : null}
+                        {/* The label alone is the live region: a role="status"
+                            wrapper around the ticking duration would make
+                            screen readers announce every second. */}
+                        <span role="status">{topStatus.label}</span>
+                        {status === "working" ? (
+                          <span aria-hidden>
+                            <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                          </span>
+                        ) : null}
+                      </span>
+                    )
                   ) : (
                     threadTimeLabel(thread)
                   )}
@@ -989,8 +1045,8 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
                       // would keep the controls pinned over the status label
                       // once the pointer moves away (e.g. after a failed
                       // settle) instead of cross-fading back.
-                      "absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity has-[:focus-visible]:static has-[:focus-visible]:opacity-100 group-hover/v2-row:static group-hover/v2-row:opacity-100",
-                      snoozeMenuOpen && "static opacity-100",
+                      "pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:static has-[:focus-visible]:opacity-100 group-hover/v2-row:pointer-events-auto group-hover/v2-row:static group-hover/v2-row:opacity-100",
+                      snoozeMenuOpen && "pointer-events-auto static opacity-100",
                     )}
                   >
                     {showSnoozeButton ? (
@@ -1248,6 +1304,13 @@ export default function SidebarV2() {
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
   const rangeSelectTo = useThreadSelectionStore((s) => s.rangeSelectTo);
   const markThreadUnread = useUiStateStore((s) => s.markThreadUnread);
+  const markThreadVisited = useUiStateStore((s) => s.markThreadVisited);
+  const acknowledgeWoke = useCallback(
+    (threadRef: ScopedThreadRef, visitedAt: string) => {
+      markThreadVisited(scopedThreadKey(threadRef), visitedAt);
+    },
+    [markThreadVisited],
+  );
   const routeTarget = useParams({
     strict: false,
     select: (params) => resolveThreadRouteTarget(params),
@@ -2579,11 +2642,13 @@ export default function SidebarV2() {
     openCommandPalette({ open: "new-thread-in" });
   }, [isMobile, newThreadContext, projectGroups.length, setOpenMobile]);
 
-  // Same resolution as v1: prefer the local-thread binding, fall back to
-  // chat.new, no platform gating — web users have working shortcuts too.
+  // The button mirrors chat.new: in multi-project setups both route through
+  // the command palette's "New thread in..." picker, and in single-project
+  // setups both create immediately. chat.newLocal always creates directly, so
+  // it is only a correct label when chat.new is unbound.
   const newThreadShortcutLabel =
-    shortcutLabelForCommand(keybindings, "chat.newLocal") ??
-    shortcutLabelForCommand(keybindings, "chat.new");
+    shortcutLabelForCommand(keybindings, "chat.new") ??
+    shortcutLabelForCommand(keybindings, "chat.newLocal");
   return (
     <>
       <SidebarChromeHeader isElectron={isElectron} />
@@ -2905,6 +2970,7 @@ export default function SidebarV2() {
                         onUnsettle={attemptUnsettle}
                         onSnooze={attemptSnooze}
                         onUnsnooze={attemptUnsnooze}
+                        onAcknowledgeWoke={acknowledgeWoke}
                         onChangeRequestState={handleChangeRequestState}
                       />
                     );

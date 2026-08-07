@@ -73,7 +73,7 @@ const DIRECT_INSTANCE_ID = ProviderInstanceId.make("codex_direct");
 const DIRECT_THREAD_ID = ThreadId.make("thread-direct-boundary");
 const THREAD_ID = ThreadId.make("thread-endpoint-generation");
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
-const decodeUnknownJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeUnknownJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const ENDPOINT_CONFIG = decodeCodexSettings({
   endpointTransport: {
     type: "direct-websocket",

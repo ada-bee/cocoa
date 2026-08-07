@@ -61,8 +61,8 @@ const HELPER_CONFIG = {
   expectedProtocol: 1 as const,
 };
 
-const decodeJson = Schema.decodeUnknownSync(Schema.UnknownFromJsonString);
-const encodeJson = Schema.encodeUnknownSync(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 const normalizeRequest = Schema.decodeUnknownSync(CodexCheckpointHelperRequest);
 const isOutcomeUnknown = Schema.is(ProviderVcsCheckpointOutcomeUnknownError);
 

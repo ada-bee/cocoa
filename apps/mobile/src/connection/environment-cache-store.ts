@@ -17,7 +17,8 @@ import * as Schema from "effect/Schema";
 import * as MobileDatabase from "../persistence/mobile-database";
 
 const SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION = 1;
-const THREAD_SNAPSHOT_CACHE_SCHEMA_VERSION = 2;
+// v3 may contain page metadata and therefore a partial thread history.
+const THREAD_SNAPSHOT_CACHE_SCHEMA_VERSION = 3;
 const SERVER_CONFIG_CACHE_SCHEMA_VERSION = 1;
 const VCS_REFS_CACHE_SCHEMA_VERSION = 1;
 

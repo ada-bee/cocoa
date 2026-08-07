@@ -18,7 +18,7 @@ import { assert, it } from "@effect/vitest";
 import * as CodexClient from "./client.ts";
 import * as CodexChildProcessClient from "./child-process-client.ts";
 
-const decodeJson = Schema.decodeUnknownEffect(Schema.UnknownFromJsonString);
+const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 const makeInMemoryFramedTransport = Effect.fn("makeInMemoryFramedClientTransport")(function* () {
   const input = yield* Queue.unbounded<string, Cause.Done<void>>();

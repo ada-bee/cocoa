@@ -348,6 +348,14 @@ describe("createThreadJumpHintVisibilityController", () => {
 });
 
 describe("getSidebarThreadIdsToPrewarm", () => {
+  it("prewarms at most three threads by default", () => {
+    expect(getSidebarThreadIdsToPrewarm(["t1", "t2", "t3", "t4", "t5"])).toEqual([
+      "t1",
+      "t2",
+      "t3",
+    ]);
+  });
+
   it("returns only the first visible thread ids up to the prewarm limit", () => {
     expect(getSidebarThreadIdsToPrewarm(["t1", "t2", "t3"], 2)).toEqual(["t1", "t2"]);
   });
