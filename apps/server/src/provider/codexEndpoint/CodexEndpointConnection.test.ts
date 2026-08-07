@@ -44,7 +44,7 @@ const initializeResult = (userAgent: string) => ({
   userAgent,
 });
 
-type ProbeResponse = "available" | "missing" | "malformed";
+type ProbeResponse = "available" | "available-codex-0.146" | "missing" | "malformed";
 
 const DEFAULT_PROBE_RESPONSES: Partial<
   Record<CodexEndpointConnection.CodexEndpointNativeMethod, ProbeResponse>
@@ -83,7 +83,12 @@ const completeHandshake = Effect.fn("CodexEndpointConnectionTest.completeHandsha
           : {
               id: request.id,
               error: {
-                code: response === "missing" ? -32601 : -32602,
+                code:
+                  response === "missing"
+                    ? -32601
+                    : response === "available-codex-0.146"
+                      ? -32600
+                      : -32602,
                 message: response === "missing" ? "method not found" : "invalid params",
               },
             },
@@ -200,6 +205,20 @@ describe("CodexEndpointConnection", () => {
       assert.equal(connection.compatibility.capabilities?.checkedConversationRollback, false);
       assert.equal(connection.compatibility.capabilities?.commandExec, true);
       assert.equal(connection.compatibility.capabilities?.commandExecControl, false);
+    }),
+  );
+
+  it.effect("accepts Codex 0.146 invalid-request responses as successful method probes", () =>
+    Effect.gen(function* () {
+      const transport = yield* makeInMemoryTransport();
+      yield* completeHandshake(transport, "cocoa_gateway/0.146.0", {
+        "thread/start": "available-codex-0.146",
+        "thread/read": "available-codex-0.146",
+      }).pipe(Effect.forkScoped);
+
+      const connection = yield* makeConnection(transport);
+      assert.equal(connection.compatibility.capabilities?.methods["thread/start"], "available");
+      assert.equal(connection.compatibility.capabilities?.conversationRead, true);
     }),
   );
 

@@ -409,7 +409,7 @@ const makeFakeDirectEndpoint = Effect.fn("acceptance.makeFakeDirectEndpoint")(fu
         return;
       }
       if (message.id !== undefined) {
-        send({ id: message.id, error: { code: -32602, message: "invalid params" } });
+        send({ id: message.id, error: { code: -32600, message: "invalid params" } });
       }
     });
   });

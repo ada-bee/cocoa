@@ -205,11 +205,10 @@ const probeNativeMethod = Effect.fn("CodexEndpointConnection.probeNativeMethod")
   const error = result.failure;
   if (error._tag === "CodexAppServerRequestError") {
     if (error.code === -32601) return { _tag: "Unavailable", reason: "missing" };
-    if (error.code === -32700 || error.code === -32600) {
-      return { _tag: "Unavailable", reason: "malformed" };
-    }
     // Invalid params is the expected response. Other application-level errors
     // also prove that the server routed the named method without mutating state.
+    // Codex 0.146 reports invalid parameter types as -32600 rather than the
+    // JSON-RPC-standard -32602, so only method-not-found means unavailable.
     return { _tag: "Available" };
   }
   if (error._tag === "CodexAppServerProtocolParseError") {
