@@ -61,8 +61,9 @@
         },
         {
           "sha": "2b1d4fecb859b9a68f4853b8c4c5857ffe9d448d",
-          "classification": "deferred",
-          "reason": "Effect beta.103 requires a dedicated semantic upgrade because it spans Cocoa runtime hot spots and the lockfile."
+          "classification": "imported",
+          "reason": "Upgrades Cocoa to Effect beta.103 with source adaptations and refreshed local patches.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
         },
         {
           "sha": "8a16cadbafb2ec98f79e7cb1300a3ad09ca394e5",
@@ -96,8 +97,9 @@
         },
         {
           "sha": "36caf34c68b7bc6c2e967fdec1812fd08f61cdc8",
-          "classification": "deferred",
-          "reason": "Renderer-memory containment aligns with long-lived Cocoa clients and is retained for a focused client-runtime intake."
+          "classification": "imported",
+          "reason": "Bounds renderer recovery, sidebar prewarming, and live context-window history growth.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
         },
         {
           "sha": "d7950ac153c6fdd788ef63699a5d061243bb4997",
@@ -296,6 +298,248 @@
           "classification": "imported",
           "reason": "The upstream rationale and regression test make the intentional snapshot/live compaction divergence executable.",
           "cocoaCommit": "1ffe8b4b159183298ac3be251d5bd919af7d088a"
+        }
+      ]
+    },
+    {
+      "reviewedAt": "2026-08-07",
+      "fromExclusive": "e4abc31f1e3f930e521a5bb62b38a9c5b28d8fb1",
+      "throughInclusive": "be1a836745395286cbd392512179ab5816f538ba",
+      "commits": [
+        {
+          "sha": "ab3b55e29ac20a6212f09e38f1983b856fd77695",
+          "classification": "imported",
+          "reason": "Clarifies Auto permission fallback without changing behavior.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "99d91ddaa4996203b675cbd086d5acaa642d4827",
+          "classification": "skipped",
+          "reason": "ACP unknown-approval parity is outside Cocoa's Codex-first scope."
+        },
+        {
+          "sha": "470d4eb993eccd7d33cc9ad6f282c684d6760ac8",
+          "classification": "imported",
+          "reason": "Makes pending mobile interaction cards opaque so transcript text cannot bleed through.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "aa16c180e5850ab94c022d3e41e18350c2117deb",
+          "classification": "deferred",
+          "reason": "Composer chip alignment is useful polish but was not part of this focused intake."
+        },
+        {
+          "sha": "4f5834ba72c5905a318c00456dd21271b2fa9d6f",
+          "classification": "imported",
+          "reason": "Explicit thread actions now acknowledge Cocoa's durable Woke overlay.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "331c6dce7f6745863752b1b423fc76d24014deec",
+          "classification": "skipped",
+          "reason": "Cocoa worktree operations belong behind the resolved provider VCS boundary, not gateway-local Git."
+        },
+        {
+          "sha": "ea50b695a749d6a0d44ef96b479b6dfceb8881e3",
+          "classification": "skipped",
+          "reason": "Upstream self-update release-note behavior does not apply to Cocoa's administrator-managed lifecycle."
+        },
+        {
+          "sha": "0ec4fbc4a376cbf6465e59b05506ce9d89b3d078",
+          "classification": "skipped",
+          "reason": "Claude-specific work-log parity is outside Cocoa's Codex-first scope."
+        },
+        {
+          "sha": "64a991ad455234e6fdd808a5a3caadc51f18a152",
+          "classification": "imported",
+          "reason": "Preserves remote provider context for non-Git workspaces while hiding Git-only controls.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "c471145e96fc2399b4df57ce78c72aa7fb7ccabf",
+          "classification": "skipped",
+          "reason": "Claude stop-diagnostic normalization is outside Cocoa's Codex-first scope."
+        },
+        {
+          "sha": "6da92244cc2a7438703be95a0fcfaca0b73502a7",
+          "classification": "deferred",
+          "reason": "Bulk-snooze toast coalescing remains useful client polish but was not imported."
+        },
+        {
+          "sha": "7aad7911f66c2fecba1cfd6601ea783a3fe2bf31",
+          "classification": "deferred",
+          "reason": "Immediate stopped-thread settlement needs a Cocoa orchestration and provider-authority review."
+        },
+        {
+          "sha": "6b73b3defe1dfb365de3b7bbb97ca56a26b50a43",
+          "classification": "imported",
+          "reason": "Reimplemented as Cocoa-native, provider-backed user-turn pagination with typed gateway contracts.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "ae7b27de824e890f2cdfc85018fc9301e7d45022",
+          "classification": "imported",
+          "reason": "Ports missed-pong tolerance and safer reconnect recovery without upstream launcher behavior.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "6fa457607886caf096e7871b67e447f76d3772f6",
+          "classification": "skipped",
+          "reason": "Claude subagent settlement parity is outside Cocoa's Codex-first scope."
+        },
+        {
+          "sha": "1c7d059f550a53dd94d5b9802640ecd11b759d1a",
+          "classification": "imported",
+          "reason": "Adds an explicit live-follow latch so streamed output does not pull readers off history.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "9547cf24634ccafe5d381964449b722d33f812b8",
+          "classification": "skipped",
+          "reason": "Client transfer through an upstream-managed launcher conflicts with Cocoa's external-process lifecycle."
+        },
+        {
+          "sha": "ddfe45c66eccd93c0adf61db92a16cbbbcde23e1",
+          "classification": "deferred",
+          "reason": "Transfer regression coverage must target Cocoa's gateway-to-provider topology."
+        },
+        {
+          "sha": "2288d416aa3bcb5f2eeb4004228872593296971e",
+          "classification": "deferred",
+          "reason": "Slow-request toast deduplication is useful polish but was not included in this intake."
+        },
+        {
+          "sha": "cf5c9948c895e120965165b7b2b643ca275c5315",
+          "classification": "deferred",
+          "reason": "Stable agent rows depend on Cocoa-native shared-endpoint subagent observability."
+        },
+        {
+          "sha": "4a07c1ca9d9033ef35161a1ffbea44d0418ca2bf",
+          "classification": "skipped",
+          "reason": "T3 Connect hosted configuration conflicts with Cocoa's no-tunnel and no-hosted-identity direction."
+        },
+        {
+          "sha": "a8cd2ad2ebb32ad789e8e0ecd2fc713c2edc38f4",
+          "classification": "deferred",
+          "reason": "Folding plans into chat requires a deliberate Cocoa plan-workflow migration."
+        },
+        {
+          "sha": "48aa875c0e6f8f2ee83d6972dd4357a4a083fe30",
+          "classification": "deferred",
+          "reason": "Removing Build and Plan controls depends on the deferred Cocoa plan-workflow decision."
+        },
+        {
+          "sha": "95305c36fa418301183e4750f13b6a525a20cafe",
+          "classification": "skipped",
+          "reason": "Provider configuration is gateway-owned in Cocoa, not per-device client state."
+        },
+        {
+          "sha": "b98a0f0d2292d180db0ac7c6ae8ccdbc9f6478f7",
+          "classification": "skipped",
+          "reason": "T3 Connect device management is outside Cocoa's generic gateway-client model."
+        },
+        {
+          "sha": "220efad62b7ce7b9ee4befff75edb0753467df0a",
+          "classification": "skipped",
+          "reason": "The upstream marketing download-page typo has no Cocoa control-plane value."
+        },
+        {
+          "sha": "3ffe84f9688e22afea531988807a1c7faeccdc37",
+          "classification": "imported",
+          "reason": "Stops the active Working label from continuously repainting.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "85b1734d4d4914e743044f0ea8cb38a796de7da5",
+          "classification": "deferred",
+          "reason": "The modular theme library is broad optional UI work and was not imported."
+        },
+        {
+          "sha": "23f0a1ae38cb1fc510a499ef2b3602f5ae98d0c9",
+          "classification": "imported",
+          "reason": "Reading completion clears Done precisely and Woke becomes explicitly dismissible.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "388b43a27cc37ae067087073825633d4fc5de3b7",
+          "classification": "imported",
+          "reason": "Adds web dependency warming, bundled-dev support, and compressed remote dev serving.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "a1762fdd7482728800f1f4fd260c632f01a30b1f",
+          "classification": "skipped",
+          "reason": "Its managed service-launcher environment does not exist in Cocoa's external-process lifecycle."
+        },
+        {
+          "sha": "8100062a78f1e1942663a0cea9ddc42d2f835525",
+          "classification": "deferred",
+          "reason": "The keyboard-controller migration needs focused mobile layout and simulator verification."
+        },
+        {
+          "sha": "2e66b1fdfc63d39822cd58948bcf43e8fbc239b6",
+          "classification": "deferred",
+          "reason": "Background-work banner ordering remains useful UI polish but was not imported."
+        },
+        {
+          "sha": "b792ed9f7b9c7c6386a14a1697c4393567812546",
+          "classification": "imported",
+          "reason": "Upgrades and adapts LegendList ownership to stabilize web timeline positioning.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "7963cc70f3c9873768a5eaad7ca0a20a23d67aed",
+          "classification": "skipped",
+          "reason": "Upstream runtime-mode telemetry does not advance Cocoa's gateway or provider contracts."
+        },
+        {
+          "sha": "b2ee17d7c1b1bdff543ffff43929d01b92a902f4",
+          "classification": "deferred",
+          "reason": "Chat-header thread actions are optional client polish requiring Cocoa menu adaptation."
+        },
+        {
+          "sha": "a17459e8a93a7be1f8261166034c245dd9794a0a",
+          "classification": "imported",
+          "reason": "Uses a safe ANSI clear sequence to avoid resetting the iOS terminal.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "33a03c8a7bf4a398f410c9e6def903531237958a",
+          "classification": "imported",
+          "reason": "Corrects mobile scroll padding above Android system navigation.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "bd422fd8d1d960d9f75b9434cbc6b9128fbd3187",
+          "classification": "imported",
+          "reason": "Adds the Android composer backdrop and required Gradle-plugin patch.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "af281c9fc4cd74e9e28e5ee153a605fef9dfd5f9",
+          "classification": "skipped",
+          "reason": "Clerk-specific navigation repair does not apply to Cocoa's gateway authentication ownership."
+        },
+        {
+          "sha": "bfc69e4b4de12cd9867972dc802936acfb219b74",
+          "classification": "skipped",
+          "reason": "Upstream mobile release-version metadata is not inherited by the fork."
+        },
+        {
+          "sha": "61b51ae0e343afc42ba0424d4d74b4f9a216d620",
+          "classification": "deferred",
+          "reason": "Click-to-unpin is useful sidebar polish but was not included in this intake."
+        },
+        {
+          "sha": "239ef1c54df2f657912ccb5b8e25193d49d90417",
+          "classification": "imported",
+          "reason": "Resolves the actual configured shortcut for the new-thread tooltip.",
+          "cocoaCommit": "ca466acaf82ce91f922f8874c491299728b6a574"
+        },
+        {
+          "sha": "be1a836745395286cbd392512179ab5816f538ba",
+          "classification": "skipped",
+          "reason": "Upstream v0.0.32 package-version preparation is not inherited by the fork."
         }
       ]
     }
