@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ProviderHostId } from "./providerHost.ts";
 import { VcsDriverKind } from "./vcs.ts";
 
 export const SourceControlProviderKind = Schema.Literals([
@@ -10,6 +11,20 @@ export const SourceControlProviderKind = Schema.Literals([
   "unknown",
 ]);
 export type SourceControlProviderKind = typeof SourceControlProviderKind.Type;
+
+/**
+ * Default execution hosts for repository-hosting API operations that have no
+ * project-local filesystem affinity. Repository-bound Git and worktree
+ * operations never consult this map; they remain pinned to the project's
+ * provider host.
+ */
+export const SourceControlHostingHostDefaults = Schema.Struct({
+  github: Schema.optionalKey(ProviderHostId),
+  gitlab: Schema.optionalKey(ProviderHostId),
+  bitbucket: Schema.optionalKey(ProviderHostId),
+  "azure-devops": Schema.optionalKey(ProviderHostId),
+});
+export type SourceControlHostingHostDefaults = typeof SourceControlHostingHostDefaults.Type;
 
 export const SourceControlProviderInfo = Schema.Struct({
   kind: SourceControlProviderKind,

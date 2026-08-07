@@ -31,6 +31,7 @@ import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { toastManager } from "../ui/toast";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { ProviderHostSourceControlSettings } from "./SourceControlSettings";
 import { getDriverOption } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
 import {
@@ -516,6 +517,16 @@ export function HostConnectionsSection() {
                           : "No Codex provider is bound to this host."}
                       </p>
                     )}
+                  </div>
+
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Source Control
+                    </p>
+                    <ProviderHostSourceControlSettings
+                      hostId={hostId}
+                      providerInstanceId={connection.bindings[0]?.instanceId ?? null}
+                    />
                   </div>
                 </div>
               ) : null}

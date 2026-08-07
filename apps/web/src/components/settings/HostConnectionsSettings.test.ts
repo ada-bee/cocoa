@@ -372,6 +372,30 @@ describe("Cocoa host connections", () => {
     });
   });
 
+  it("clears centralized hosting defaults that reference a deleted host", () => {
+    const hostId = ProviderHostId.make("shared_host");
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerHosts: {
+        shared_host: { transport: transport("wss://shared.test/socket", "key") },
+        api_host: { transport: transport("wss://api.test/socket", "api-key") },
+      },
+      providerInstances: {
+        codex: { driver: ProviderDriverKind.make("codex"), hostId },
+      },
+      sourceControlHostingHostDefaults: {
+        github: hostId,
+        gitlab: ProviderHostId.make("api_host"),
+      },
+    };
+    const connection = deriveCocoaHostConnections(settings).find(
+      (candidate) => candidate.hostId === hostId,
+    );
+    const patch = buildRemoveCocoaHostSettingsPatch(settings, connection!);
+
+    expect(patch.sourceControlHostingHostDefaults).toEqual({ gitlab: "api_host" });
+  });
+
   it("accepts and removes standard SVG preambles", () => {
     const root = '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"/></svg>';
     const withPreamble = `<?xml version="1.0" encoding="iso-8859-1"?>

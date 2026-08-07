@@ -67,6 +67,7 @@ import {
   OrchestrationGetWorkflowScriptError,
 } from "./orchestration.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderHostId } from "./providerHost.ts";
 import {
   RelayClientInstallFailedError,
   RelayClientInstallProgressEventSchema,
@@ -341,7 +342,10 @@ export const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSetting
 });
 
 export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
-  payload: Schema.Struct({ providerInstanceId: Schema.optional(ProviderInstanceId) }),
+  payload: Schema.Struct({
+    providerHostId: Schema.optional(ProviderHostId),
+    providerInstanceId: Schema.optional(ProviderInstanceId),
+  }),
   success: SourceControlDiscoveryResult,
   error: EnvironmentAuthorizationError,
 });

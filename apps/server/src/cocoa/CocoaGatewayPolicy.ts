@@ -50,6 +50,7 @@ export const CocoaGatewayPolicyFailureReason = Schema.Literals([
   "local-process-field",
   "missing-provider-config",
   "missing-provider-host",
+  "missing-source-control-host",
   "missing-endpoint-transport",
   "missing-server-url",
   "provider-environment-forbidden",
@@ -205,6 +206,14 @@ export const resolveCocoaGatewayProviderInstanceConfigMap = Effect.fn(
   settings: ServerSettings,
 ): Effect.fn.Return<ProviderInstanceConfigMap, CocoaGatewayPolicyError> {
   const instances = Object.entries(settings.providerInstances);
+
+  for (const [provider, hostId] of Object.entries(settings.sourceControlHostingHostDefaults)) {
+    if (settings.providerHosts[hostId] === undefined) {
+      return yield* fail("missing-source-control-host", {
+        detail: `${provider} API operations reference provider host '${hostId}', which is not configured.`,
+      });
+    }
+  }
 
   const enabledByInstanceId = new Map<string, boolean>();
   for (const [providerInstanceId, instance] of instances) {

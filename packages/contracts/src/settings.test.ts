@@ -232,6 +232,32 @@ describe("ServerSettings.providerHosts", () => {
   });
 });
 
+describe("ServerSettings.sourceControlHostingHostDefaults", () => {
+  it("defaults to no centralized hosting-operation hosts", () => {
+    expect(DEFAULT_SERVER_SETTINGS.sourceControlHostingHostDefaults).toEqual({});
+    expect(decodeServerSettings({}).sourceControlHostingHostDefaults).toEqual({});
+  });
+
+  it("decodes and patches per-service provider hosts", () => {
+    const decoded = decodeServerSettings({
+      sourceControlHostingHostDefaults: {
+        github: "mac_studio",
+        gitlab: "linux_build",
+      },
+    });
+    expect(decoded.sourceControlHostingHostDefaults).toEqual({
+      github: ProviderHostId.make("mac_studio"),
+      gitlab: ProviderHostId.make("linux_build"),
+    });
+
+    expect(
+      decodeServerSettingsPatch({
+        sourceControlHostingHostDefaults: { github: "linux_build" },
+      }).sourceControlHostingHostDefaults,
+    ).toEqual({ github: ProviderHostId.make("linux_build") });
+  });
+});
+
 describe("ServerSettings worktree defaults", () => {
   it("defaults start-from-origin on for legacy configs", () => {
     expect(decodeServerSettings({}).newWorktreesStartFromOrigin).toBe(true);

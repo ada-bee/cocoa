@@ -1,6 +1,7 @@
 import {
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
+  ProviderHostId,
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -360,6 +361,39 @@ describe("serverSettings helpers", () => {
       enabled: true,
       config: { homePath: "~/.codex" },
     });
+  });
+
+  it("replaces provider host maps so removed hosts are not deep-merged back", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerHosts: {
+        old_host: {
+          transport: {
+            type: "cocoa-host" as const,
+            url: "wss://old.example.test/",
+            key: "old-key",
+          },
+        },
+      },
+    };
+
+    expect(applyServerSettingsPatch(current, { providerHosts: {} }).providerHosts).toEqual({});
+  });
+
+  it("replaces centralized hosting defaults so individual services can be cleared", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      sourceControlHostingHostDefaults: {
+        github: ProviderHostId.make("shared_host"),
+        gitlab: ProviderHostId.make("shared_host"),
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        sourceControlHostingHostDefaults: { gitlab: ProviderHostId.make("shared_host") },
+      }).sourceControlHostingHostDefaults,
+    ).toEqual({ gitlab: "shared_host" });
   });
 
   it("stores background activity profiles as a versioned object and syncs legacy aliases", () => {

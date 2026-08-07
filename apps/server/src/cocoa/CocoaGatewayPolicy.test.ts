@@ -137,6 +137,13 @@ describe("Cocoa gateway provider policy", () => {
     return expectReason(settings, "missing-provider-host");
   });
 
+  it.effect("rejects a hosting-operation default that references a missing host", () => {
+    const settings = decodeSettings({
+      sourceControlHostingHostDefaults: { github: "missing_host" },
+    });
+    return expectReason(settings, "missing-source-control-host");
+  });
+
   it.effect("rejects a generated-text selection stored under another provider's key", () => {
     const settings = validSettings();
     return expectReason(

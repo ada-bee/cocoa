@@ -288,6 +288,7 @@ export function buildRemoveCocoaHostSettingsPatch(
     ServerSettings,
     | "providerInstances"
     | "providerHosts"
+    | "sourceControlHostingHostDefaults"
     | "defaultModelSelections"
     | "sourceControlWriterModelSelection"
     | "textGenerationModelSelection"
@@ -297,6 +298,16 @@ export function buildRemoveCocoaHostSettingsPatch(
 ): ServerSettingsPatch {
   const providerHosts = { ...settings.providerHosts };
   if (!connection.legacy) delete providerHosts[connection.hostId];
+  const sourceControlHostingHostDefaults = {
+    ...settings.sourceControlHostingHostDefaults,
+  };
+  for (const [kind, hostId] of Object.entries(sourceControlHostingHostDefaults)) {
+    if (hostId === connection.hostId) {
+      delete sourceControlHostingHostDefaults[
+        kind as keyof typeof sourceControlHostingHostDefaults
+      ];
+    }
+  }
   const providerInstances = { ...settings.providerInstances };
   const removedInstanceIds = new Set(connection.bindings.map(({ instanceId }) => instanceId));
   for (const instanceId of removedInstanceIds) delete providerInstances[instanceId];
@@ -313,6 +324,7 @@ export function buildRemoveCocoaHostSettingsPatch(
   const perProviderPatch = {
     ...(removedPerProviderSelection ? { textGenerationModelSelections } : {}),
     ...(removedDefaultSelection ? { defaultModelSelections } : {}),
+    sourceControlHostingHostDefaults,
   };
   const remainingHost = deriveCocoaHostConnections({ providerHosts, providerInstances }).find(
     (candidate) => candidate.codexBinding !== null,

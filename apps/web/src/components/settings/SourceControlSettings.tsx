@@ -1,9 +1,11 @@
-import { ChevronDownIcon, GitPullRequestIcon, InfoIcon, RefreshCwIcon } from "lucide-react";
+import { ChevronDownIcon, InfoIcon, RefreshCwIcon } from "lucide-react";
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
 import { useMemo, useState, type ReactNode } from "react";
 import type {
   BackgroundActivitySettings,
+  ProviderHostId,
+  ProviderInstanceId,
   SourceControlProviderKind,
   SourceControlDiscoveryResult,
   SourceControlProviderAuth,
@@ -25,14 +27,6 @@ import { sourceControlEnvironment } from "../../state/sourceControl";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "../ui/empty";
 import { Skeleton } from "../ui/skeleton";
 import {
   NumberField,
@@ -55,6 +49,10 @@ import {
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SourceControlWritingSettingsSection } from "./SourceControlWritingSettings";
 import { deriveCocoaHostConnections } from "./HostConnectionsSettings.logic";
+import {
+  buildSourceControlHostingHostDefaultPatch,
+  type HostingProviderKind,
+} from "./SourceControlSettings.logic";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import {
   SettingResetButton,
@@ -76,12 +74,22 @@ const SOURCE_CONTROL_PROVIDER_ICONS: Partial<Record<SourceControlProviderKind, I
   bitbucket: BitbucketIcon,
 };
 
+const HOSTING_PROVIDER_DEFAULTS = [
+  { kind: "github", label: "GitHub" },
+  { kind: "gitlab", label: "GitLab" },
+  { kind: "bitbucket", label: "Bitbucket" },
+  { kind: "azure-devops", label: "Azure DevOps" },
+] as const satisfies ReadonlyArray<{
+  readonly kind: Exclude<SourceControlProviderKind, "unknown">;
+  readonly label: string;
+}>;
+const NO_DEFAULT_HOST = "none";
+
 const VCS_ICONS: Partial<Record<VcsDriverKind, Icon>> = {
   git: GitIcon,
   jj: JujutsuIcon,
 };
 
-const SOURCE_CONTROL_SKELETON_ROWS = ["primary", "secondary"] as const;
 const GIT_FETCH_INTERVAL_STEP_SECONDS = 5;
 type BackgroundActivityOverridePatch = Partial<{
   [K in keyof BackgroundActivitySettings["overrides"]]:
@@ -433,210 +441,149 @@ function GitFetchIntervalSettings() {
   );
 }
 
-function SourceControlSectionSkeleton({
-  title,
-  headerAction,
+export function ProviderHostSourceControlSettings({
+  hostId,
+  providerInstanceId,
 }: {
-  readonly title: string;
-  readonly headerAction?: ReactNode;
+  readonly hostId: ProviderHostId;
+  readonly providerInstanceId: ProviderInstanceId | null;
 }) {
-  return (
-    <SettingsSection title={title} headerAction={headerAction}>
-      {SOURCE_CONTROL_SKELETON_ROWS.map((row) => (
-        <div key={row} className="rounded-xl px-3 py-3 sm:px-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="min-w-0 flex-1 space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="relative inline-flex size-5 shrink-0 items-center justify-center">
-                  <Skeleton className="size-4.5 rounded-md" />
-                  <Skeleton
-                    className="pointer-events-none absolute -left-0.5 -top-0.5 size-2 rounded-full ring-2 ring-background"
-                    aria-hidden
-                  />
-                </span>
-                <Skeleton className="h-4 w-28 rounded-full" />
-                <Skeleton className="h-5 w-14 rounded-full" />
-              </div>
-              <Skeleton className="h-3 w-full max-w-xs rounded-full" />
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Skeleton className="size-7 rounded-md" />
-              <Skeleton className="h-5 w-9 rounded-full" />
-            </div>
-          </div>
-        </div>
-      ))}
-    </SettingsSection>
+  const environmentId = usePrimaryEnvironment()?.environmentId ?? null;
+  const discovery = useEnvironmentQuery(
+    environmentId === null || providerInstanceId === null
+      ? null
+      : sourceControlEnvironment.discovery({
+          environmentId,
+          input: { providerHostId: hostId },
+        }),
   );
-}
+  const result = discovery.data ?? EMPTY_DISCOVERY_RESULT;
+  const items = [...result.versionControlSystems, ...result.sourceControlProviders];
 
-function EmptySourceControlDiscovery({
-  error,
-  isPending,
-  onScan,
-}: {
-  readonly error: string | null;
-  readonly isPending: boolean;
-  readonly onScan: () => void;
-}) {
-  const hasError = error !== null;
+  if (providerInstanceId === null) {
+    return (
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Bind a provider to this host to inspect its Git and repository-hosting capabilities.
+      </p>
+    );
+  }
+
+  if (discovery.isPending && discovery.data === null) {
+    return <Skeleton className="h-16 w-full rounded-lg" />;
+  }
 
   return (
-    <SettingsSection id={searchableSetting("source-control").id} title="Provider source control">
-      <Empty className="min-h-88">
-        <EmptyMedia variant="icon">
-          <GitPullRequestIcon />
-        </EmptyMedia>
-        <EmptyHeader>
-          <EmptyTitle>
-            {hasError ? "Could not read provider source control" : "Managed by provider hosts"}
-          </EmptyTitle>
-          <EmptyDescription>
-            {hasError
-              ? error
-              : "Cocoa reads repository status, refs, remotes, and diffs through configured provider endpoints. Host-level discovery and account setup are not exposed yet."}
-          </EmptyDescription>
-        </EmptyHeader>
-        {hasError ? (
-          <EmptyContent>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 gap-1.5 px-3 text-xs"
-              onClick={onScan}
-              disabled={isPending}
-            >
-              <RefreshCwIcon className={cn("size-3.5", isPending && "animate-spin")} />
-              Try again
-            </Button>
-          </EmptyContent>
-        ) : null}
-      </Empty>
-    </SettingsSection>
+    <div className="space-y-2">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          Git, worktrees, diffs, and repository-bound hosting actions execute on this host.
+        </p>
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          onClick={() => discovery.refresh()}
+          disabled={discovery.isPending}
+          aria-label="Rescan this provider host's source control capabilities"
+        >
+          <RefreshCwIcon className={cn("size-3", discovery.isPending && "animate-spin")} />
+        </Button>
+      </div>
+      {discovery.error ? (
+        <p className="text-xs text-destructive">{discovery.error}</p>
+      ) : items.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          This host does not currently advertise source-control capabilities.
+        </p>
+      ) : (
+        <div className="divide-y divide-border/40 rounded-lg border border-border/50">
+          {items.map((item) => (
+            <DiscoveryItemRow
+              key={`${isProviderDiscoveryItem(item) ? "provider" : "vcs"}:${item.kind}`}
+              item={item}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
 export function SourceControlSettingsPanel() {
   const environmentId = usePrimaryEnvironment()?.environmentId ?? null;
   const settings = usePrimarySettings();
-  const providerHosts = useMemo(
-    () => deriveCocoaHostConnections(settings).filter((host) => host.codexBinding !== null),
-    [settings],
-  );
-  const [selectedProviderHostId, setSelectedProviderHostId] = useState<string | null>(null);
-  const selectedProviderHost =
-    providerHosts.find((host) => host.hostId === selectedProviderHostId) ?? providerHosts[0];
-  const providerInstanceId = selectedProviderHost?.codexBinding?.instanceId ?? null;
-  const discovery = useEnvironmentQuery(
-    environmentId === null || providerInstanceId === null
-      ? null
-      : sourceControlEnvironment.discovery({
-          environmentId,
-          input: { providerInstanceId },
-        }),
-  );
-  const result = discovery.data ?? EMPTY_DISCOVERY_RESULT;
-  const hasVersionControlSystems = result.versionControlSystems.length > 0;
-  const hasDiscoveryItems = hasVersionControlSystems || result.sourceControlProviders.length > 0;
-  const isInitialScanPending = discovery.isPending && discovery.data === null;
-  const handleScan = () => {
-    discovery.refresh();
-  };
-  const scanButton = (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            size="icon-xs"
-            variant="ghost"
-            className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
-            onClick={handleScan}
-            disabled={discovery.isPending}
-            aria-label="Rescan server environment"
-          >
-            <RefreshCwIcon className={cn("size-3", discovery.isPending && "animate-spin")} />
-          </Button>
-        }
-      />
-      <TooltipPopup side="top">Rescan Git and hosting integrations</TooltipPopup>
-    </Tooltip>
-  );
+  const updateSettings = useUpdatePrimarySettings();
+  const providerHosts = useMemo(() => deriveCocoaHostConnections(settings), [settings]);
+
+  const setDefaultHost = (kind: HostingProviderKind, hostId: string) =>
+    updateSettings(
+      buildSourceControlHostingHostDefaultPatch(
+        settings,
+        kind,
+        hostId === NO_DEFAULT_HOST ? null : (hostId as ProviderHostId),
+      ),
+    );
 
   return (
     <SettingsPageContainer>
-      <SettingsSection title="Provider host">
-        <SettingsRow
-          title="Source control host"
-          description="Git, worktrees, and repository hosting integrations run on the selected provider host."
-          control={
-            providerHosts.length === 0 ? (
-              <span className="text-xs text-muted-foreground">No provider hosts configured</span>
-            ) : (
-              <Select
-                value={selectedProviderHost?.hostId}
-                onValueChange={(value) => setSelectedProviderHostId(value)}
-              >
-                <SelectTrigger className="w-full sm:w-56" aria-label="Source control provider host">
-                  <SelectValue>
-                    {selectedProviderHost?.host.displayName ??
-                      (selectedProviderHost
-                        ? new URL(selectedProviderHost.transport.url).hostname
-                        : "Select a provider host")}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectPopup align="end" alignItemWithTrigger={false}>
-                  {providerHosts.map((host) => (
-                    <SelectItem key={host.hostId} hideIndicator value={host.hostId}>
-                      {host.host.displayName ?? new URL(host.transport.url).hostname}
-                    </SelectItem>
-                  ))}
-                </SelectPopup>
-              </Select>
-            )
-          }
-        />
+      <SettingsSection
+        id={searchableSetting("source-control").id}
+        title="Repository hosting defaults"
+      >
+        <p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground sm:px-4">
+          These defaults apply only to API-only GitHub, GitLab, Bitbucket, and Azure DevOps
+          operations. Repository Git, fetch, push, diff, and worktree operations always run on the
+          project&apos;s provider host.
+        </p>
+        {HOSTING_PROVIDER_DEFAULTS.map(({ kind, label }) => {
+          const selectedHostId = settings.sourceControlHostingHostDefaults[kind];
+          const selectedHost = providerHosts.find((host) => host.hostId === selectedHostId);
+          return (
+            <SettingsRow
+              key={kind}
+              title={`${label} operations`}
+              description={`Default host for ${label} API-only operations when no project-local execution is required.`}
+              control={
+                providerHosts.length === 0 ? (
+                  <span className="text-xs text-muted-foreground">
+                    No provider hosts configured
+                  </span>
+                ) : (
+                  <Select
+                    value={selectedHostId ?? NO_DEFAULT_HOST}
+                    onValueChange={(value) => setDefaultHost(kind, value ?? NO_DEFAULT_HOST)}
+                  >
+                    <SelectTrigger
+                      className="w-full sm:w-56"
+                      aria-label={`Default host for ${label} operations`}
+                    >
+                      <SelectValue>
+                        {selectedHost
+                          ? (selectedHost.host.displayName ??
+                            new URL(selectedHost.transport.url).hostname)
+                          : "Project host / none"}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup align="end" alignItemWithTrigger={false}>
+                      <SelectItem hideIndicator value={NO_DEFAULT_HOST}>
+                        Project host / none
+                      </SelectItem>
+                      {providerHosts.map((host) => (
+                        <SelectItem key={host.hostId} hideIndicator value={host.hostId}>
+                          {host.host.displayName ?? new URL(host.transport.url).hostname}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                )
+              }
+            />
+          );
+        })}
       </SettingsSection>
 
-      {isInitialScanPending ? (
-        <>
-          <SourceControlSectionSkeleton title="Version Control" headerAction={scanButton} />
-          <SourceControlSectionSkeleton title="Source Control Providers" />
-        </>
-      ) : hasDiscoveryItems ? (
-        <>
-          {hasVersionControlSystems ? (
-            <SettingsSection
-              id={searchableSetting("source-control").id}
-              title="Version Control"
-              headerAction={scanButton}
-            >
-              {result.versionControlSystems.map((item) => (
-                <DiscoveryItemRow key={`vcs:${item.kind}`} item={item}>
-                  {item.kind === "git" ? <GitFetchIntervalSettings /> : undefined}
-                </DiscoveryItemRow>
-              ))}
-            </SettingsSection>
-          ) : null}
-
-          {result.sourceControlProviders.length > 0 ? (
-            <SettingsSection
-              id={hasVersionControlSystems ? undefined : searchableSetting("source-control").id}
-              title="Source Control Providers"
-              headerAction={hasVersionControlSystems ? null : scanButton}
-            >
-              {result.sourceControlProviders.map((item) => (
-                <DiscoveryItemRow key={`provider:${item.kind}`} item={item} />
-              ))}
-            </SettingsSection>
-          ) : null}
-        </>
-      ) : (
-        <EmptySourceControlDiscovery
-          error={discovery.error}
-          isPending={discovery.isPending}
-          onScan={handleScan}
-        />
-      )}
+      <SettingsSection title="Repository activity">
+        <GitFetchIntervalSettings />
+      </SettingsSection>
 
       {environmentId !== null ? <SourceControlWritingSettingsSection /> : null}
     </SettingsPageContainer>

@@ -207,6 +207,10 @@ export function applyServerSettingsPatch(
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
       : {}),
+    ...(patch.providerHosts !== undefined ? { providerHosts: patch.providerHosts } : {}),
+    ...(patch.sourceControlHostingHostDefaults !== undefined
+      ? { sourceControlHostingHostDefaults: patch.sourceControlHostingHostDefaults }
+      : {}),
     ...(patch.defaultModelSelections !== undefined
       ? { defaultModelSelections: patch.defaultModelSelections }
       : {}),

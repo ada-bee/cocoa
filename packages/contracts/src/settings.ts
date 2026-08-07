@@ -14,6 +14,7 @@ import { CodexWorkspaceHelperConfig } from "./codexWorkspaceHelper.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
 import { ProviderHostConfigMap } from "./providerHost.ts";
+import { SourceControlHostingHostDefaults } from "./sourceControl.ts";
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -654,6 +655,9 @@ export const ServerSettings = Schema.Struct({
   sourceControlWriterModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  sourceControlHostingHostDefaults: SourceControlHostingHostDefaults.pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
   // of truth until `providerInstances` (below) lands per-driver migration
@@ -813,6 +817,7 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  sourceControlHostingHostDefaults: Schema.optionalKey(SourceControlHostingHostDefaults),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(TrimmedString),
