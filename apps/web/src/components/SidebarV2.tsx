@@ -298,6 +298,7 @@ function SidebarV2ThreadTooltip({
             <div className="flex min-w-0 items-center gap-2">
               <ProjectFavicon
                 environmentId={thread.environmentId}
+                projectId={thread.projectId}
                 cwd={projectCwd ?? ""}
                 className="size-3 shrink-0 stroke-muted-foreground"
               />
@@ -918,6 +919,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
             >
               <ProjectFavicon
                 environmentId={thread.environmentId}
+                projectId={thread.projectId}
                 cwd={props.projectCwd ?? ""}
                 className="size-4"
                 fallbackIcon={MessageSquareIcon}
@@ -1057,6 +1059,7 @@ const SidebarV2Row = memo(function SidebarV2Row(props: {
             <div className="flex h-5 min-w-0 items-center gap-1.5">
               <ProjectFavicon
                 environmentId={thread.environmentId}
+                projectId={thread.projectId}
                 cwd={props.projectCwd ?? ""}
                 className="size-4 shrink-0"
               />
@@ -1327,6 +1330,7 @@ const SidebarV2SearchResultRow = memo(function SidebarV2SearchResultRow(props: {
         >
           <ProjectFavicon
             environmentId={thread.environmentId}
+            projectId={thread.projectId}
             cwd={props.projectCwd ?? ""}
             className="size-4 shrink-0"
             fallbackIcon={MessageSquareIcon}
@@ -3094,6 +3098,7 @@ export default function SidebarV2() {
                     {scopedProjectGroup ? (
                       <ProjectFavicon
                         environmentId={scopedProjectGroup.environmentId}
+                        projectId={scopedProjectGroup.id}
                         cwd={scopedProjectGroup.workspaceRoot}
                         className="size-4 shrink-0"
                       />
@@ -3131,6 +3136,7 @@ export default function SidebarV2() {
                           >
                             <ProjectFavicon
                               environmentId={project.environmentId}
+                              projectId={project.id}
                               cwd={project.workspaceRoot}
                               className="size-4 shrink-0"
                             />

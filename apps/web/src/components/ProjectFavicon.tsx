@@ -1,4 +1,4 @@
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import {
   getProjectFaviconCacheKey,
   isProjectFaviconFallbackUrl,
@@ -13,6 +13,7 @@ const loadedProjectFaviconSrcs = new Map<string, string>();
 
 export function ProjectFavicon(input: {
   environmentId: EnvironmentId;
+  projectId?: ProjectId | undefined;
   cwd: string;
   className?: string | undefined;
   fallbackIcon?: ComponentType<{ className?: string }>;
@@ -20,6 +21,7 @@ export function ProjectFavicon(input: {
   const src = useAssetUrl(input.environmentId, {
     _tag: "project-favicon",
     cwd: input.cwd,
+    ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
   });
   const FallbackIcon = input.fallbackIcon ?? FolderIcon;
 

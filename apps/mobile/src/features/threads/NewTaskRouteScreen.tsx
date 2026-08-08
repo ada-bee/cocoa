@@ -293,6 +293,7 @@ export function NewTaskRouteScreen({ route }: StaticScreenProps<NewTaskRoutePara
                     <View className="h-7 w-7 items-center justify-center">
                       <ProjectFavicon
                         environmentId={item.environmentId}
+                        projectId={item.id}
                         size={20}
                         projectTitle={item.title}
                         workspaceRoot={item.workspaceRoot}

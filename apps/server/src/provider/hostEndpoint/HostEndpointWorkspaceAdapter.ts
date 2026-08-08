@@ -47,6 +47,14 @@ const mapWorkspaceError = (
           issue: error.remoteMessage,
           cause: error,
         });
+      case "notFound":
+        return new ProviderWorkspacePathError({
+          providerInstanceId,
+          operation,
+          path,
+          issue: "path_not_found",
+          cause: error,
+        });
       case "disconnected":
       case "staleHandle":
         return new ProviderWorkspaceDisconnectedError({

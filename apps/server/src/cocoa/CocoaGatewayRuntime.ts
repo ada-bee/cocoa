@@ -213,7 +213,9 @@ const CocoaWorkspaceAccessLayerLive = Layer.mergeAll(
   CocoaProviderFilesystemBrowseLayerLive,
 );
 
-const CocoaProjectFaviconResolverLayerLive = ProjectFaviconResolver.layer;
+const CocoaProjectFaviconResolverLayerLive = ProjectFaviconResolver.layer.pipe(
+  Layer.provide(CocoaProjectWorkspaceLayerLive),
+);
 
 const CocoaRepositoryReadLayerLive = RepositoryReadService.layer.pipe(
   Layer.provide(CocoaProjectRepositoryLayerLive),

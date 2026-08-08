@@ -1,9 +1,10 @@
 import type { ComponentType, Dispatch, ReactElement, SetStateAction } from "react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { AssetResource, EnvironmentId, ProjectId } from "@t3tools/contracts";
 
 const testState = vi.hoisted(() => ({
   faviconUrl: "https://environment.test/api/assets/token-a/v1-20-favicon.svg",
+  lastResource: null as AssetResource | null,
 }));
 
 const hooks = vi.hoisted(() => {
@@ -52,7 +53,10 @@ vi.mock("react", async (importOriginal) => {
 
 vi.mock("react/compiler-runtime", () => ({ c: hooks.useMemoCache }));
 vi.mock("../assets/assetUrls", () => ({
-  useAssetUrl: () => testState.faviconUrl,
+  useAssetUrl: (_environmentId: EnvironmentId, resource: AssetResource) => {
+    testState.lastResource = resource;
+    return testState.faviconUrl;
+  },
 }));
 
 import { ProjectFavicon } from "./ProjectFavicon";
@@ -81,6 +85,7 @@ function resolveImageComponent(): {
   hooks.beginRender();
   const element = ProjectFavicon({
     environmentId: "environment-test" as EnvironmentId,
+    projectId: "project-test" as ProjectId,
     cwd: "/workspace-test",
   }) as ReactElement<ProjectFaviconImageProps>;
   hooks.reset();
@@ -102,6 +107,17 @@ function renderImage(
 describe("ProjectFavicon", () => {
   beforeEach(() => {
     hooks.reset();
+    testState.lastResource = null;
+  });
+
+  it("includes durable project identity in the asset request", () => {
+    resolveImageComponent();
+
+    expect(testState.lastResource).toEqual({
+      _tag: "project-favicon",
+      cwd: "/workspace-test",
+      projectId: "project-test",
+    });
   });
 
   it("falls back when the displayed favicon fails without discarding a valid older image early", () => {
