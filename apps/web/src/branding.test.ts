@@ -39,6 +39,7 @@ describe("branding", () => {
     expect(branding.APP_BASE_NAME).toBe("Cocoa Code");
     expect(branding.APP_STAGE_LABEL).toBe("Nightly");
     expect(branding.APP_DISPLAY_NAME).toBe("Cocoa Code (Nightly)");
+    expect(branding.APP_DOCUMENT_TITLE).toBe("Cocoa");
   });
 });
 

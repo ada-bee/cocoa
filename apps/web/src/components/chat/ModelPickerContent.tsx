@@ -108,6 +108,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const modelListRef = useRef<LegendListRef | null>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
   const favorites = useClientSettings((s) => s.favorites ?? []);
+  const providerModelPreferences = useClientSettings((s) => s.providerModelPreferences);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
     () => {
       if (props.projectProviderInstanceId !== null || props.lockedProvider !== null) {
@@ -225,7 +226,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       if (!isProviderInstanceAllowedForProject(props.projectProviderInstanceId, entry.instanceId)) {
         continue;
       }
+      const hiddenModels = new Set(providerModelPreferences[instanceId]?.hiddenModels ?? []);
       for (const model of models) {
+        if (hiddenModels.has(model.slug)) {
+          continue;
+        }
         out.push({
           slug: model.slug,
           name: model.name,
@@ -246,6 +251,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   }, [
     modelOptionsByInstance,
     entryByInstanceId,
+    providerModelPreferences,
     props.projectProviderInstanceId,
     readyInstanceSet,
   ]);

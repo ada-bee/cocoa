@@ -100,11 +100,7 @@ export function ClientsSettings() {
           </Button>
         }
       >
-        <SettingsRow
-          title="Gateway address"
-          description="Pairing links use this public address. Set COCOA_PUBLIC_URL when Cocoa is reached through a different hostname."
-          status={publicUrl}
-        />
+        <SettingsRow title="Gateway address" status={publicUrl} />
         {access.pairingLinks.map((link) => {
           const url = pairingUrl(publicUrl, link);
           return (
