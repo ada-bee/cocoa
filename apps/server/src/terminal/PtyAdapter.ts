@@ -8,27 +8,13 @@
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
+import { PtySpawnError } from "@t3tools/host-runtime/pty";
+
+export { PtySpawnError } from "@t3tools/host-runtime/pty";
 
 /**
  * PtySpawnError - Error type for PTY spawn failures.
  */
-export class PtySpawnError extends Schema.TaggedErrorClass<PtySpawnError>()("PtySpawnError", {
-  adapter: Schema.String,
-  shell: Schema.optional(Schema.String),
-  attemptedShells: Schema.optional(Schema.Array(Schema.String)),
-  cause: Schema.optional(Schema.Defect()),
-}) {
-  override get message(): string {
-    const shell = this.shell === undefined ? "" : ` '${this.shell}'`;
-    const attemptedShells =
-      this.attemptedShells === undefined || this.attemptedShells.length === 0
-        ? ""
-        : ` Tried shells: ${this.attemptedShells.join(", ")}.`;
-    return `Failed to spawn PTY process${shell} with ${this.adapter}.${attemptedShells}`;
-  }
-}
-
 export interface PtyExitEvent {
   exitCode: number;
   signal: number | null;

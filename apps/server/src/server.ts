@@ -126,6 +126,7 @@ import * as NativeTelemetryClient from "./resourceTelemetry/NativeTelemetryClien
 import * as ResourceAttribution from "./resourceTelemetry/ResourceAttribution.ts";
 import * as ResourceMonitorBinary from "./resourceTelemetry/ResourceMonitorBinary.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
+import * as UsageService from "./usage/UsageService.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import {
   clearPersistedServerRuntimeState,
@@ -517,7 +518,11 @@ const AnalyticsLayerLive = Layer.unwrap(
   ),
 );
 
-const LegacyRuntimeDependenciesLive = LegacyRuntimeCoreDependenciesLive.pipe(
+const LegacyRuntimeCoreDependenciesWithUsageLive = UsageService.layer.pipe(
+  Layer.provideMerge(LegacyRuntimeCoreDependenciesLive),
+);
+
+const LegacyRuntimeDependenciesLive = LegacyRuntimeCoreDependenciesWithUsageLive.pipe(
   // Misc.
   Layer.provideMerge(BackgroundLayerLive),
   Layer.provideMerge(ResourceDiagnosticsLayerLive),

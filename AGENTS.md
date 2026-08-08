@@ -32,6 +32,8 @@ workspace, Git, shell, and tools on the Codex host
 
 Prefer adapting upstream boundaries over rewriting them. Keep the decider and projector pure, put provider-specific behavior behind adapters, and keep UI state derived from gateway contracts.
 
+`FORK.md` is the governing upstream-intake policy and intentional-divergence ledger. Read it before changing upstream-derived behavior or classifying upstream commits.
+
 ## Code map
 
 - `apps/server` — gateway, orchestration, provider adapters, persistence, checkpointing, filesystem, VCS, and terminals.

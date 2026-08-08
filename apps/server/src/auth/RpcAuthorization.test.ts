@@ -30,6 +30,12 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("requires orchestration read access for transcript usage", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverGetUsageSummary)).toBe(
+      AuthOrchestrationReadScope,
+    );
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,

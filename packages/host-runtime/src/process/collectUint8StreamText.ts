@@ -8,11 +8,12 @@ export interface CollectedUint8StreamText {
 }
 
 interface CollectState {
-  readonly chunks: Uint8Array[];
+  chunks: Uint8Array[];
   readonly bytes: number;
   readonly truncated: boolean;
 }
 
+/** Keep a decoded prefix within the byte limit when the cap splits a UTF-8 code point. */
 const fitTextToUtf8ByteLimit = (text: string, maxBytes: number): string => {
   if (!Number.isFinite(maxBytes) || Buffer.byteLength(text, "utf8") <= maxBytes) return text;
   let bytes = 0;
@@ -26,37 +27,52 @@ const fitTextToUtf8ByteLimit = (text: string, maxBytes: number): string => {
   return text.slice(0, codeUnits);
 };
 
-/** Drains the stream after reaching the cap so the child can exit normally. */
 export const collectUint8StreamText = <E>(input: {
   readonly stream: Stream.Stream<Uint8Array, E>;
-  readonly maxBytes?: number;
-  readonly truncatedMarker?: string | null;
+  readonly maxBytes?: number | undefined;
+  readonly truncatedMarker?: string | null | undefined;
 }): Effect.Effect<CollectedUint8StreamText, E> => {
   const maxBytes = input.maxBytes ?? Number.POSITIVE_INFINITY;
   const truncatedMarker = input.truncatedMarker ?? "";
 
   return input.stream.pipe(
     Stream.runFold(
-      (): CollectState => ({ chunks: [], bytes: 0, truncated: false }),
+      (): CollectState => ({
+        chunks: [],
+        bytes: 0,
+        truncated: false,
+      }),
       (state, chunk): CollectState => {
-        if (state.truncated) return state;
+        /*
+         * keep draining after truncation so the child process can exit normally.
+         * its a know issue that on windows killing after the output cap can force an expensive taskkill operation and hurt performance
+         */
+        if (state.truncated) {
+          return state;
+        }
+
         const remainingBytes = maxBytes - state.bytes;
-        if (remainingBytes <= 0) return { ...state, truncated: true };
+        if (remainingBytes <= 0) {
+          return {
+            ...state,
+            truncated: true,
+          };
+        }
 
         const nextChunk =
           chunk.byteLength > remainingBytes ? chunk.slice(0, remainingBytes) : chunk;
         state.chunks.push(nextChunk);
+        const bytes = state.bytes + nextChunk.byteLength;
+        const truncated = chunk.byteLength > remainingBytes;
+
         return {
           chunks: state.chunks,
-          bytes: state.bytes + nextChunk.byteLength,
-          truncated: chunk.byteLength > remainingBytes,
+          bytes,
+          truncated,
         };
       },
     ),
-    Effect.map((state) => {
-      // A byte cap can split a multi-byte code point. Node decodes that tail
-      // as U+FFFD (three UTF-8 bytes), which would make the wire payload larger
-      // than the cap. Re-fit the decoded prefix to the same encoded-byte bound.
+    Effect.map((state): CollectedUint8StreamText => {
       const text = fitTextToUtf8ByteLimit(
         Buffer.concat(state.chunks, state.bytes).toString("utf8"),
         maxBytes,
@@ -65,7 +81,7 @@ export const collectUint8StreamText = <E>(input: {
         text: state.truncated && truncatedMarker.length > 0 ? `${text}${truncatedMarker}` : text,
         bytes: state.bytes,
         truncated: state.truncated,
-      } satisfies CollectedUint8StreamText;
+      };
     }),
   );
 };

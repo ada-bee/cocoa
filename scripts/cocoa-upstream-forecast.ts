@@ -183,11 +183,24 @@ const assertImportedCommit = (
     fail(`imported Cocoa commit ${cocoaCommit} is not an ancestor of ${targetRef}`);
   }
   const message = runOrFail(git, ["show", "-s", "--format=%B", cocoaCommit]);
-  if (!message.includes(`(cherry picked from commit ${upstreamCommit})`)) {
-    fail(
-      `imported Cocoa commit ${cocoaCommit} does not record -x provenance for ${upstreamCommit}`,
-    );
+  if (message.includes(`(cherry picked from commit ${upstreamCommit})`)) return;
+
+  const parents = runOrFail(git, ["show", "-s", "--format=%P", cocoaCommit])
+    .split(" ")
+    .filter((parent) => parent.length > 0);
+  if (parents.length > 1) {
+    const wasAlreadyPresent = git.run(["merge-base", "--is-ancestor", upstreamCommit, parents[0]!]);
+    const mergedParentContainsCommit = parents
+      .slice(1)
+      .some(
+        (parent) => git.run(["merge-base", "--is-ancestor", upstreamCommit, parent]).exitCode === 0,
+      );
+    if (wasAlreadyPresent.exitCode === 1 && mergedParentContainsCommit) return;
   }
+
+  fail(
+    `imported Cocoa commit ${cocoaCommit} has neither -x provenance nor merge ancestry for ${upstreamCommit}`,
+  );
 };
 
 const forecastConflict = (git: GitRunner, targetRef: string, upstreamCommit: string): boolean => {

@@ -4,6 +4,7 @@
 import {
   COCOA_HOST_CONTROL_PROTOCOL,
   COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+  COCOA_HOST_CONTROL_SUPPORTED_VERSIONS,
   CocoaHostControlHandshakeRequest,
   CocoaHostControlOperation,
   CocoaHostControlRequest,
@@ -11,10 +12,12 @@ import {
   CocoaHostControlResourceId,
   type CocoaHostControlErrorResponse,
   type CocoaHostControlEvent,
+  type CocoaHostControlCapability,
   type CocoaHostControlHandshakeRequest as CocoaHostControlHandshakeRequestType,
   type CocoaHostControlHandshakeErrorResponse,
   type CocoaHostControlHandshakeResponse,
   type CocoaHostControlOperation as CocoaHostControlOperationType,
+  type CocoaHostControlProtocolVersion,
   type CocoaHostControlRequest as CocoaHostControlRequestType,
   type CocoaHostControlRequestId as CocoaHostControlRequestIdType,
   type CocoaHostControlResponse,
@@ -56,6 +59,7 @@ interface RelayConnectionData {
 interface ControlConnectionData {
   readonly mode: "control";
   handshakeComplete: boolean;
+  protocolVersion: CocoaHostControlProtocolVersion | undefined;
   requestQueue: Promise<void>;
   unsubscribeRuntime: (() => void) | undefined;
   closing: boolean;
@@ -69,6 +73,7 @@ export interface HostdLogger {
 }
 
 export interface StartHostdOptions {
+  readonly installationId?: string;
   readonly bindHost: string;
   readonly port: number;
   readonly socketPath: string;
@@ -186,14 +191,32 @@ const providerRelayAvailable = (socketPath: string): boolean => {
   }
 };
 
+const capabilitiesForVersion = (
+  capabilities: ReadonlyArray<CocoaHostControlCapability>,
+  selectedVersion: CocoaHostControlProtocolVersion,
+): ReadonlyArray<CocoaHostControlCapability> => {
+  const selectedCapabilities: Array<CocoaHostControlCapability> = [];
+  for (const capability of capabilities) {
+    if (capability.kind === "usage") {
+      if (selectedVersion === COCOA_HOST_CONTROL_PROTOCOL_VERSION) {
+        selectedCapabilities.push(capability);
+      }
+      continue;
+    }
+    selectedCapabilities.push({ ...capability, version: selectedVersion });
+  }
+  return selectedCapabilities;
+};
+
 const controlHandshakeResponse = (
   request: CocoaHostControlHandshakeRequestType,
   socketPath: string,
   runtime: HostControlRuntime,
+  selectedVersion: CocoaHostControlProtocolVersion,
 ): CocoaHostControlHandshakeResponse => ({
   protocol: COCOA_HOST_CONTROL_PROTOCOL,
   requestId: request.requestId,
-  selectedVersion: COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+  selectedVersion,
   host: {
     generationId: runtime.generationId,
     implementation: "cocoa-hostd",
@@ -202,10 +225,10 @@ const controlHandshakeResponse = (
     platformOs: runtime.platformOs,
   },
   capabilities: [
-    ...runtime.capabilities,
+    ...capabilitiesForVersion(runtime.capabilities, selectedVersion),
     {
       kind: "providerRelay",
-      version: COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+      version: selectedVersion,
       providers: ["codex"],
       transport: "websocket-json-rpc",
     },
@@ -233,7 +256,7 @@ const handshakeError = (
 });
 
 const operationFailure = (request: CocoaHostControlRequestType): CocoaHostControlErrorResponse => ({
-  protocolVersion: COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+  protocolVersion: request.protocolVersion,
   requestId: request.requestId,
   operation: request.operation,
   error: {
@@ -290,22 +313,31 @@ const handleControlMessage = (
       closeDownstream(downstream, 1002, "Control handshake required");
       return;
     }
-    if (!request.supportedVersions.includes(COCOA_HOST_CONTROL_PROTOCOL_VERSION)) {
+    const selectedVersion = COCOA_HOST_CONTROL_SUPPORTED_VERSIONS.find((version) =>
+      request.supportedVersions.includes(version),
+    );
+    if (selectedVersion === undefined) {
       sendControlFrame(
         downstream,
         handshakeError(
           request.requestId,
           "unsupportedProtocol",
-          `cocoa-hostd requires control protocol version ${COCOA_HOST_CONTROL_PROTOCOL_VERSION}.`,
+          `cocoa-hostd supports control protocol versions ${COCOA_HOST_CONTROL_SUPPORTED_VERSIONS.join(", ")}.`,
         ),
       );
       return;
     }
     connection.handshakeComplete = true;
+    connection.protocolVersion = selectedVersion;
     connection.unsubscribeRuntime = runtime.subscribe((event) => {
-      if (!connection.closing && connection.handshakeComplete) sendControlFrame(downstream, event);
+      if (!connection.closing && connection.handshakeComplete) {
+        sendControlFrame(downstream, { ...event, protocolVersion: selectedVersion });
+      }
     });
-    sendControlFrame(downstream, controlHandshakeResponse(request, socketPath, runtime));
+    sendControlFrame(
+      downstream,
+      controlHandshakeResponse(request, socketPath, runtime, selectedVersion),
+    );
     return;
   }
 
@@ -326,12 +358,26 @@ const handleControlMessage = (
       return;
     }
     sendControlFrame(downstream, {
-      protocolVersion: COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+      protocolVersion: connection.protocolVersion ?? COCOA_HOST_CONTROL_PROTOCOL_VERSION,
       requestId,
       operation,
       error: {
         code: "invalidRequest",
         message: "The control request did not match its operation contract.",
+        retryable: false,
+      },
+    });
+    return;
+  }
+
+  if (request.protocolVersion !== connection.protocolVersion) {
+    sendControlFrame(downstream, {
+      protocolVersion: connection.protocolVersion ?? COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+      requestId: request.requestId,
+      operation: request.operation,
+      error: {
+        code: "invalidRequest",
+        message: "The control request protocol version did not match the negotiated version.",
         retryable: false,
       },
     });
@@ -356,7 +402,11 @@ const handleControlMessage = (
 export const startHostd = (options: StartHostdOptions): RunningHostd => {
   const logger = options.logger ?? defaultLogger;
   const makeUpstream = options.makeUpstream ?? connectToCodexUnixSocket;
-  const controlRuntime = options.controlRuntime ?? makeHostControlRuntime();
+  const controlRuntime =
+    options.controlRuntime ??
+    makeHostControlRuntime(
+      options.installationId === undefined ? {} : { installationId: options.installationId },
+    );
 
   const server = Bun.serve<HostdConnectionData>({
     hostname: options.bindHost,
@@ -380,6 +430,7 @@ export const startHostd = (options: StartHostdOptions): RunningHostd => {
             ? {
                 mode: "control",
                 handshakeComplete: false,
+                protocolVersion: undefined,
                 requestQueue: Promise.resolve(),
                 unsubscribeRuntime: undefined,
                 closing: false,

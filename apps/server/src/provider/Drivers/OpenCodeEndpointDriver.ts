@@ -3,6 +3,7 @@ import {
   OpenCodeSettings,
   ProviderDriverKind,
   type ProviderHostConfig,
+  type ProviderHostId,
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -56,9 +57,10 @@ export interface OpenCodeEndpointDriverDependencies {
   /** Seam for provider-host process/terminal/VCS adapters once those are available. */
   readonly makeHostCapabilities?: (input: {
     readonly instanceId: ProviderInstance["instanceId"];
+    readonly hostId: ProviderHostId;
     readonly host: ProviderHostConfig;
   }) => Effect.Effect<
-    Pick<ProviderInstance, "workspace" | "terminal" | "execution" | "vcs">,
+    Pick<ProviderInstance, "workspace" | "terminal" | "execution" | "vcs" | "usage">,
     ProviderDriverError,
     Scope.Scope
   >;
@@ -89,7 +91,7 @@ export const makeOpenCodeEndpointDriver = (
     metadata: { displayName: "OpenCode", supportsMultipleInstances: true },
     configSchema: OpenCodeSettings,
     defaultConfig: () => decodeSettings({}),
-    create: ({ instanceId, host, displayName, accentColor, enabled, config }) =>
+    create: ({ instanceId, host, hostId, displayName, accentColor, enabled, config }) =>
       Effect.gen(function* () {
         if (config.serverUrl.trim() === "") {
           return yield* new ProviderDriverError({
@@ -134,8 +136,11 @@ export const makeOpenCodeEndpointDriver = (
           client: catalogClient,
         });
         const hostCapabilities =
-          enabled && host !== undefined && dependencies.makeHostCapabilities !== undefined
-            ? yield* dependencies.makeHostCapabilities({ instanceId, host })
+          enabled &&
+          host !== undefined &&
+          hostId !== undefined &&
+          dependencies.makeHostCapabilities !== undefined
+            ? yield* dependencies.makeHostCapabilities({ instanceId, hostId, host })
             : {};
         const maintenanceCapabilities = makeManualOnlyProviderMaintenanceCapabilities({
           provider: DRIVER_KIND,

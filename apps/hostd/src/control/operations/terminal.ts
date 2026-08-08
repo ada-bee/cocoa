@@ -7,11 +7,11 @@
 import {
   COCOA_HOST_CONTROL_MAX_TERMINAL_OUTPUT_BYTES,
   COCOA_HOST_CONTROL_MAX_TERMINAL_WRITE_BYTES,
-  COCOA_HOST_CONTROL_PROTOCOL_VERSION,
   CocoaHostControlResourceId,
   type CocoaHostControlErrorResponse,
   type CocoaHostControlEvent,
   type CocoaHostControlGenerationId,
+  type CocoaHostControlProtocolVersion,
   type CocoaHostTerminalExitReason,
   type CocoaHostTerminalRequest,
   type CocoaHostTerminalResponse,
@@ -61,6 +61,7 @@ export interface HostTerminalControlManager {
 }
 
 interface TerminalSession {
+  readonly protocolVersion: CocoaHostControlProtocolVersion;
   readonly id: CocoaHostControlResourceId;
   readonly cwd: string;
   readonly outputByteLimit: number;
@@ -166,7 +167,7 @@ export const makeHostTerminalControlManager = (
     session.exitReason = reason;
     session.sequence += 1;
     emit(session, {
-      protocolVersion: COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+      protocolVersion: session.protocolVersion,
       event: "terminal.exited",
       generationId: options.generationId,
       sessionId: session.id,
@@ -229,7 +230,7 @@ export const makeHostTerminalControlManager = (
       const chunk = Uint8Array.from(bytes.subarray(offset, end));
       session.sequence += 1;
       emit(session, {
-        protocolVersion: COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+        protocolVersion: session.protocolVersion,
         event: "terminal.output",
         generationId: options.generationId,
         sessionId: session.id,
@@ -331,6 +332,7 @@ export const makeHostTerminalControlManager = (
         );
       }
       const session: TerminalSession = {
+        protocolVersion: request.protocolVersion,
         id: allocatedSessionId,
         cwd: request.cwd,
         outputByteLimit: Math.min(request.outputByteLimit, maxOutputBytes),

@@ -192,6 +192,7 @@ const buildEntry = <R>(input: {
       .create({
         instanceId,
         host,
+        hostId: entry.hostId,
         displayName: entry.displayName,
         accentColor: entry.accentColor,
         environment: entry.environment ?? [],

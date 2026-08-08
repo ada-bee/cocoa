@@ -22,6 +22,10 @@
     "./workspace": {
       "types": "./src/workspace/index.ts",
       "import": "./src/workspace/index.ts"
+    },
+    "./usage": {
+      "types": "./src/usage/index.ts",
+      "import": "./src/usage/index.ts"
     }
   },
   "scripts": {

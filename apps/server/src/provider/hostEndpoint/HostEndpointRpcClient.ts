@@ -11,7 +11,7 @@ import * as Stream from "effect/Stream";
 
 import {
   HOST_ENDPOINT_CONTROL_PROTOCOL,
-  HOST_ENDPOINT_CONTROL_VERSION,
+  HOST_ENDPOINT_CONTROL_SUPPORTED_VERSIONS,
   decodeHostEndpointControlRequest,
   decodeHostEndpointCorrelatedFrame,
   decodeHostEndpointEventFrame,
@@ -283,6 +283,7 @@ const makeOperationFrame = (
   operation: string,
   requestId: string,
   payload: unknown,
+  protocolVersion: (typeof HOST_ENDPOINT_CONTROL_SUPPORTED_VERSIONS)[number],
 ): Effect.Effect<Readonly<Record<string, unknown>>, HostEndpointRpcInvalidPayloadError> => {
   if (!isRecord(payload)) {
     return Effect.fail(
@@ -299,7 +300,7 @@ const makeOperationFrame = (
     );
   }
   return Effect.succeed({
-    protocolVersion: HOST_ENDPOINT_CONTROL_VERSION,
+    protocolVersion,
     requestId,
     operation,
     ...payload,
@@ -603,7 +604,7 @@ export const makeHostEndpointRpcClient = <Contract, Event = unknown>(
     const handshakeRequest = yield* decodeHostEndpointHandshakeRequest({
       protocol: HOST_ENDPOINT_CONTROL_PROTOCOL,
       requestId: handshakeRequestId,
-      supportedVersions: [HOST_ENDPOINT_CONTROL_VERSION],
+      supportedVersions: [...HOST_ENDPOINT_CONTROL_SUPPORTED_VERSIONS],
       client: options.client,
     }).pipe(
       Effect.mapError(
@@ -634,7 +635,12 @@ export const makeHostEndpointRpcClient = <Contract, Event = unknown>(
       Effect.gen(function* () {
         requestSequence += 1;
         const requestId = `gateway:${requestSequence}`;
-        const frame = yield* makeOperationFrame(operation, requestId, payload);
+        const frame = yield* makeOperationFrame(
+          operation,
+          requestId,
+          payload,
+          handshake.selectedVersion,
+        );
         const validatedFrame = yield* decodeHostEndpointControlRequest(frame).pipe(
           Effect.mapError(
             (cause) =>

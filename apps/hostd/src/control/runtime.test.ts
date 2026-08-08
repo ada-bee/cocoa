@@ -3,7 +3,12 @@
 import { describe, expect, test } from "bun:test";
 import * as NodeOS from "node:os";
 
-import { CocoaHostControlGenerationId, CocoaHostControlRequestId } from "@t3tools/contracts";
+import {
+  CocoaHostControlGenerationId,
+  CocoaHostControlRequestId,
+  USAGE_CONTRACT_VERSION,
+  UsageDay,
+} from "@t3tools/contracts";
 
 import { makeHostControlRuntime } from "./runtime.ts";
 
@@ -17,7 +22,7 @@ describe("host control runtime", () => {
     });
     try {
       expect(runtime.platformFamily).toBe("windows");
-      expect(runtime.capabilities.map(({ kind }) => kind)).toEqual([]);
+      expect(runtime.capabilities.map(({ kind }) => kind)).toEqual(["usage"]);
       const terminalResponse = await runtime.dispatch({
         protocolVersion: 1,
         requestId: CocoaHostControlRequestId.make("terminal-start-windows"),
@@ -31,6 +36,113 @@ describe("host control runtime", () => {
       expect(terminalResponse.response).toMatchObject({
         operation: "terminal.start",
         error: { code: "unsupportedOperation" },
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  test("advertises and dispatches pre-aggregated provider-host usage", async () => {
+    const sinceDay = UsageDay.make("2026-08-01");
+    const untilDay = UsageDay.make("2026-08-08");
+    const runtime = makeHostControlRuntime({
+      generationId: CocoaHostControlGenerationId.make("host:usage-test"),
+      platform: "win32",
+      homePath: "/Users/test",
+      usageReader: {
+        readSummary: async (input) => ({
+          contractVersion: USAGE_CONTRACT_VERSION,
+          readAt: "2026-08-08T12:00:00.000Z",
+          ...input,
+          buckets: [],
+          sources: [],
+          pricing: { status: "unavailable", source: "test", fetchedAt: null, knownModels: 0 },
+          scanDurationMs: 1,
+        }),
+      },
+    });
+    try {
+      const result = await runtime.dispatch({
+        protocolVersion: 2,
+        requestId: CocoaHostControlRequestId.make("usage-read"),
+        operation: "usage.read",
+        input: { sinceDay, untilDay, timeZone: "UTC" },
+      });
+      expect(result.response).toMatchObject({
+        operation: "usage.read",
+        summary: { sinceDay, untilDay, timeZone: "UTC" },
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  test("uses the configured host installation identity and stays offline by default", async () => {
+    const day = UsageDay.make("2026-08-08");
+    const runtime = makeHostControlRuntime({
+      generationId: CocoaHostControlGenerationId.make("host:usage-identity-test"),
+      platform: "win32",
+      homePath: "/definitely/missing/cocoa-host-home",
+      installationId: "configured-host-installation",
+      gitAvailable: false,
+    });
+    try {
+      const result = await runtime.dispatch({
+        protocolVersion: 2,
+        requestId: CocoaHostControlRequestId.make("usage-read-identity"),
+        operation: "usage.read",
+        input: { sinceDay: day, untilDay: day, timeZone: "UTC" },
+      });
+      if ("error" in result.response) throw new Error(result.response.error.message);
+      if (result.response.operation !== "usage.read") throw new Error("Unexpected response");
+      expect(result.response.summary.pricing).toMatchObject({
+        status: "unavailable",
+        source: "offline",
+      });
+      expect(
+        result.response.summary.sources.every(
+          ({ fingerprint }) => fingerprint.hostId === "configured-host-installation",
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(result.response.summary)).not.toContain("/definitely/missing");
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  test("rejects an oversized usage summary before it reaches the control transport", async () => {
+    const sinceDay = UsageDay.make("2026-08-08");
+    const runtime = makeHostControlRuntime({
+      generationId: CocoaHostControlGenerationId.make("host:usage-limit-test"),
+      platform: "win32",
+      homePath: "/Users/test",
+      usageReader: {
+        readSummary: async (input) => ({
+          contractVersion: USAGE_CONTRACT_VERSION,
+          readAt: "2026-08-08T12:00:00.000Z",
+          ...input,
+          buckets: [],
+          sources: [],
+          pricing: {
+            status: "unavailable",
+            source: "x".repeat(3 * 1024 * 1024),
+            fetchedAt: null,
+            knownModels: 0,
+          },
+          scanDurationMs: 1,
+        }),
+      },
+    });
+    try {
+      const result = await runtime.dispatch({
+        protocolVersion: 2,
+        requestId: CocoaHostControlRequestId.make("usage-read-oversized"),
+        operation: "usage.read",
+        input: { sinceDay, untilDay: sinceDay, timeZone: "UTC" },
+      });
+      expect(result.response).toMatchObject({
+        operation: "usage.read",
+        error: { code: "limitExceeded", retryable: false },
       });
     } finally {
       await runtime.close();

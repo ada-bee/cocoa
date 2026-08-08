@@ -1,8 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
+  USAGE_CONTRACT_VERSION,
   type CocoaHostControlCapability,
   type CocoaHostControlEvent,
+  ProviderHostId,
   ProviderInstanceId,
+  UsageDay,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -36,6 +39,7 @@ import { makeHostEndpointVcsAdapter, mapHostEndpointVcsError } from "./HostEndpo
 import { makeHostEndpointWorkspaceAdapter } from "./HostEndpointWorkspaceAdapter.ts";
 
 const PROVIDER_INSTANCE_ID = ProviderInstanceId.make("host-endpoint-test");
+const PROVIDER_HOST_ID = ProviderHostId.make("test_host");
 const GENERATION_ID = "generation:1";
 const decodeBase64Bytes = Schema.decodeUnknownSync(Schema.Uint8ArrayFromBase64);
 
@@ -46,6 +50,7 @@ interface RecordedRequest {
 
 const makeClient = Effect.fn("HostEndpointAdaptersTest.makeClient")(function* (options: {
   readonly capabilities: ReadonlyArray<CocoaHostControlCapability>;
+  readonly selectedVersion?: 1 | 2;
   readonly response: (operation: string, payload: unknown) => unknown;
   readonly fail?: (operation: string) => HostEndpointRpcRequestError | undefined;
 }) {
@@ -56,7 +61,7 @@ const makeClient = Effect.fn("HostEndpointAdaptersTest.makeClient")(function* (o
     handshake: {
       protocol: "cocoa-host-control",
       requestId: "test:handshake",
-      selectedVersion: 1,
+      selectedVersion: options.selectedVersion ?? 1,
       host: {
         generationId: GENERATION_ID,
         implementation: "test-hostd",
@@ -89,6 +94,136 @@ const responseBase = (operation: string) => ({
   protocolVersion: 1,
   requestId: `response:${operation.replaceAll(".", ":")}`,
   operation,
+});
+
+const usageInput = {
+  sinceDay: UsageDay.make("2026-08-01"),
+  untilDay: UsageDay.make("2026-08-08"),
+  timeZone: "UTC",
+};
+
+const usageResponse = (overrides: Record<string, unknown> = {}) => ({
+  ...responseBase("usage.read"),
+  protocolVersion: 2,
+  summary: {
+    contractVersion: USAGE_CONTRACT_VERSION,
+    readAt: "2026-08-08T12:00:00.000Z",
+    ...usageInput,
+    buckets: [],
+    sources: [],
+    pricing: { status: "unavailable", source: "test", fetchedAt: null, knownModels: 0 },
+    scanDurationMs: 1,
+    ...overrides,
+  },
+});
+
+describe("HostEndpoint usage adapter", () => {
+  it.effect("reports usage as unsupported when an older host lacks the optional capability", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeClient({ capabilities: [], response: () => ({}) });
+      const capabilities = makeHostEndpointCapabilities({
+        providerInstanceId: PROVIDER_INSTANCE_ID,
+        providerHostId: PROVIDER_HOST_ID,
+        borrowClient: Effect.succeed(harness.client),
+      });
+      const error = yield* capabilities.usage
+        .readSummary({
+          sinceDay: UsageDay.make("2026-08-01"),
+          untilDay: UsageDay.make("2026-08-08"),
+          timeZone: "UTC",
+        })
+        .pipe(Effect.flip);
+      assert.equal(error.reason, "unsupported");
+      assert.lengthOf(harness.requests, 0);
+    }),
+  );
+
+  it.effect("requires the negotiated usage read capability before sending a request", () =>
+    Effect.gen(function* () {
+      for (const capability of [
+        { kind: "usage" as const, version: 2 as const, operations: [] },
+        { kind: "usage" as const, version: 2 as const, operations: ["read" as const] },
+      ]) {
+        const harness = yield* makeClient({
+          capabilities: [capability],
+          selectedVersion: capability.operations.length === 0 ? 2 : 1,
+          response: () => ({}),
+        });
+        const usage = makeHostEndpointCapabilities({
+          providerInstanceId: PROVIDER_INSTANCE_ID,
+          providerHostId: PROVIDER_HOST_ID,
+          borrowClient: Effect.succeed(harness.client),
+        }).usage;
+        const error = yield* usage.readSummary(usageInput).pipe(Effect.flip);
+        assert.equal(error.reason, "unsupported");
+        assert.lengthOf(harness.requests, 0);
+      }
+    }),
+  );
+
+  it.effect("accepts an exactly echoed, in-window host summary", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeClient({
+        capabilities: [{ kind: "usage", version: 2, operations: ["read"] }],
+        selectedVersion: 2,
+        response: () => usageResponse(),
+      });
+      const usage = makeHostEndpointCapabilities({
+        providerInstanceId: PROVIDER_INSTANCE_ID,
+        providerHostId: PROVIDER_HOST_ID,
+        borrowClient: Effect.succeed(harness.client),
+      }).usage;
+      const result = yield* usage.readSummary(usageInput);
+      assert.equal(result.timeZone, "UTC");
+      assert.lengthOf(harness.requests, 1);
+    }),
+  );
+
+  it.effect("rejects mismatched windows and out-of-window buckets", () =>
+    Effect.gen(function* () {
+      for (const overrides of [
+        { timeZone: "Europe/Prague" },
+        {
+          buckets: [
+            {
+              source: { hostId: "host-a", sourceId: "codex-source" },
+              day: UsageDay.make("2026-08-09"),
+              provider: "codex",
+              model: "gpt-test",
+              totals: {
+                uncachedInputTokens: 1,
+                cachedInputTokens: 0,
+                cacheCreationTokens: 0,
+                outputTokens: 0,
+                reasoningTokens: 0,
+              },
+              costUsd: 0,
+              cacheSavingsUsd: 0,
+              costSource: "unpriced",
+              records: 1,
+              unpricedRecords: 1,
+              sessions: 1,
+            },
+          ],
+        },
+        { contractVersion: USAGE_CONTRACT_VERSION - 1 },
+        { coverage: { state: "complete", hosts: [] } },
+      ]) {
+        const harness = yield* makeClient({
+          capabilities: [{ kind: "usage", version: 2, operations: ["read"] }],
+          selectedVersion: 2,
+          response: () => usageResponse(overrides),
+        });
+        const usage = makeHostEndpointCapabilities({
+          providerInstanceId: PROVIDER_INSTANCE_ID,
+          providerHostId: PROVIDER_HOST_ID,
+          borrowClient: Effect.succeed(harness.client),
+        }).usage;
+        const error = yield* usage.readSummary(usageInput).pipe(Effect.flip);
+        assert.equal(error.reason, "operation-failed");
+      }
+    }),
+  );
 });
 
 describe("HostEndpoint workspace adapter", () => {
@@ -133,6 +268,7 @@ describe("HostEndpoint workspace adapter", () => {
         let borrows = 0;
         const capabilities = makeHostEndpointCapabilities({
           providerInstanceId: PROVIDER_INSTANCE_ID,
+          providerHostId: PROVIDER_HOST_ID,
           borrowClient: Effect.sync(() => {
             borrows += 1;
             return harness.client;

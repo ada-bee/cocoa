@@ -58,6 +58,7 @@ import * as ServerLifecycleEvents from "../serverLifecycleEvents.ts";
 import * as TerminalManager from "../terminal/ProviderManagerLayer.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as AnalyticsService from "../telemetry/AnalyticsServiceContract.ts";
+import * as UsageService from "../usage/UsageService.ts";
 import {
   CocoaExternalLauncherLayerLive,
   CocoaUnavailableDiagnosticsLayerLive,
@@ -276,7 +277,11 @@ const CocoaRuntimeBaseFoundationLive = CocoaReactorLayerLive.pipe(
   Layer.provideMerge(CocoaProjectRepositoryLayerLive),
 );
 
-const CocoaRuntimeBaseDependenciesLive = CocoaRuntimeBaseFoundationLive.pipe(
+const CocoaRuntimeBaseWithUsageLive = UsageService.layer.pipe(
+  Layer.provideMerge(CocoaRuntimeBaseFoundationLive),
+);
+
+const CocoaRuntimeBaseDependenciesLive = CocoaRuntimeBaseWithUsageLive.pipe(
   Layer.provideMerge(CocoaRepositoryReadLayerLive),
   Layer.provideMerge(CocoaRepositoryMutationLayerLive),
   Layer.provideMerge(CocoaRepositoryStatusLayerLive),

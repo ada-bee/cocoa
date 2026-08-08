@@ -3,7 +3,7 @@
   "remote": "upstream",
   "upstreamRef": "upstream/main",
   "targetRef": "main",
-  "baseTag": "cocoa-fork-base-20260803",
+  "baseTag": "v0.0.32-nightly.20260803.986",
   "baseCommit": "30c96228067bcd3a49e432ec898e52d4acb04297",
   "horizons": [
     {
@@ -540,6 +540,126 @@
           "sha": "be1a836745395286cbd392512179ab5816f538ba",
           "classification": "skipped",
           "reason": "Upstream v0.0.32 package-version preparation is not inherited by the fork."
+        }
+      ]
+    },
+    {
+      "reviewedAt": "2026-08-08",
+      "fromExclusive": "be1a836745395286cbd392512179ab5816f538ba",
+      "throughInclusive": "e2cd2383cec150ea674030d408f2a99a411c94fc",
+      "commits": [
+        {
+          "sha": "6d70e6d77824eed51b1531a2f42b2ed5cdae8501",
+          "classification": "imported",
+          "reason": "Keeps mobile reconnects from reordering the thread list and was brought in by the upstream merge.",
+          "cocoaCommit": "83b3738e427351872f20f9229ef72af280c495db"
+        },
+        {
+          "sha": "5661c6116c9d6e9e93e59cf067fc02dd3303ceef",
+          "classification": "imported",
+          "reason": "Uses upstream pinned-thread ordering behavior and was brought in by the upstream merge.",
+          "cocoaCommit": "83b3738e427351872f20f9229ef72af280c495db"
+        },
+        {
+          "sha": "e2cd2383cec150ea674030d408f2a99a411c94fc",
+          "classification": "skipped",
+          "reason": "Upstream contributor-vouch metadata has no effect on Cocoa's runtime or release process."
+        }
+      ]
+    },
+    {
+      "reviewedAt": "2026-08-08",
+      "fromExclusive": "e2cd2383cec150ea674030d408f2a99a411c94fc",
+      "throughInclusive": "a20923ce463335e89e92f5983d98a180536e8e7d",
+      "commits": [
+        {
+          "sha": "72d673a855c730536f0cf3bb964ba523e0af9e2e",
+          "classification": "imported",
+          "reason": "Adopts upstream project-scoped browser history and recent-site behavior while preserving Cocoa's provider-routed preview URLs.",
+          "cocoaCommit": "39a900ca6189d4cce9dd65dccc212ccd76588991"
+        },
+        {
+          "sha": "82406bce99c2cf46d1d8fbad26bfefc2ab3169ce",
+          "classification": "skipped",
+          "reason": "Contributor-vouch metadata belongs to the public cloud and community workflow divergence and is not part of Cocoa's runtime or release process."
+        },
+        {
+          "sha": "f0fb406acf419c1ab3d37d5f42093c07921484b2",
+          "classification": "imported",
+          "reason": "Uses upstream theme-aware sidebar artwork with Cocoa branding only.",
+          "cocoaCommit": "39a900ca6189d4cce9dd65dccc212ccd76588991"
+        },
+        {
+          "sha": "7a84f6cf10a5040d29c6392ad216d976458363cd",
+          "classification": "imported",
+          "reason": "Uses the upstream composer seam fix while retaining provider-aware remote project selection.",
+          "cocoaCommit": "39a900ca6189d4cce9dd65dccc212ccd76588991"
+        },
+        {
+          "sha": "45d9aa90baab8f2d6b13c7ae3cf2f97128edaf7b",
+          "classification": "imported",
+          "reason": "Shows the upstream Stop action while user input is pending.",
+          "cocoaCommit": "39a900ca6189d4cce9dd65dccc212ccd76588991"
+        },
+        {
+          "sha": "31891a1a0c208a6b244b64937741066c61fefd9c",
+          "classification": "imported",
+          "reason": "Replaces Cocoa's separate legacy settings surface with upstream's consolidated General settings.",
+          "cocoaCommit": "39a900ca6189d4cce9dd65dccc212ccd76588991"
+        },
+        {
+          "sha": "0de9540739369301d5056870deeee3f258a03b14",
+          "classification": "imported",
+          "reason": "Makes the upstream sidebar canonical and removes Cocoa's duplicate stage-based Sidebar V2 default, retaining only remote-routing and archive adaptations.",
+          "cocoaCommit": "39a900ca6189d4cce9dd65dccc212ccd76588991"
+        },
+        {
+          "sha": "4eaf5ef8bb47b870397d5c61cd216b1a6bdd1510",
+          "classification": "imported",
+          "reason": "Imports upstream PR lookup rate-limit backoff and unpublished-branch avoidance unchanged.",
+          "cocoaCommit": "a8ced9d33d2a008a1bbf2412027596ae9f9e53d7"
+        },
+        {
+          "sha": "ed886fe1814890da30ae73c77f9e894ddc9bd481",
+          "classification": "imported",
+          "reason": "Uses upstream's transient reconnect warning grace period, scoped to each Cocoa environment.",
+          "cocoaCommit": "39a900ca6189d4cce9dd65dccc212ccd76588991"
+        },
+        {
+          "sha": "daf8ee0b2f684cda82e8721abe1138b219b1ef12",
+          "classification": "imported",
+          "reason": "Uses upstream terminal sizing under simple typography.",
+          "cocoaCommit": "39a900ca6189d4cce9dd65dccc212ccd76588991"
+        },
+        {
+          "sha": "2c7267ad43a05cf3e30343400c76fd9ac47698e7",
+          "classification": "imported",
+          "reason": "Imports upstream protection against reaping sessions with live background work.",
+          "cocoaCommit": "a8ced9d33d2a008a1bbf2412027596ae9f9e53d7"
+        },
+        {
+          "sha": "06404107261cae24394d6abe39984fb445c5aff5",
+          "classification": "imported",
+          "reason": "Uses upstream main-window zoom targeting so preview focus cannot capture app zoom shortcuts.",
+          "cocoaCommit": "39a900ca6189d4cce9dd65dccc212ccd76588991"
+        },
+        {
+          "sha": "30164cb1ba8ea05fdd6be69215dba2cc2f0e2aa8",
+          "classification": "imported",
+          "reason": "Uses upstream's unified mobile thread/model settings while preserving Cocoa provider-instance selection.",
+          "cocoaCommit": "39a900ca6189d4cce9dd65dccc212ccd76588991"
+        },
+        {
+          "sha": "8101cd044911c7dc2a2adf7c7a9ba7962abf57b6",
+          "classification": "imported",
+          "reason": "Adapts upstream usage contracts, parsing, aggregation, RPC, and UI to bounded Codex-only scans on remote provider hosts with offline defaults.",
+          "cocoaCommit": "97c4f260685ab1c847eaa9e9f56042c2d9d0903d"
+        },
+        {
+          "sha": "a20923ce463335e89e92f5983d98a180536e8e7d",
+          "classification": "imported",
+          "reason": "Imports upstream's usage-chart correctness fix as part of the provider-host usage adaptation.",
+          "cocoaCommit": "97c4f260685ab1c847eaa9e9f56042c2d9d0903d"
         }
       ]
     }

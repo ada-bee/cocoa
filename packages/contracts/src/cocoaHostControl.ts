@@ -10,10 +10,16 @@
 import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { UsageSummary, UsageSummaryInput } from "./usage.ts";
 import { VcsDriverKind } from "./vcs.ts";
 
 export const COCOA_HOST_CONTROL_PROTOCOL = "cocoa-host-control" as const;
-export const COCOA_HOST_CONTROL_PROTOCOL_VERSION = 1 as const;
+export const COCOA_HOST_CONTROL_PROTOCOL_VERSION = 2 as const;
+export const COCOA_HOST_CONTROL_LEGACY_PROTOCOL_VERSION = 1 as const;
+export const COCOA_HOST_CONTROL_SUPPORTED_VERSIONS = [
+  COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+  COCOA_HOST_CONTROL_LEGACY_PROTOCOL_VERSION,
+] as const;
 
 export const COCOA_HOST_CONTROL_MAX_PATH_CHARS = 4_096;
 export const COCOA_HOST_CONTROL_MAX_WORKSPACE_ENTRIES = 25_000;
@@ -28,6 +34,7 @@ export const COCOA_HOST_CONTROL_MAX_COMMIT_MESSAGE_BYTES = 64 * 1024;
 export const COCOA_HOST_CONTROL_MAX_TERMINAL_ARGV_BYTES = 64 * 1024;
 export const COCOA_HOST_CONTROL_MAX_TERMINAL_OUTPUT_BYTES = 4 * 1024 * 1024;
 export const COCOA_HOST_CONTROL_MAX_TERMINAL_WRITE_BYTES = 64 * 1024;
+export const COCOA_HOST_CONTROL_MAX_USAGE_RESPONSE_BYTES = 3 * 1024 * 1024;
 
 const strict = <S extends Schema.Top>(schema: S): S =>
   schema.annotate({ parseOptions: { onExcessProperty: "error" } }) as S;
@@ -122,7 +129,11 @@ const DirectEntryName = Schema.String.check(
   ),
 );
 
-const ControlProtocolVersion = Schema.Literal(COCOA_HOST_CONTROL_PROTOCOL_VERSION);
+export const CocoaHostControlProtocolVersion = Schema.Literals(
+  COCOA_HOST_CONTROL_SUPPORTED_VERSIONS,
+);
+export type CocoaHostControlProtocolVersion = typeof CocoaHostControlProtocolVersion.Type;
+const ControlProtocolVersion = CocoaHostControlProtocolVersion;
 const ControlRequestFields = {
   protocolVersion: ControlProtocolVersion,
   requestId: CocoaHostControlRequestId,
@@ -153,6 +164,7 @@ export const CocoaHostControlOperation = Schema.Literals([
   "terminal.write",
   "terminal.resize",
   "terminal.terminate",
+  "usage.read",
 ]);
 export type CocoaHostControlOperation = typeof CocoaHostControlOperation.Type;
 
@@ -185,6 +197,7 @@ export const CocoaHostTerminalOperation = Schema.Literals([
   "resize",
   "terminate",
 ]);
+export const CocoaHostUsageOperation = Schema.Literal("read");
 
 export const CocoaHostWorkspaceCapability = strict(
   Schema.Struct({
@@ -234,6 +247,14 @@ export const CocoaHostTerminalCapability = strict(
   }),
 );
 
+export const CocoaHostUsageCapability = strict(
+  Schema.Struct({
+    kind: Schema.Literal("usage"),
+    version: Schema.Literal(COCOA_HOST_CONTROL_PROTOCOL_VERSION),
+    operations: Schema.Array(CocoaHostUsageOperation).check(Schema.isMaxLength(1)),
+  }),
+);
+
 export const CocoaHostProviderRelayKind = Schema.Literal("codex");
 export type CocoaHostProviderRelayKind = typeof CocoaHostProviderRelayKind.Type;
 
@@ -263,6 +284,7 @@ export const CocoaHostControlCapability = Schema.Union([
   CocoaHostVcsCapability,
   CocoaHostReviewDiffCapability,
   CocoaHostTerminalCapability,
+  CocoaHostUsageCapability,
   CocoaHostProviderRelayCapability,
 ]);
 export type CocoaHostControlCapability = typeof CocoaHostControlCapability.Type;
@@ -315,7 +337,7 @@ export const CocoaHostControlHandshakeResponse = strict(
         platformOs: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
       }),
     ),
-    capabilities: Schema.Array(CocoaHostControlCapability).check(Schema.isMaxLength(5)),
+    capabilities: Schema.Array(CocoaHostControlCapability).check(Schema.isMaxLength(6)),
     providerRelays: Schema.Array(CocoaHostProviderRelayMetadata).check(Schema.isMaxLength(8)),
   }),
 );
@@ -999,6 +1021,26 @@ export const CocoaHostTerminalResponse = Schema.Union([
 ]);
 export type CocoaHostTerminalResponse = typeof CocoaHostTerminalResponse.Type;
 
+export const CocoaHostUsageRequest = strict(
+  Schema.Struct({
+    protocolVersion: Schema.Literal(COCOA_HOST_CONTROL_PROTOCOL_VERSION),
+    requestId: CocoaHostControlRequestId,
+    operation: Schema.Literal("usage.read"),
+    input: UsageSummaryInput,
+  }),
+);
+export type CocoaHostUsageRequest = typeof CocoaHostUsageRequest.Type;
+
+export const CocoaHostUsageResponse = strict(
+  Schema.Struct({
+    protocolVersion: Schema.Literal(COCOA_HOST_CONTROL_PROTOCOL_VERSION),
+    requestId: CocoaHostControlRequestId,
+    operation: Schema.Literal("usage.read"),
+    summary: UsageSummary,
+  }),
+);
+export type CocoaHostUsageResponse = typeof CocoaHostUsageResponse.Type;
+
 export const CocoaHostControlErrorCode = Schema.Literals([
   "unsupportedProtocol",
   "unsupportedOperation",
@@ -1063,6 +1105,7 @@ export const CocoaHostControlRequest = Schema.Union([
   CocoaHostWorkspaceRequest,
   CocoaHostVcsRequest,
   CocoaHostTerminalRequest,
+  CocoaHostUsageRequest,
 ]);
 export type CocoaHostControlRequest = typeof CocoaHostControlRequest.Type;
 
@@ -1070,6 +1113,7 @@ export const CocoaHostControlResponse = Schema.Union([
   CocoaHostWorkspaceResponse,
   CocoaHostVcsResponse,
   CocoaHostTerminalResponse,
+  CocoaHostUsageResponse,
   CocoaHostControlErrorResponse,
 ]);
 export type CocoaHostControlResponse = typeof CocoaHostControlResponse.Type;

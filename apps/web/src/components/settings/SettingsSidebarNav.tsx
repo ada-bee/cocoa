@@ -11,7 +11,6 @@ import {
   ArchiveIcon,
   ArrowLeftIcon,
   BotIcon,
-  FlaskConicalIcon,
   GitBranchIcon,
   KeyboardIcon,
   MonitorSmartphoneIcon,
@@ -51,7 +50,6 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/providers": BotIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/clients": MonitorSmartphoneIcon,
-  "/settings/beta": FlaskConicalIcon,
   "/settings/archived": ArchiveIcon,
 };
 
