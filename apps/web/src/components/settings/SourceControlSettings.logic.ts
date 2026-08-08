@@ -1,41 +1,56 @@
 import type {
-  ProviderHostId,
   ServerSettings,
   ServerSettingsPatch,
   SourceControlHostingProviderKind,
-  SourceControlProviderKind,
 } from "@t3tools/contracts";
+import {
+  buildUpdateCocoaHostSettingsPatch,
+  deriveCocoaHostConnections,
+  type CocoaHostConnection,
+} from "./HostConnectionsSettings.logic";
 
-export type HostingProviderKind = Exclude<SourceControlProviderKind, "unknown">;
-
-/** Build a whole-map patch without affecting defaults for other hosting services. */
-export function buildSourceControlHostingHostDefaultPatch(
-  settings: Pick<ServerSettings, "sourceControlHostingHostDefaults">,
-  kind: HostingProviderKind,
-  hostId: ProviderHostId | null,
+/**
+ * Store one hosting integration as either disabled or bound to a concrete,
+ * canonical provider host. Selecting a legacy endpoint migrates it in the
+ * same settings update so the gateway never sees a synthetic `legacy_*` id.
+ */
+export function buildSourceControlHostingProviderPatch(
+  settings: ServerSettings,
+  kind: SourceControlHostingProviderKind,
+  connection: CocoaHostConnection | null,
 ): ServerSettingsPatch {
   const sourceControlHostingHostDefaults = {
     ...settings.sourceControlHostingHostDefaults,
   };
-  if (hostId === null) {
+  const sourceControlDisabledHostingProviders =
+    connection === null
+      ? settings.sourceControlDisabledHostingProviders.includes(kind)
+        ? settings.sourceControlDisabledHostingProviders
+        : [...settings.sourceControlDisabledHostingProviders, kind]
+      : settings.sourceControlDisabledHostingProviders.filter((candidate) => candidate !== kind);
+
+  if (connection === null) {
     delete sourceControlHostingHostDefaults[kind];
-  } else {
-    sourceControlHostingHostDefaults[kind] = hostId;
+    return { sourceControlDisabledHostingProviders, sourceControlHostingHostDefaults };
   }
-  return { sourceControlHostingHostDefaults };
-}
 
-/** Enable or disable one centralized hosting integration without changing its host selection. */
-export function buildSourceControlHostingEnabledPatch(
-  settings: Pick<ServerSettings, "sourceControlDisabledHostingProviders">,
-  kind: SourceControlHostingProviderKind,
-  enabled: boolean,
-): ServerSettingsPatch {
-  const sourceControlDisabledHostingProviders = enabled
-    ? settings.sourceControlDisabledHostingProviders.filter((candidate) => candidate !== kind)
-    : settings.sourceControlDisabledHostingProviders.includes(kind)
-      ? settings.sourceControlDisabledHostingProviders
-      : [...settings.sourceControlDisabledHostingProviders, kind];
+  if (!connection.legacy) {
+    sourceControlHostingHostDefaults[kind] = connection.hostId;
+    return { sourceControlDisabledHostingProviders, sourceControlHostingHostDefaults };
+  }
 
-  return { sourceControlDisabledHostingProviders };
+  const migration = buildUpdateCocoaHostSettingsPatch(settings, connection, connection.host);
+  const providerHosts = migration.providerHosts ?? settings.providerHosts;
+  const providerInstances = migration.providerInstances ?? settings.providerInstances;
+  const canonical = deriveCocoaHostConnections({ providerHosts, providerInstances }).find(
+    (candidate) => !candidate.legacy && candidate.transport.url === connection.transport.url,
+  );
+  if (!canonical) throw new Error("Could not migrate the selected provider host.");
+
+  sourceControlHostingHostDefaults[kind] = canonical.hostId;
+  return {
+    ...migration,
+    sourceControlDisabledHostingProviders,
+    sourceControlHostingHostDefaults,
+  };
 }

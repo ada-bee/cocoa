@@ -235,11 +235,7 @@ export function HostConnectionsSection() {
     );
   };
 
-  const sourceControlWriterControl = (
-    instanceId: ProviderInstanceId,
-    providerName: string,
-    hostName: string,
-  ) => {
+  const sourceControlWriterControl = (instanceId: ProviderInstanceId, providerName: string) => {
     const storedSelection = readSourceControlWriterModelSelection(settings, instanceId);
     const selection = resolveAppModelSelectionStateForInstance(
       instanceId,
@@ -254,9 +250,9 @@ export function HostConnectionsSection() {
         className="flex flex-col gap-3 rounded-lg border border-border/50 bg-background/40 p-3 sm:flex-row sm:items-center sm:justify-between"
       >
         <div className="min-w-0">
-          <p className="text-xs font-medium text-foreground">{providerName} writer model</p>
+          <p className="text-xs font-medium text-foreground">Override message model</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Generate commit messages and change request text for {hostName} with this provider.
+            Select model used for commit messages and change requests text generation.
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -559,11 +555,7 @@ export function HostConnectionsSection() {
                                 ? (PROVIDER_DISPLAY_NAMES[writerProvider.driver] ??
                                   String(writerProvider.driver))
                                 : String(writerInstanceId));
-                            return sourceControlWriterControl(
-                              writerInstanceId,
-                              writerProviderName,
-                              hostName,
-                            );
+                            return sourceControlWriterControl(writerInstanceId, writerProviderName);
                           },
                         )}
                       </div>

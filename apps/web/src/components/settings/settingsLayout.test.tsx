@@ -12,6 +12,13 @@ afterEach(() => {
 });
 
 describe("settings search targets", () => {
+  it("omits the description element for title-only setting rows", () => {
+    const markup = renderToStaticMarkup(<SettingsRow title="GitHub" />);
+
+    expect(markup).toContain("GitHub");
+    expect(markup).not.toContain("<p");
+  });
+
   it("does not persist destination styling in the rendered row", () => {
     const markup = renderToStaticMarkup(
       <SettingsSearchTargetProvider targetId="word-wrap">
