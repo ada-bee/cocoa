@@ -316,6 +316,11 @@ describe("environment grouping", () => {
     expect(physicalToLogicalKey.get(derivePhysicalProjectKey(staleWithoutRepositoryIdentity))).toBe(
       repositoryIdentity.canonicalKey,
     );
+    // Deriving from the stale project alone misses the identity its sibling
+    // carries, so consumers must go through the map to match the sidebar.
+    expect(
+      deriveLogicalProjectKeyFromSettings(staleWithoutRepositoryIdentity, defaultGroupingSettings),
+    ).not.toBe(repositoryIdentity.canonicalKey);
   });
 
   it("builds one picker entry per physical project and targets the preferred member first", () => {

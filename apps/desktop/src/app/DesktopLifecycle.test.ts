@@ -77,6 +77,7 @@ describe("DesktopLifecycle", () => {
         activate: Effect.void,
         flushMainWindowBounds: Effect.void,
         dispatchMenuAction: () => Effect.void,
+        zoomMain: () => Effect.void,
         syncAppearance: Effect.void,
       });
 
