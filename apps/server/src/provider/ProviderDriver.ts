@@ -24,6 +24,7 @@
 import type {
   ProviderDriverKind,
   ProviderHostConfig,
+  ProviderHostId,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
 } from "@t3tools/contracts";
@@ -37,6 +38,7 @@ import type { ProviderAdapterError, ProviderDriverError } from "./Errors.ts";
 import type { ProviderTerminalAdapter } from "./ProviderTerminalAdapter.ts";
 import type { ProviderExecutionAdapter } from "./ProviderExecutionAdapter.ts";
 import type { ProviderVcsAdapter } from "./ProviderVcsAdapter.ts";
+import type { ProviderUsageAdapter } from "./ProviderUsageAdapter.ts";
 import type { ProviderWorkspaceAdapter } from "./ProviderWorkspaceAdapter.ts";
 import type { ProviderConversationCatalog } from "./ProviderConversationCatalog.ts";
 import type { ProviderAdapterShape } from "./Services/ProviderAdapter.ts";
@@ -100,6 +102,8 @@ export interface ProviderInstance {
   readonly execution?: ProviderExecutionAdapter | undefined;
   /** Optional provider-host read-only VCS access, permanently scoped to this instance. */
   readonly vcs?: ProviderVcsAdapter | undefined;
+  /** Optional provider-host transcript usage aggregation. */
+  readonly usage?: ProviderUsageAdapter | undefined;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
 }
 
@@ -156,6 +160,8 @@ export interface ProviderDriverCreateInput<Config> {
   readonly instanceId: ProviderInstanceId;
   /** Resolved host config when the instance references a first-class host. */
   readonly host?: ProviderHostConfig | undefined;
+  /** Stable settings identity for the resolved first-class provider host. */
+  readonly hostId?: ProviderHostId | undefined;
   readonly displayName: string | undefined;
   readonly accentColor?: string | undefined;
   readonly environment: ProviderInstanceEnvironment;

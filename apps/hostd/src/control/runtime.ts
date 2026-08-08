@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   COCOA_HOST_CONTROL_MAX_DIFF_BYTES,
   COCOA_HOST_CONTROL_MAX_TERMINAL_OUTPUT_BYTES,
+  COCOA_HOST_CONTROL_MAX_USAGE_RESPONSE_BYTES,
   COCOA_HOST_CONTROL_MAX_VCS_PATHS,
   COCOA_HOST_CONTROL_MAX_VCS_REFS,
   COCOA_HOST_CONTROL_MAX_WORKSPACE_ENTRIES,
@@ -35,6 +36,7 @@ import {
   HOST_CONTROL_SAFE_WIRE_PATCH_BYTES,
   type HostTerminalControlManager,
 } from "./operations/index.ts";
+import { makeHostUsageReader, type HostUsageReader } from "./operations/usage.ts";
 
 type TerminalEvent = Extract<
   CocoaHostControlEvent,
@@ -62,8 +64,10 @@ export interface MakeHostControlRuntimeOptions {
   readonly generationId?: CocoaHostControlGenerationId;
   readonly platform?: NodeJS.Platform;
   readonly homePath?: string;
+  readonly installationId?: string;
   readonly gitExecutable?: string;
   readonly gitAvailable?: boolean;
+  readonly usageReader?: HostUsageReader;
 }
 
 interface RuntimeServices {
@@ -154,6 +158,11 @@ const hostCapabilities = (
         },
       ]
     : []),
+  {
+    kind: "usage" as const,
+    version: COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+    operations: ["read"] as const,
+  },
 ];
 
 const isGitAvailable = (executable: string): boolean => {
@@ -233,6 +242,12 @@ export const makeHostControlRuntime = (
     openWorkspace,
     runVcs: services.vcs.run,
   });
+  const usage =
+    options.usageReader ??
+    makeHostUsageReader({
+      homePath: options.homePath ?? NodeOS.homedir(),
+      ...(options.installationId === undefined ? {} : { installationId: options.installationId }),
+    });
   const terminal: HostTerminalControlManager | undefined =
     services.pty === undefined
       ? undefined
@@ -288,6 +303,51 @@ export const makeHostControlRuntime = (
         return terminal === undefined
           ? { response: unsupportedTerminal(request), replayEvents: [] }
           : Effect.runPromise(terminal.handle(request));
+      case "usage.read":
+        try {
+          const summary = await usage.readSummary(request.input);
+          if (
+            Buffer.byteLength(JSON.stringify(summary), "utf8") >
+            COCOA_HOST_CONTROL_MAX_USAGE_RESPONSE_BYTES
+          ) {
+            return {
+              response: {
+                protocolVersion: request.protocolVersion,
+                requestId: request.requestId,
+                operation: request.operation,
+                error: {
+                  code: "limitExceeded",
+                  message: "Provider usage summary exceeded the response limit.",
+                  retryable: false,
+                },
+              },
+              replayEvents: [],
+            };
+          }
+          return {
+            response: {
+              protocolVersion: request.protocolVersion,
+              requestId: request.requestId,
+              operation: request.operation,
+              summary,
+            },
+            replayEvents: [],
+          };
+        } catch {
+          return {
+            response: {
+              protocolVersion: request.protocolVersion,
+              requestId: request.requestId,
+              operation: request.operation,
+              error: {
+                code: "operationFailed",
+                message: "Provider transcript usage scan failed.",
+                retryable: true,
+              },
+            },
+            replayEvents: [],
+          };
+        }
     }
   };
 

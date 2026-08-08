@@ -7,6 +7,7 @@ import { makeWorkspaceControlHandler } from "./workspace.ts";
 
 export * from "./state.ts";
 export * from "./terminal.ts";
+export * from "./usage.ts";
 export * from "./vcs.ts";
 export * from "./workspace.ts";
 

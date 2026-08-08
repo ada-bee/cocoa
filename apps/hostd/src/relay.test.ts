@@ -9,6 +9,7 @@ import * as NodePath from "node:path";
 
 import {
   COCOA_HOST_CONTROL_PROTOCOL,
+  COCOA_HOST_CONTROL_LEGACY_PROTOCOL_VERSION,
   COCOA_HOST_CONTROL_PROTOCOL_VERSION,
   CocoaHostControlGenerationId,
   CocoaHostControlErrorResponse,
@@ -245,6 +246,7 @@ describe("cocoa-hostd relay", () => {
       "vcs",
       "reviewDiff",
       "terminal",
+      "usage",
       "providerRelay",
     ]);
     expect(response.capabilities.find(({ kind }) => kind === "terminal")).toMatchObject({
@@ -258,6 +260,51 @@ describe("cocoa-hostd relay", () => {
     expect(response.providerRelays[0]?.transport).toBe("websocket-json-rpc");
     expect(response.providerRelays[0]?.status).toBe("available");
     expect(response.providerRelays[0]?.generationId).toBeNull();
+  });
+
+  test("downgrades for a v1 gateway without advertising v2-only usage", async () => {
+    const socketPath = await startUnixEchoServer();
+    const workspacePath = NodePath.dirname(socketPath);
+    const hostd = startHostd({
+      bindHost: "127.0.0.1",
+      port: 0,
+      socketPath,
+      key: "expected-key",
+      logger: { info: () => undefined, error: () => undefined },
+    });
+    trackHostd(hostd);
+
+    const client = await connectAuthorizedWebSocket(hostd, "/control/v1");
+    const handshakeReceived = receiveJson(client);
+    client.send(
+      JSON.stringify({
+        protocol: COCOA_HOST_CONTROL_PROTOCOL,
+        requestId: "handshake-v1",
+        supportedVersions: [COCOA_HOST_CONTROL_LEGACY_PROTOCOL_VERSION],
+        client: { name: "old-cocoa-gateway", version: "test" },
+      }),
+    );
+
+    const handshake = CocoaHostControlHandshakeResponse.make(
+      (await handshakeReceived) as CocoaHostControlHandshakeResponseType,
+    );
+    expect(handshake.selectedVersion).toBe(COCOA_HOST_CONTROL_LEGACY_PROTOCOL_VERSION);
+    expect(handshake.capabilities.map(({ kind }) => kind)).not.toContain("usage");
+    expect(handshake.capabilities.every(({ version }) => version === 1)).toBeTrue();
+
+    const responseReceived = receiveJson(client);
+    client.send(
+      JSON.stringify({
+        protocolVersion: COCOA_HOST_CONTROL_LEGACY_PROTOCOL_VERSION,
+        requestId: "workspace-open-v1",
+        operation: "workspace.open",
+        path: workspacePath,
+      }),
+    );
+    const response = CocoaHostWorkspaceResponse.make(
+      (await responseReceived) as CocoaHostWorkspaceResponseType,
+    );
+    expect(response.protocolVersion).toBe(COCOA_HOST_CONTROL_LEGACY_PROTOCOL_VERSION);
   });
 
   test("dispatches typed workspace operations after the control handshake", async () => {
@@ -464,7 +511,7 @@ describe("cocoa-hostd relay", () => {
       JSON.stringify({
         protocol: COCOA_HOST_CONTROL_PROTOCOL,
         requestId: "handshake-unsupported",
-        supportedVersions: [2],
+        supportedVersions: [3],
         client: { name: "cocoa-gateway", version: "test" },
       }),
     );

@@ -1,4 +1,4 @@
-import type { ProviderHostConfig, ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderHostConfig, ProviderHostId, ProviderInstanceId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 
@@ -8,7 +8,7 @@ import { makeHostEndpointControlSupervisor } from "./HostEndpointControlSupervis
 
 export type ProviderHostCapabilities = Pick<
   ProviderInstance,
-  "workspace" | "terminal" | "execution" | "vcs"
+  "workspace" | "terminal" | "execution" | "vcs" | "usage"
 >;
 
 /**
@@ -20,6 +20,7 @@ export type ProviderHostCapabilities = Pick<
 export const makeProviderHostCapabilities = Effect.fn("makeProviderHostCapabilities")(
   function* (input: {
     readonly instanceId: ProviderInstanceId;
+    readonly hostId: ProviderHostId;
     readonly host: ProviderHostConfig;
   }): Effect.fn.Return<ProviderHostCapabilities, never, Scope.Scope> {
     const supervisor = yield* makeHostEndpointControlSupervisor({
@@ -29,6 +30,7 @@ export const makeProviderHostCapabilities = Effect.fn("makeProviderHostCapabilit
     yield* supervisor.start;
     return makeHostEndpointCapabilities({
       providerInstanceId: input.instanceId,
+      providerHostId: input.hostId,
       borrowClient: supervisor.borrowClient,
     });
   },

@@ -1,6 +1,7 @@
 import {
   COCOA_HOST_CONTROL_PROTOCOL,
   COCOA_HOST_CONTROL_PROTOCOL_VERSION,
+  COCOA_HOST_CONTROL_SUPPORTED_VERSIONS,
   CocoaHostControlErrorResponse,
   CocoaHostControlEvent,
   CocoaHostControlHandshakeRequest,
@@ -14,6 +15,7 @@ import * as Schema from "effect/Schema";
 
 export const HOST_ENDPOINT_CONTROL_PROTOCOL = COCOA_HOST_CONTROL_PROTOCOL;
 export const HOST_ENDPOINT_CONTROL_VERSION = COCOA_HOST_CONTROL_PROTOCOL_VERSION;
+export const HOST_ENDPOINT_CONTROL_SUPPORTED_VERSIONS = COCOA_HOST_CONTROL_SUPPORTED_VERSIONS;
 
 export const HostEndpointCorrelatedFrame = Schema.Struct({
   requestId: CocoaHostControlRequestId,

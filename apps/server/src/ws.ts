@@ -115,6 +115,7 @@ import {
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironmentService.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as UsageService from "./usage/UsageService.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
@@ -386,6 +387,7 @@ const makeWsRpcLayer = (
       const processDiagnostics = yield* WsRuntimeServices.ProcessDiagnostics;
       const processResourceMonitor = yield* WsRuntimeServices.ProcessResourceMonitor;
       const resourceTelemetry = yield* WsRuntimeServices.ResourceTelemetry;
+      const usage = yield* UsageService.UsageService;
       const traceDiagnostics = yield* WsRuntimeServices.TraceDiagnostics;
       const relayClientOption = yield* Effect.serviceOption(WsRuntimeServices.RelayClient);
       if (config.runtimeProfile === "cocoa-gateway" && Option.isSome(relayClientOption)) {
@@ -1766,6 +1768,10 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "server",
             },
           ),
+        [WS_METHODS.serverGetUsageSummary]: (input) =>
+          observeRpcEffect(WS_METHODS.serverGetUsageSummary, usage.readSummary(input), {
+            "rpc.aggregate": "server",
+          }),
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) =>
           observeRpcEffect(WS_METHODS.serverRetryResourceTelemetry, resourceTelemetry.retry, {
             "rpc.aggregate": "server",

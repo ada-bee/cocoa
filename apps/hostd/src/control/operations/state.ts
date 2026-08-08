@@ -3,6 +3,7 @@ import {
   type CocoaHostControlErrorResponse,
   type CocoaHostControlGenerationId,
   type CocoaHostControlOperation,
+  type CocoaHostControlProtocolVersion,
   type CocoaHostControlRequestId,
 } from "@t3tools/contracts";
 import type { WorkspaceRuntime, WorkspaceRuntimeError } from "@t3tools/host-runtime/workspace";
@@ -74,7 +75,7 @@ type HostControlErrorCode = CocoaHostControlErrorResponse["error"]["code"];
 
 export const controlError = (
   request: {
-    readonly protocolVersion: 1;
+    readonly protocolVersion: CocoaHostControlProtocolVersion;
     readonly requestId: CocoaHostControlRequestId;
     readonly operation: CocoaHostControlOperation;
   },

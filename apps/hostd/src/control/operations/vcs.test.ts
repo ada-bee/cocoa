@@ -300,6 +300,7 @@ describe("hostd VCS control operations", () => {
         truncated: false,
       });
       if ("error" in diff) throw new Error(diff.error.message);
+      if (diff.operation !== "vcs.diff") throw new Error("Expected a VCS diff response");
       expect(diff.patch).toContain("tracked.txt");
       expect(diff.patch).toContain("new-file.txt");
       expect(calls.at(-1)?.args).toEqual([

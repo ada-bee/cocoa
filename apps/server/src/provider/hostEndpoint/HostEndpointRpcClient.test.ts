@@ -21,7 +21,7 @@ import {
 import { decodeHostEndpointJson, encodeHostEndpointJson } from "./HostEndpointRpcWire.ts";
 
 const WorkspaceOpenResponse = Schema.Struct({
-  protocolVersion: Schema.Literal(1),
+  protocolVersion: Schema.Literals([1, 2]),
   requestId: Schema.String,
   operation: Schema.Literal("workspace.open"),
   generationId: Schema.String,
@@ -85,13 +85,14 @@ const takeJson = Effect.fn("HostEndpointRpcClientTest.takeJson")(function* (harn
 const completeHandshake = Effect.fn("HostEndpointRpcClientTest.completeHandshake")(function* (
   harness: Harness,
   generationId = "host-generation-1",
+  selectedVersion: 1 | 2 = 1,
 ) {
   const request = asRecord(yield* takeJson(harness));
   const requestId = String(request.requestId);
   yield* offerJson(harness, {
     protocol: "cocoa-host-control",
     requestId,
-    selectedVersion: 1,
+    selectedVersion,
     host: {
       generationId,
       implementation: "cocoa-hostd",
@@ -107,9 +108,17 @@ const completeHandshake = Effect.fn("HostEndpointRpcClientTest.completeHandshake
 
 const makeClient = Effect.fn("HostEndpointRpcClientTest.makeClient")(function* (
   harness: Harness,
-  options: { readonly maxPendingRequests?: number; readonly requestTimeout?: number } = {},
+  options: {
+    readonly maxPendingRequests?: number;
+    readonly requestTimeout?: number;
+    readonly selectedVersion?: 1 | 2;
+  } = {},
 ) {
-  const handshakeFiber = yield* completeHandshake(harness).pipe(Effect.forkScoped);
+  const handshakeFiber = yield* completeHandshake(
+    harness,
+    "host-generation-1",
+    options.selectedVersion ?? 1,
+  ).pipe(Effect.forkScoped);
   const client = yield* makeHostEndpointRpcClient<TestContract>({
     url: "ws://host.example/control/v1",
     key: "persisted_random_key",
@@ -140,7 +149,7 @@ describe("HostEndpointRpcClient", () => {
         assert.deepEqual(handshake, {
           protocol: "cocoa-host-control",
           requestId: "gateway:1",
-          supportedVersions: [1],
+          supportedVersions: [2, 1],
           client: { name: "cocoa_gateway", version: "0.0.32" },
         });
         assert.equal(client.generationId, "host-generation-1");
@@ -178,6 +187,33 @@ describe("HostEndpointRpcClient", () => {
         const response = yield* Fiber.join(responseFiber);
         assert.equal(response.rootId, "root-1");
         assert.equal(response.generationId, "host-generation-1");
+      }),
+    ),
+  );
+
+  it.effect("uses the negotiated v2 protocol version for operation frames", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const { client, handshake } = yield* makeClient(harness, { selectedVersion: 2 });
+
+        assert.deepEqual(handshake.supportedVersions, [2, 1]);
+        const responseFiber = yield* client
+          .request("workspace.open", { path: "/srv/repo" }, decodeWorkspaceOpenResponse)
+          .pipe(Effect.forkChild);
+        const request = asRecord(yield* takeJson(harness));
+        assert.equal(request.protocolVersion, 2);
+
+        yield* offerJson(harness, {
+          protocolVersion: 2,
+          requestId: request.requestId,
+          operation: "workspace.open",
+          generationId: "host-generation-1",
+          rootId: "root-v2",
+          canonicalRoot: "/srv/repo",
+          metadata: { kind: "directory" },
+        });
+        assert.equal((yield* Fiber.join(responseFiber)).rootId, "root-v2");
       }),
     ),
   );

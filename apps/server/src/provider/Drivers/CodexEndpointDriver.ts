@@ -191,7 +191,7 @@ export const makeCodexEndpointDriver = (
     metadata: { displayName: "Codex", supportsMultipleInstances: true },
     configSchema: CodexSettings,
     defaultConfig: () => decodeCodexSettings({}),
-    create: ({ instanceId, host, displayName, accentColor, enabled, config }) =>
+    create: ({ instanceId, host, hostId, displayName, accentColor, enabled, config }) =>
       Effect.gen(function* () {
         const endpointTransport = host?.transport ?? config.endpointTransport;
         if (endpointTransport === undefined) {
@@ -313,7 +313,9 @@ export const makeCodexEndpointDriver = (
         const hostCapabilities =
           host === undefined
             ? undefined
-            : yield* dependencies.makeHostCapabilities({ instanceId, host });
+            : hostId === undefined
+              ? undefined
+              : yield* dependencies.makeHostCapabilities({ instanceId, hostId, host });
         const terminal =
           terminalSandboxMode === undefined
             ? undefined
@@ -606,6 +608,7 @@ export const makeCodexEndpointDriver = (
               ? vcs
               : undefined;
           },
+          usage: hostCapabilities?.usage,
           textGeneration,
         } satisfies ProviderInstance;
       }),

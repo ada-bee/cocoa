@@ -6,6 +6,7 @@ import {
   COCOA_HOST_CONTROL_MAX_DIFF_BYTES,
   COCOA_HOST_CONTROL_MAX_TERMINAL_WRITE_BYTES,
   CocoaHostControlEvent,
+  CocoaHostControlRequest,
   CocoaHostControlHandshakeFrame,
   CocoaHostControlHandshakeRequest,
   CocoaHostControlHandshakeResponse,
@@ -25,6 +26,7 @@ const decodeVcsRequest = Schema.decodeUnknownSync(CocoaHostVcsRequest);
 const decodeVcsResponse = Schema.decodeUnknownSync(CocoaHostVcsResponse);
 const decodeTerminalRequest = Schema.decodeUnknownSync(CocoaHostTerminalRequest);
 const decodeEvent = Schema.decodeUnknownSync(CocoaHostControlEvent);
+const decodeControlRequest = Schema.decodeUnknownSync(CocoaHostControlRequest);
 
 const REQUEST = { protocolVersion: 1, requestId: "request-1" } as const;
 const HANDLE = { generationId: "generation-1", repositoryId: "repository-1" } as const;
@@ -163,6 +165,33 @@ describe("cocoa-hostd capability handshake", () => {
             generationId: null,
           },
         ],
+      }),
+    ).toThrow();
+  });
+});
+
+describe("cocoa-hostd v2 usage control", () => {
+  it("accepts usage reads only on protocol v2", () => {
+    const input = {
+      sinceDay: "2026-08-01",
+      untilDay: "2026-08-08",
+      timeZone: "Europe/Prague",
+    };
+
+    expect(
+      decodeControlRequest({
+        protocolVersion: 2,
+        requestId: "usage-1",
+        operation: "usage.read",
+        input,
+      }),
+    ).toMatchObject({ protocolVersion: 2, operation: "usage.read" });
+    expect(() =>
+      decodeControlRequest({
+        protocolVersion: 1,
+        requestId: "usage-1",
+        operation: "usage.read",
+        input,
       }),
     ).toThrow();
   });
