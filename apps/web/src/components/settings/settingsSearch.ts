@@ -23,9 +23,9 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/general": "General",
   "/settings/appearance": "Appearance",
   "/settings/keybindings": "Keybindings",
+  "/settings/clients": "Clients",
   "/settings/providers": "Providers",
   "/settings/source-control": "Source Control",
-  "/settings/clients": "Clients",
   "/settings/beta": "Beta",
   "/settings/archived": "Archive",
 };

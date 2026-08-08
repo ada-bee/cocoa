@@ -3,6 +3,7 @@ import { CloudIcon, MonitorIcon } from "lucide-react";
 import { memo, useMemo } from "react";
 
 import type { EnvironmentOption } from "./BranchToolbar.logic";
+import { ProviderHostIconGlyph } from "./ProviderHostIcon";
 import {
   Select,
   SelectGroup,
@@ -21,6 +22,25 @@ interface BranchToolbarEnvironmentSelectorProps {
   // Absent when there is only one environment to show: the indicator still
   // renders (as a static label) so remote projects are always identifiable.
   onEnvironmentChange?: (environmentId: EnvironmentId, projectId?: ProjectId) => void;
+}
+
+export function BranchToolbarEnvironmentIcon(props: {
+  environment: EnvironmentOption | null;
+  className: string;
+}) {
+  if (props.environment?.hostIcon) {
+    return (
+      <ProviderHostIconGlyph
+        icon={props.environment.hostIcon}
+        className={props.className}
+        {...(props.environment.hostAccentColor
+          ? { style: { color: props.environment.hostAccentColor } }
+          : {})}
+      />
+    );
+  }
+  const Icon = props.environment?.isPrimary ? MonitorIcon : CloudIcon;
+  return <Icon className={props.className} aria-hidden />;
 }
 
 export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvironmentSelector({
@@ -57,11 +77,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
   if (envLocked || onEnvironmentChange === undefined) {
     return (
       <span className="inline-flex min-w-0 max-w-full items-center gap-1 border border-transparent px-[calc(--spacing(3)-1px)] text-sm font-medium text-muted-foreground/70 sm:text-xs">
-        {activeEnvironment?.isPrimary ? (
-          <MonitorIcon className="size-3 shrink-0" />
-        ) : (
-          <CloudIcon className="size-3 shrink-0" />
-        )}
+        <BranchToolbarEnvironmentIcon environment={activeEnvironment} className="size-3 shrink-0" />
         <span
           data-composer-label
           className="min-w-0 max-w-[240px] truncate transition-[max-width,opacity] duration-300 ease-out group-data-[compact]/composer-context:max-w-0 group-data-[compact]/composer-context:opacity-0"
@@ -90,11 +106,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
         className="min-w-0 max-w-full font-medium"
         aria-label="Run on"
       >
-        {activeEnvironment?.isPrimary ? (
-          <MonitorIcon className="size-3 shrink-0" />
-        ) : (
-          <CloudIcon className="size-3 shrink-0" />
-        )}
+        <BranchToolbarEnvironmentIcon environment={activeEnvironment} className="size-3 shrink-0" />
         <span
           data-composer-label
           className="min-w-0 max-w-[240px] truncate transition-[max-width,opacity] duration-300 ease-out group-data-[compact]/composer-context:max-w-0 group-data-[compact]/composer-context:opacity-0"
@@ -111,11 +123,7 @@ export const BranchToolbarEnvironmentSelector = memo(function BranchToolbarEnvir
               value={env.selectionId ?? env.environmentId}
             >
               <span className="inline-flex items-center gap-1.5">
-                {env.isPrimary ? (
-                  <MonitorIcon className="size-3" />
-                ) : (
-                  <CloudIcon className="size-3" />
-                )}
+                <BranchToolbarEnvironmentIcon environment={env} className="size-3" />
                 {env.label}
               </span>
             </SelectItem>

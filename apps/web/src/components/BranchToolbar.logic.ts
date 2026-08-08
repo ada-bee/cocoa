@@ -1,4 +1,4 @@
-import type { EnvironmentId, VcsRef, ProjectId } from "@t3tools/contracts";
+import type { EnvironmentId, VcsRef, ProjectId, ProviderHostIcon } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { toSortableTimestamp } from "../lib/threadSort";
 export {
@@ -13,6 +13,9 @@ export interface EnvironmentOption {
   selectionId?: string;
   label: string;
   isPrimary: boolean;
+  /** Provider-host appearance, absent for ordinary client environments. */
+  hostIcon?: ProviderHostIcon;
+  hostAccentColor?: string;
 }
 
 export const EnvMode = Schema.Literals(["local", "worktree"]);

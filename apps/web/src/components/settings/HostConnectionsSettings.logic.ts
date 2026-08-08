@@ -50,62 +50,6 @@ function readConfig(value: unknown): Readonly<Record<string, unknown>> {
     : {};
 }
 
-const HOST_ICON_MAX_BYTES = 64 * 1024;
-const SVG_XML_DECLARATION = /^<\?xml(?:\s+[^?]*)?\?>/iu;
-const SVG_COMMENT = /^<!--[\s\S]*?-->/u;
-const SVG_DOCTYPE =
-  /^<!DOCTYPE\s+svg(?:\s+(?:PUBLIC\s+(?:"[^"]*"|'[^']*')\s+(?:"[^"]*"|'[^']*')|SYSTEM\s+(?:"[^"]*"|'[^']*')))?\s*>/iu;
-
-function stripCocoaHostIconSvgPreamble(input: string): string {
-  let remaining = input;
-  for (;;) {
-    const preamble =
-      remaining.match(SVG_XML_DECLARATION) ??
-      remaining.match(SVG_COMMENT) ??
-      remaining.match(SVG_DOCTYPE);
-    if (!preamble) return remaining;
-    remaining = remaining.slice(preamble[0].length).trimStart();
-  }
-}
-
-export function readCocoaHostIconSvg(host: ProviderHostConfig): string | null {
-  const value = host.iconSvg;
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-/**
- * Keep SVG uploads inert and bounded. They are rendered through an `<img>`
- * data URL (never injected as markup); these checks additionally reject
- * executable content, external fetches, and embedded documents.
- */
-export function sanitizeCocoaHostIconSvg(input: string): string {
-  const boundedInput = input.trim();
-  if (new TextEncoder().encode(boundedInput).byteLength > HOST_ICON_MAX_BYTES) {
-    throw new Error("Host icons must be 64 KB or smaller.");
-  }
-  const svg = stripCocoaHostIconSvgPreamble(boundedInput);
-  if (!/^<svg(?:\s|>)/iu.test(svg) || !/<\/svg>$/iu.test(svg)) {
-    throw new Error("Choose a complete SVG file.");
-  }
-  if (
-    /<(?:script|foreignObject|iframe|object|embed|audio|video)\b/iu.test(svg) ||
-    /\son[a-z]+\s*=/iu.test(svg) ||
-    /\b(?:href|xlink:href)\s*=\s*["'](?!#)/iu.test(svg) ||
-    /(?:url\s*\(|@import)/iu.test(svg)
-  ) {
-    throw new Error("Host icons cannot contain scripts, embedded documents, or external links.");
-  }
-  return svg;
-}
-
-export function withCocoaHostIconSvg(
-  host: ProviderHostConfig,
-  svg: string | null,
-): ProviderHostConfig {
-  const { iconSvg: _iconSvg, ...rest } = host;
-  return svg === null ? rest : { ...rest, iconSvg: svg };
-}
-
 export function readSourceControlWriterModelSelection(
   settings: SourceControlWriterModelSettings,
   instanceId: ProviderInstanceId,
@@ -188,12 +132,12 @@ export function deriveCocoaHostConnections(
 }
 
 function hostnameSlug(url: string): string {
-  const slug = new URL(url).hostname
+  const normalized = new URL(url).hostname
     .toLocaleLowerCase()
     .replace(/[^a-z0-9]+/gu, "_")
     .replace(/^_+|_+$/gu, "");
-  const validPrefix = slug.length === 0 || /^[a-z]/u.test(slug) ? slug || "host" : `host_${slug}`;
-  return validPrefix.slice(0, 56);
+  const slug = normalized.length === 0 ? "host" : normalized;
+  return (/^[a-z]/u.test(slug) ? slug : `host_${slug}`).slice(0, 56);
 }
 
 function nextInstanceId(settings: Pick<ServerSettings, "providerInstances">, url: string) {
@@ -251,6 +195,7 @@ export function buildAddCocoaHostSettingsPatch(
     ...(previousHost?.displayName === undefined
       ? { displayName: hostname }
       : { displayName: previousHost.displayName }),
+    ...(previousHost?.icon === undefined ? {} : { icon: previousHost.icon }),
     ...(previousHost?.iconSvg === undefined ? {} : { iconSvg: previousHost.iconSvg }),
     ...(previousHost?.accentColor === undefined ? {} : { accentColor: previousHost.accentColor }),
     transport,
@@ -273,7 +218,6 @@ export function buildAddCocoaHostSettingsPatch(
         ...(existingInstance?.accentColor === undefined
           ? {}
           : { accentColor: existingInstance.accentColor }),
-        ...(existingInstance?.iconSvg === undefined ? {} : { iconSvg: existingInstance.iconSvg }),
         config: customModels.length === 0 ? {} : { customModels },
       },
     },

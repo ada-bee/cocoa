@@ -177,6 +177,7 @@ import {
   isProviderInstanceAllowedForProject,
   NO_PROVIDER_MODEL_SELECTION,
   resolveDefaultProviderModelSelection,
+  resolveProviderHostAppearance,
 } from "../providerInstances";
 import { useClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
 import { useNowMinute } from "../hooks/useNowMinute";
@@ -254,6 +255,7 @@ import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayo
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
+  type EnvironmentOption,
   resolveEffectiveEnvMode,
   resolveLocalCheckoutBranchMismatch,
   shouldShowComposerContextStrip,
@@ -1742,19 +1744,18 @@ function ChatViewContent(props: ChatViewProps) {
       (p) => deriveLogicalProjectKeyFromSettings(p, projectGroupingSettings) === logicalKey,
     );
     const seen = new Set<string>();
-    const envs: Array<{
-      environmentId: EnvironmentId;
-      projectId: ProjectId;
-      selectionId: string;
-      label: string;
-      isPrimary: boolean;
-    }> = [];
+    const envs: EnvironmentOption[] = [];
     for (const p of memberProjects) {
       const hostKey = `${p.environmentId}:${p.providerInstanceId}`;
       if (seen.has(hostKey)) continue;
       seen.add(hostKey);
+      const configuredInstance = settings.providerInstances?.[p.providerInstanceId];
+      const configuredHost = configuredInstance?.hostId
+        ? settings.providerHosts?.[configuredInstance.hostId]
+        : undefined;
       const configuredHostLabel =
-        settings.providerInstances?.[p.providerInstanceId]?.displayName?.trim();
+        configuredHost?.displayName?.trim() ?? configuredInstance?.displayName?.trim();
+      const hostAppearance = resolveProviderHostAppearance(settings, p.providerInstanceId);
       const isPrimary = configuredHostLabel ? false : p.environmentId === primaryEnvironmentId;
       const label =
         configuredHostLabel || environmentById.get(p.environmentId)?.label || p.environmentId;
@@ -1764,6 +1765,14 @@ function ChatViewContent(props: ChatViewProps) {
         selectionId: `${p.environmentId}:${p.id}`,
         label,
         isPrimary,
+        ...(hostAppearance
+          ? {
+              hostIcon: hostAppearance.icon,
+              ...(hostAppearance.accentColor
+                ? { hostAccentColor: hostAppearance.accentColor }
+                : {}),
+            }
+          : {}),
       });
     }
     // Sort: primary first, then alphabetical
@@ -1779,6 +1788,7 @@ function ChatViewContent(props: ChatViewProps) {
     primaryEnvironmentId,
     projectGroupingSettings,
     settings.providerInstances,
+    settings.providerHosts,
   ]);
   const hasMultipleEnvironments = logicalProjectEnvironments.length > 1;
   const activeEnvironmentOption =
