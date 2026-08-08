@@ -85,8 +85,9 @@ describe("source-control hosting host defaults", () => {
           config: {
             endpointTransport: {
               type: "cocoa-host" as const,
-              url: "wss://legacy.example.test/control",
+              url: "ws://192.168.20.61:4774/control",
               key: "legacy-host-key",
+              allowInsecureTransport: true as const,
             },
           },
         },
@@ -97,14 +98,14 @@ describe("source-control hosting host defaults", () => {
 
     const patch = buildSourceControlHostingProviderPatch(settings, "github", legacyHost);
 
-    expect(patch.providerHosts?.[ProviderHostId.make("legacy_example_test")]?.transport.url).toBe(
-      "wss://legacy.example.test/control",
+    expect(patch.providerHosts?.[ProviderHostId.make("host_192_168_20_61")]?.transport.url).toBe(
+      "ws://192.168.20.61:4774/control",
     );
     expect(patch.providerInstances?.[ProviderInstanceId.make("codex")]?.hostId).toBe(
-      "legacy_example_test",
+      "host_192_168_20_61",
     );
     expect(patch.sourceControlHostingHostDefaults).toEqual({
-      github: "legacy_example_test",
+      github: "host_192_168_20_61",
     });
     expect(patch.sourceControlDisabledHostingProviders).toEqual([]);
   });

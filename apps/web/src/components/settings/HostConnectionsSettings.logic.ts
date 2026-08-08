@@ -191,9 +191,9 @@ function hostnameSlug(url: string): string {
   const slug = new URL(url).hostname
     .toLocaleLowerCase()
     .replace(/[^a-z0-9]+/gu, "_")
-    .replace(/^_+|_+$/gu, "")
-    .slice(0, 56);
-  return slug || "host";
+    .replace(/^_+|_+$/gu, "");
+  const validPrefix = slug.length === 0 || /^[a-z]/u.test(slug) ? slug || "host" : `host_${slug}`;
+  return validPrefix.slice(0, 56);
 }
 
 function nextInstanceId(settings: Pick<ServerSettings, "providerInstances">, url: string) {
