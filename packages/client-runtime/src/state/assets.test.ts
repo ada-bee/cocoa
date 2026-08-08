@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
 import { Atom } from "effect/unstable/reactivity";
 
@@ -40,12 +40,14 @@ describe("createAssetEnvironmentAtoms", () => {
     >;
     const assets = createAssetEnvironmentAtoms(runtime);
     const environmentId = EnvironmentId.make("environment-1");
+    const projectId = ProjectId.make("project-1");
     const originalTarget = {
       environmentId,
       input: {
         resource: {
           _tag: "project-favicon" as const,
           cwd: "/repo/original",
+          projectId,
         },
       },
     };
@@ -57,6 +59,7 @@ describe("createAssetEnvironmentAtoms", () => {
           resource: {
             _tag: "project-favicon",
             cwd: "/repo/original",
+            projectId,
           },
         },
       }),
@@ -68,6 +71,18 @@ describe("createAssetEnvironmentAtoms", () => {
           resource: {
             _tag: "project-favicon",
             cwd: "/repo/next",
+          },
+        },
+      }),
+    ).not.toBe(assets.createUrl(originalTarget));
+    expect(
+      assets.createUrl({
+        environmentId,
+        input: {
+          resource: {
+            _tag: "project-favicon",
+            cwd: "/repo/original",
+            projectId: ProjectId.make("project-2"),
           },
         },
       }),

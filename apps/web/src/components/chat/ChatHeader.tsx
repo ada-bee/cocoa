@@ -239,6 +239,7 @@ export const ChatHeader = memo(function ChatHeader({
               >
                 <ProjectFavicon
                   environmentId={activeThreadEnvironmentId}
+                  {...(activeProjectId === null ? {} : { projectId: activeProjectId })}
                   cwd={activeProjectCwd ?? ""}
                   className="size-3.5"
                 />

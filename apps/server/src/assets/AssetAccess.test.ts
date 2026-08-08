@@ -10,11 +10,13 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
-import { base64UrlEncode, signPayload } from "../auth/utils.ts";
+import { base64UrlDecodeUtf8, base64UrlEncode, signPayload } from "../auth/utils.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
+import * as ProviderProjectFaviconResolver from "../project/ProviderProjectFaviconResolver.ts";
 import * as ProjectWorkspace from "../project/ProjectWorkspace.ts";
 import type { ProjectWorkspaceShape } from "../project/ProjectWorkspace.ts";
+import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { ASSET_ROUTE_PREFIX, issueAssetUrl, resolveAsset } from "./AssetAccess.ts";
 
 const configLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
@@ -42,6 +44,9 @@ const parseAssetUrl = (relativeUrl: string) => {
     fileName: suffix.slice(separatorIndex + 1),
   };
 };
+
+const decodeTokenClaims = (token: string): Record<string, unknown> =>
+  JSON.parse(base64UrlDecodeUtf8(token.slice(0, token.indexOf(".")))) as Record<string, unknown>;
 
 const makeLegacyToken = Effect.fn("AssetAccessTest.makeLegacyToken")(function* (
   claims: Record<string, unknown>,
@@ -395,6 +400,148 @@ describe("AssetAccess", () => {
       expect(fileSystemCalls).toBe(0);
       expect(pathCalls).toBe(0);
       expect(resolverCalls).toBe(0);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("issues and serves an upstream v1 local project favicon claim", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "local-favicon-" });
+      const faviconPath = path.join(cwd, "favicon.svg");
+      const bytes = new TextEncoder().encode("<svg>local</svg>");
+      yield* fileSystem.writeFile(faviconPath, bytes);
+      const resolver = ProjectFaviconResolver.ProjectFaviconResolver.of({
+        resolvePath: () => Effect.succeed(faviconPath),
+      });
+
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "project-favicon", cwd },
+      }).pipe(
+        Effect.provideService(ProjectFaviconResolver.ProjectFaviconResolver, resolver),
+        Effect.provide(WorkspacePaths.layer),
+      );
+      const { token, fileName } = parseAssetUrl(result.relativeUrl);
+      expect(decodeTokenClaims(token)).toMatchObject({
+        version: 1,
+        kind: "project-favicon",
+        workspaceRoot: cwd,
+        relativePath: "favicon.svg",
+      });
+      expect(
+        yield* resolveAsset(token, fileName).pipe(Effect.provide(WorkspacePaths.layer)),
+      ).toEqual({ kind: "file", path: faviconPath });
+    }).pipe(Effect.provide(testLayer), Effect.scoped),
+  );
+
+  it.effect(
+    "routes v2 project favicon claims by project id and serves bounded provider bytes",
+    () =>
+      Effect.gen(function* () {
+        const firstProjectId = ProjectId.make("project-one");
+        const secondProjectId = ProjectId.make("project-two");
+        const requested: Array<{
+          readonly projectId: ProjectId;
+          readonly relativePath: string;
+          readonly maxBytes: number;
+        }> = [];
+        const resolver = ProviderProjectFaviconResolver.ProviderProjectFaviconResolver.of({
+          resolvePath: (projectId) =>
+            Effect.succeed(projectId === firstProjectId ? "icons/one.svg" : "icons/two.svg"),
+        });
+        const workspace = makeProjectWorkspace({
+          getMetadata: () => Effect.die("favicon discovery owns metadata inspection"),
+          readFile: (input) => {
+            requested.push({
+              projectId: input.target.projectId,
+              relativePath: input.relativePath,
+              maxBytes: input.maxBytes,
+            });
+            const bytes = new TextEncoder().encode(
+              input.target.projectId === firstProjectId ? "first" : "second",
+            );
+            return Effect.succeed({ bytes, byteLength: bytes.byteLength, truncated: false });
+          },
+        });
+        const provideProviderServices = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(
+            Effect.provideService(
+              ProviderProjectFaviconResolver.ProviderProjectFaviconResolver,
+              resolver,
+            ),
+            Effect.provideService(ProjectWorkspace.ProjectWorkspace, workspace),
+          );
+
+        const first = yield* provideProviderServices(
+          issueAssetUrl({
+            resource: {
+              _tag: "project-favicon",
+              cwd: "/same/provider/workspace",
+              projectId: firstProjectId,
+            },
+          }),
+        );
+        const second = yield* provideProviderServices(
+          issueAssetUrl({
+            resource: {
+              _tag: "project-favicon",
+              cwd: "/same/provider/workspace",
+              projectId: secondProjectId,
+            },
+          }),
+        );
+        expect(first.relativeUrl).not.toBe(second.relativeUrl);
+
+        const parsed = parseAssetUrl(first.relativeUrl);
+        expect(decodeTokenClaims(parsed.token)).toEqual({
+          version: 2,
+          kind: "project-favicon-provider",
+          projectId: firstProjectId,
+          relativePath: "icons/one.svg",
+          expiresAt: first.expiresAt,
+        });
+        expect(yield* provideProviderServices(resolveAsset(parsed.token, parsed.fileName))).toEqual(
+          {
+            kind: "bytes",
+            bytes: new TextEncoder().encode("first"),
+            relativePath: "icons/one.svg",
+          },
+        );
+        expect(requested).toEqual([
+          { projectId: firstProjectId, relativePath: "icons/one.svg", maxBytes: 1024 * 1024 },
+          { projectId: secondProjectId, relativePath: "icons/two.svg", maxBytes: 1024 * 1024 },
+          { projectId: firstProjectId, relativePath: "icons/one.svg", maxBytes: 1024 * 1024 },
+        ]);
+      }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("uses the stable fallback when provider discovery finds no favicon", () =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project-without-icon");
+      const resolver = ProviderProjectFaviconResolver.ProviderProjectFaviconResolver.of({
+        resolvePath: () => Effect.succeed(null),
+      });
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "project-favicon",
+          cwd: "/provider/workspace",
+          projectId,
+        },
+      }).pipe(
+        Effect.provideService(
+          ProviderProjectFaviconResolver.ProviderProjectFaviconResolver,
+          resolver,
+        ),
+      );
+      const { token, fileName } = parseAssetUrl(result.relativeUrl);
+
+      expect(fileName).toBe(PROJECT_FAVICON_FALLBACK_MARKER);
+      expect(decodeTokenClaims(token)).toEqual({
+        version: 2,
+        kind: "project-favicon-fallback",
+        expiresAt: result.expiresAt,
+      });
+      expect(yield* resolveAsset(token, fileName)).toBeNull();
     }).pipe(Effect.provide(testLayer)),
   );
 });

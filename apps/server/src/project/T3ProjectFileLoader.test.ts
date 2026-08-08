@@ -10,7 +10,7 @@ import * as T3ProjectFileLoader from "./T3ProjectFileLoader.ts";
 
 const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(
-    Layer.effect(T3ProjectFileLoader.T3ProjectFileLoader, T3ProjectFileLoader.makeLocal),
+    Layer.effect(T3ProjectFileLoader.T3ProjectFileLoader, T3ProjectFileLoader.make),
   ),
   Layer.provideMerge(NodeServices.layer),
 );
@@ -28,15 +28,7 @@ const writeProjectFile = Effect.fn("writeProjectFile")(function* (cwd: string, c
   yield* fileSystem.writeFileString(path.join(cwd, "t3.json"), contents).pipe(Effect.orDie);
 });
 
-it.effect("uses a provider-safe production fallback without reading the workspace", () =>
-  Effect.gen(function* () {
-    const loader = yield* T3ProjectFileLoader.make;
-
-    expect(Option.isNone(yield* loader.load("/provider-owned/workspace"))).toBe(true);
-  }),
-);
-
-it.layer(TestLayer)("T3ProjectFileLoaderLocal", (it) => {
+it.layer(TestLayer)("T3ProjectFileLoader", (it) => {
   describe("load", () => {
     it.effect("loads and decodes a valid t3.json", () =>
       Effect.gen(function* () {

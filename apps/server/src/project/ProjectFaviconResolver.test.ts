@@ -12,13 +12,10 @@ import * as T3ProjectFileLoader from "./T3ProjectFileLoader.ts";
 
 const TestLayer = Layer.empty.pipe(
   Layer.provideMerge(
-    Layer.effect(
-      ProjectFaviconResolver.ProjectFaviconResolver,
-      ProjectFaviconResolver.makeLocal,
-    ).pipe(
+    Layer.effect(ProjectFaviconResolver.ProjectFaviconResolver, ProjectFaviconResolver.make).pipe(
       Layer.provide(WorkspacePaths.layer),
       Layer.provide(
-        Layer.effect(T3ProjectFileLoader.T3ProjectFileLoader, T3ProjectFileLoader.makeLocal),
+        Layer.effect(T3ProjectFileLoader.T3ProjectFileLoader, T3ProjectFileLoader.make),
       ),
     ),
   ),
@@ -47,34 +44,28 @@ const writeTextFile = Effect.fn("writeTextFile")(function* (
 });
 
 const makeResolverWithFileSystem = (fileSystem: FileSystem.FileSystem) =>
-  ProjectFaviconResolver.makeLocal.pipe(
+  ProjectFaviconResolver.make.pipe(
     Effect.provide([
       WorkspacePaths.layer,
-      Layer.effect(T3ProjectFileLoader.T3ProjectFileLoader, T3ProjectFileLoader.makeLocal),
+      Layer.effect(T3ProjectFileLoader.T3ProjectFileLoader, T3ProjectFileLoader.make),
     ]),
     Effect.provideService(FileSystem.FileSystem, fileSystem),
   );
 
-it.effect("uses a provider-safe production fallback without inspecting cwd", () =>
-  Effect.gen(function* () {
-    const resolver = yield* ProjectFaviconResolver.make;
-
-    expect(yield* resolver.resolvePath("/provider-owned/workspace")).toBeNull();
-  }),
-);
-
-it.layer(TestLayer)("ProjectFaviconResolverLocal", (it) => {
+it.layer(TestLayer)("ProjectFaviconResolver", (it) => {
   describe("resolvePath", () => {
-    it.effect("prefers well-known favicon files", () =>
+    it.effect("uses the shared well-known favicon priority order", () =>
       Effect.gen(function* () {
         const resolver = yield* ProjectFaviconResolver.ProjectFaviconResolver;
         const cwd = yield* makeTempDir;
         yield* writeTextFile(cwd, "favicon.svg", "<svg>favicon</svg>");
+        yield* writeTextFile(cwd, "favicon.ico", "lower priority");
+        yield* writeTextFile(cwd, "public/favicon.svg", "lower priority");
 
         const resolved = yield* resolver.resolvePath(cwd);
 
         expect(resolved).not.toBeNull();
-        expect(resolved).toContain("favicon.svg");
+        expect(resolved).toBe(`${cwd}/favicon.svg`);
       }),
     );
 

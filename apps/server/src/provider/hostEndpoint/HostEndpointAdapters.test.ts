@@ -21,6 +21,7 @@ import {
   ProviderWorkspaceMaxDepth,
   ProviderWorkspaceMaxDirectories,
   ProviderWorkspaceMaxEntries,
+  ProviderWorkspacePathError,
   ProviderWorkspaceReadByteLimit,
 } from "../ProviderWorkspaceAdapter.ts";
 import type { HostEndpointControlClient } from "./HostEndpointControlClient.ts";
@@ -314,6 +315,50 @@ describe("HostEndpoint workspace adapter", () => {
       if (result._tag === "Failure") {
         assert.equal(result.failure._tag, "ProviderWorkspaceProtocolError");
       }
+    }),
+  );
+
+  it.effect("maps a missing workspace stat path to the normalized path error", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeClient({
+        capabilities: [
+          {
+            kind: "workspace",
+            version: 1,
+            operations: ["open", "stat"],
+            maxEntries: 10,
+            maxReadBytes: 100,
+          },
+        ],
+        response: (operation) => ({
+          ...responseBase(operation),
+          generationId: GENERATION_ID,
+          rootId: "root:1",
+          canonicalRoot: "/srv/repo",
+          metadata: { kind: "directory" },
+        }),
+        fail: (operation) =>
+          operation === "workspace.stat"
+            ? new HostEndpointRpcRemoteError({
+                generationId: GENERATION_ID,
+                requestId: "request:stat",
+                operation,
+                code: "notFound",
+                remoteMessage: "Workspace path was not found.",
+                retryable: false,
+              })
+            : undefined,
+      });
+      const adapter = makeHostEndpointWorkspaceAdapter({
+        providerInstanceId: PROVIDER_INSTANCE_ID,
+        client: harness.client,
+      });
+      const root = yield* adapter.openRoot("/srv/repo");
+      const error = yield* root.getMetadata({ relativePath: "favicon.svg" }).pipe(Effect.flip);
+
+      assert.instanceOf(error, ProviderWorkspacePathError);
+      assert.equal(error.issue, "path_not_found");
+      assert.equal(error.path, "favicon.svg");
     }),
   );
 });

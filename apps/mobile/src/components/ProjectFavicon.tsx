@@ -2,7 +2,7 @@ import { SymbolView } from "./AppSymbol";
 import { Image } from "expo-image";
 import { useLayoutEffect, useMemo, useState } from "react";
 import { View } from "react-native";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import {
   getProjectFaviconCacheKey,
   isProjectFaviconFallbackUrl,
@@ -20,6 +20,7 @@ import {
 /* ─── Component ──────────────────────────────────────────────────────── */
 export function ProjectFavicon(props: {
   readonly environmentId: EnvironmentId;
+  readonly projectId?: ProjectId;
   readonly open?: boolean;
   readonly size?: number;
   readonly projectTitle: string;
@@ -30,7 +31,11 @@ export function ProjectFavicon(props: {
     props.environmentId,
     props.workspaceRoot === null || props.workspaceRoot === undefined
       ? null
-      : { _tag: "project-favicon", cwd: props.workspaceRoot },
+      : {
+          _tag: "project-favicon",
+          cwd: props.workspaceRoot,
+          ...(props.projectId === undefined ? {} : { projectId: props.projectId }),
+        },
   );
   const renderableFaviconUrl = isProjectFaviconFallbackUrl(faviconUrl) ? null : faviconUrl;
   const cacheKey =
