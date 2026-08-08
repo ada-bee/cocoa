@@ -42,7 +42,7 @@ Never run `git pull upstream main` directly on Cocoa's `main`. Instead:
 5. When an upstream change overlaps Cocoa code, first restore the upstream implementation and delete the duplicate. Reapply only the provider-routing, no-cloud, authentication, branding, or packaging delta justified by the divergence ledger below.
 6. Run the smallest focused upstream tests plus Cocoa tests at every adapted boundary. Protocol, persistence, authentication, provider routing, or recovery changes require focused integration coverage.
 7. Record a contiguous reviewed horizon in `upstream-intake.json`. An `imported` entry must point at a Cocoa commit that proves either `-x` provenance or merge ancestry. A `skipped` reason must name an intentional divergence from this file. A `deferred` reason must state the concrete prerequisite or review trigger; deferred entries are reconsidered at every intake.
-8. Run `bun scripts/cocoa-upstream-forecast.ts` again. Finish only when it reports no unreviewed commits and every imported commit is present on the intake branch.
+8. Run `bun scripts/cocoa-upstream-forecast.ts --target HEAD` on the intake branch. Finish only when it reports no unreviewed commits and every imported commit is present. The scheduled workflow uses the ledger's `main` target after the intake is merged.
 
 Do not combine an upstream implementation with an independently rewritten Cocoa version in one commit: that obscures provenance and makes later replacement harder.
 
