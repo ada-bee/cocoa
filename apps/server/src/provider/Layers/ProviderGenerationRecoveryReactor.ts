@@ -7,9 +7,11 @@
  */
 import type { ProviderInstanceId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
@@ -31,6 +33,7 @@ import { PostTurnCheckpointReactor } from "../../orchestration/Services/PostTurn
 import { CheckpointRevertReactor } from "../../orchestration/Services/CheckpointRevertReactor.ts";
 
 const RECOVERY_CONCURRENCY = 4;
+const SESSION_RECOVERY_TIMEOUT = Duration.seconds(30);
 
 interface ActiveLifecycle {
   readonly instance: ProviderInstance;
@@ -114,6 +117,23 @@ export const makeProviderGenerationRecoveryReactor = Effect.gen(function* () {
             ),
           ),
         { concurrency: RECOVERY_CONCURRENCY, discard: true },
+      ).pipe(
+        Effect.timeoutOption(SESSION_RECOVERY_TIMEOUT),
+        Effect.flatMap(
+          Option.match({
+            onNone: () =>
+              Effect.logWarning(
+                "Provider session recovery batch timed out; continuing durable turn reconciliation",
+                {
+                  providerInstanceId: instance.instanceId,
+                  generationId,
+                  recoverableSessionCount: recoverable.length,
+                  timeoutMs: Duration.toMillis(SESSION_RECOVERY_TIMEOUT),
+                },
+              ),
+            onSome: () => Effect.void,
+          }),
+        ),
       );
       const current = yield* lifecycle.getCurrent;
       if (isExactReadyGeneration(current, instance.instanceId, generationId)) {

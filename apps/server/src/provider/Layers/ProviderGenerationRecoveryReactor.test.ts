@@ -13,6 +13,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ProviderValidationError, type ProviderServiceError } from "../Errors.ts";
 import type {
@@ -318,6 +319,30 @@ it("recovers later ready generations and survives an individual typed failure", 
       yield* Queue.take(harness.revertRecoveries);
       yield* Queue.take(harness.revertRecoveries);
       assert.equal(attempts, 2);
+      yield* Scope.close(harness.ownerScope, Exit.void);
+    }),
+  ));
+
+it("continues durable turn recovery when a provider session resume never settles", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const lifecycle = yield* makeLifecycle(ready(1));
+      const expected = binding({ name: "thread-hung-resume" });
+      const recoveryStarted = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        instances: [makeInstance(lifecycle.lifecycle, "hung-resume")],
+        bindings: [expected],
+        recover: () =>
+          Deferred.succeed(recoveryStarted, undefined).pipe(Effect.andThen(Effect.never)),
+      });
+      yield* harness.reactor.start().pipe(Effect.provideService(Scope.Scope, harness.ownerScope));
+
+      yield* Deferred.await(recoveryStarted);
+      assert.equal(yield* Queue.size(harness.dispatchRecoveries), 0);
+      yield* TestClock.adjust("30 seconds");
+      assert.equal(yield* Queue.take(harness.dispatchRecoveries), INSTANCE_ID);
+      assert.equal(yield* Queue.take(harness.checkpointRecoveries), INSTANCE_ID);
+      yield* Queue.take(harness.revertRecoveries);
       yield* Scope.close(harness.ownerScope, Exit.void);
     }),
   ));

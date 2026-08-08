@@ -1361,6 +1361,14 @@ const make = Effect.gen(function* () {
           switch (event.type) {
             case "session.state.changed": {
               const runtimeStatus = orchestrationSessionStatusFromRuntimeState(event.payload.state);
+              // Replacing an endpoint generation reconnects its Cocoa session while the
+              // authoritative native turn can still be running. Keep that active turn
+              // visibly working until recovery proves a terminal state; treating the
+              // transient session handshake as a fresh turn start leaves the sidebar on
+              // Connecting when the replaced generation's completion notification is lost.
+              if (runtimeStatus === "starting" && activeTurnId !== null) {
+                return "running";
+              }
               return hasPendingTurnStart && runtimeStatus === "ready" ? "starting" : runtimeStatus;
             }
             case "turn.started":
