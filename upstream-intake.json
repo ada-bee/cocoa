@@ -3,7 +3,7 @@
   "remote": "upstream",
   "upstreamRef": "upstream/main",
   "targetRef": "main",
-  "baseTag": "cocoa-fork-base-20260803",
+  "baseTag": "v0.0.32-nightly.20260803.986",
   "baseCommit": "30c96228067bcd3a49e432ec898e52d4acb04297",
   "horizons": [
     {
@@ -540,6 +540,30 @@
           "sha": "be1a836745395286cbd392512179ab5816f538ba",
           "classification": "skipped",
           "reason": "Upstream v0.0.32 package-version preparation is not inherited by the fork."
+        }
+      ]
+    },
+    {
+      "reviewedAt": "2026-08-08",
+      "fromExclusive": "be1a836745395286cbd392512179ab5816f538ba",
+      "throughInclusive": "e2cd2383cec150ea674030d408f2a99a411c94fc",
+      "commits": [
+        {
+          "sha": "6d70e6d77824eed51b1531a2f42b2ed5cdae8501",
+          "classification": "imported",
+          "reason": "Keeps mobile reconnects from reordering the thread list and was brought in by the upstream merge.",
+          "cocoaCommit": "83b3738e427351872f20f9229ef72af280c495db"
+        },
+        {
+          "sha": "5661c6116c9d6e9e93e59cf067fc02dd3303ceef",
+          "classification": "imported",
+          "reason": "Uses upstream pinned-thread ordering behavior and was brought in by the upstream merge.",
+          "cocoaCommit": "83b3738e427351872f20f9229ef72af280c495db"
+        },
+        {
+          "sha": "e2cd2383cec150ea674030d408f2a99a411c94fc",
+          "classification": "skipped",
+          "reason": "Upstream contributor-vouch metadata has no effect on Cocoa's runtime or release process."
         }
       ]
     }

@@ -13,6 +13,8 @@ const SECOND = "3333333333333333333333333333333333333333";
 const COCOA = "4444444444444444444444444444444444444444";
 const TARGET = "5555555555555555555555555555555555555555";
 const UPSTREAM_NEW = "6666666666666666666666666666666666666666";
+const MERGE = "7777777777777777777777777777777777777777";
+const MERGE_FIRST_PARENT = "8888888888888888888888888888888888888888";
 
 const ledgerValue = (overrides: Record<string, unknown> = {}) => ({
   version: 1,
@@ -118,6 +120,55 @@ describe("Cocoa upstream intake forecast", () => {
     expect(forecast.classified[0]).toMatchObject({ sha: FIRST, conflict: true });
   });
 
+  it("accepts an upstream commit introduced by a recorded merge commit", () => {
+    const ledger = parseUpstreamIntakeLedger(
+      ledgerValue({
+        horizons: [
+          {
+            reviewedAt: "2026-08-08",
+            fromExclusive: BASE,
+            throughInclusive: FIRST,
+            commits: [
+              {
+                sha: FIRST,
+                classification: "imported",
+                reason: "Merged from upstream.",
+                cocoaCommit: MERGE,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const baseRunner = makeRunner().git;
+    const mergeRunner: GitRunner = {
+      run: (args) => {
+        const command = args.join(" ");
+        if (command === "rev-parse upstream/main^{commit}") return result(0, `${FIRST}\n`);
+        if (command === `rev-list --reverse --topo-order ${BASE}..${FIRST}`) {
+          return result(0, `${FIRST}\n`);
+        }
+        if (command === `rev-list --reverse --topo-order ${FIRST}..${FIRST}`) return result(0);
+        if (command === `merge-base --is-ancestor ${MERGE} main`) return result(0);
+        if (command === `show -s --format=%B ${MERGE}`) return result(0, "Merge upstream main\n");
+        if (command === `show -s --format=%P ${MERGE}`) {
+          return result(0, `${MERGE_FIRST_PARENT} ${SECOND}\n`);
+        }
+        if (command === `merge-base --is-ancestor ${FIRST} ${MERGE_FIRST_PARENT}`) {
+          return result(1);
+        }
+        if (command === `merge-base --is-ancestor ${FIRST} ${SECOND}`) return result(0);
+        return baseRunner.run(args);
+      },
+    };
+
+    expect(buildUpstreamForecast(ledger, mergeRunner).classified[0]).toMatchObject({
+      sha: FIRST,
+      classification: "imported",
+      conflict: false,
+    });
+  });
+
   it("rejects gaps, duplicate classifications, and unproven imported commits", () => {
     const noncontiguous = parseUpstreamIntakeLedger(
       ledgerValue({
@@ -172,12 +223,17 @@ describe("Cocoa upstream intake forecast", () => {
     const imported = parseUpstreamIntakeLedger(ledgerValue());
     const baseRunner = makeRunner().git;
     const badRunner: GitRunner = {
-      run: (args) =>
-        args[0] === "show" && args[2] === "--format=%B"
-          ? result(0, "missing provenance")
-          : baseRunner.run(args),
+      run: (args) => {
+        if (args[0] === "show" && args[2] === "--format=%B") {
+          return result(0, "missing provenance");
+        }
+        if (args[0] === "show" && args[2] === "--format=%P") return result(0, BASE);
+        return baseRunner.run(args);
+      },
     };
-    expect(() => buildUpstreamForecast(imported, badRunner)).toThrow(/does not record -x/);
+    expect(() => buildUpstreamForecast(imported, badRunner)).toThrow(
+      /neither -x provenance nor merge ancestry/,
+    );
   });
 
   it("rejects malformed ledger classifications before invoking Git", () => {
