@@ -50,11 +50,7 @@ import {
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
 import { SourceControlWritingSettingsSection } from "./SourceControlWritingSettings";
 import { deriveCocoaHostConnections } from "./HostConnectionsSettings.logic";
-import {
-  buildSourceControlHostingEnabledPatch,
-  buildSourceControlHostingHostDefaultPatch,
-  type HostingProviderKind,
-} from "./SourceControlSettings.logic";
+import { buildSourceControlHostingProviderPatch } from "./SourceControlSettings.logic";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import {
   SettingResetButton,
@@ -85,8 +81,6 @@ const HOSTING_PROVIDER_DEFAULTS = [
   readonly kind: SourceControlHostingProviderKind;
   readonly label: string;
 }>;
-const NO_DEFAULT_HOST = "none";
-
 const VCS_ICONS: Partial<Record<VcsDriverKind, Icon>> = {
   git: GitIcon,
   jj: JujutsuIcon,
@@ -507,65 +501,57 @@ export function SourceControlSettingsPanel() {
   const updateSettings = useUpdatePrimarySettings();
   const providerHosts = useMemo(() => deriveCocoaHostConnections(settings), [settings]);
 
-  const setDefaultHost = (kind: HostingProviderKind, hostId: string) =>
+  const setHostingProvider = (
+    kind: SourceControlHostingProviderKind,
+    hostId: ProviderHostId | null,
+  ) =>
     updateSettings(
-      buildSourceControlHostingHostDefaultPatch(
+      buildSourceControlHostingProviderPatch(
         settings,
         kind,
-        hostId === NO_DEFAULT_HOST ? null : (hostId as ProviderHostId),
+        hostId === null ? null : (providerHosts.find((host) => host.hostId === hostId) ?? null),
       ),
     );
 
-  const setHostingProviderEnabled = (kind: SourceControlHostingProviderKind, enabled: boolean) =>
-    updateSettings(buildSourceControlHostingEnabledPatch(settings, kind, enabled));
-
   return (
     <SettingsPageContainer>
-      <SettingsSection
-        id={searchableSetting("source-control").id}
-        title="Repository hosting defaults"
-      >
+      <SettingsSection id={searchableSetting("source-control").id} title="Version control defaults">
         <p className="px-3 pb-2 text-xs leading-relaxed text-muted-foreground sm:px-4">
-          These defaults apply only to API-only GitHub, GitLab, Bitbucket, and Azure DevOps
+          Choose the provider host for API-only GitHub, GitLab, Bitbucket, and Azure DevOps
           operations. Repository Git, fetch, push, diff, and worktree operations always run on the
           project&apos;s provider host.
         </p>
         {HOSTING_PROVIDER_DEFAULTS.map(({ kind, label }) => {
           const selectedHostId = settings.sourceControlHostingHostDefaults[kind];
           const selectedHost = providerHosts.find((host) => host.hostId === selectedHostId);
-          const enabled = !settings.sourceControlDisabledHostingProviders.includes(kind);
+          const enabled =
+            selectedHost !== undefined &&
+            !settings.sourceControlDisabledHostingProviders.includes(kind);
           return (
             <SettingsRow
               key={kind}
-              title={`${label} operations`}
-              description={`Default host for ${label} API-only operations when no project-local execution is required.`}
+              title={label}
               control={
                 <div className="flex w-full items-center justify-end gap-3">
-                  {providerHosts.length === 0 ? (
-                    <span className="text-xs text-muted-foreground">
-                      No provider hosts configured
-                    </span>
-                  ) : (
+                  {enabled && selectedHost ? (
                     <Select
-                      disabled={!enabled}
-                      value={selectedHostId ?? NO_DEFAULT_HOST}
-                      onValueChange={(value) => setDefaultHost(kind, value ?? NO_DEFAULT_HOST)}
+                      value={selectedHost.hostId}
+                      onValueChange={(value) =>
+                        value === null
+                          ? undefined
+                          : setHostingProvider(kind, value as ProviderHostId)
+                      }
                     >
                       <SelectTrigger
                         className="w-full sm:w-56"
-                        aria-label={`Default host for ${label} operations`}
+                        aria-label={`Default host for ${label}`}
                       >
                         <SelectValue>
-                          {selectedHost
-                            ? (selectedHost.host.displayName ??
-                              new URL(selectedHost.transport.url).hostname)
-                            : "Project host / none"}
+                          {selectedHost.host.displayName ??
+                            new URL(selectedHost.transport.url).hostname}
                         </SelectValue>
                       </SelectTrigger>
                       <SelectPopup align="end" alignItemWithTrigger={false}>
-                        <SelectItem hideIndicator value={NO_DEFAULT_HOST}>
-                          Project host / none
-                        </SelectItem>
                         {providerHosts.map((host) => (
                           <SelectItem key={host.hostId} hideIndicator value={host.hostId}>
                             {host.host.displayName ?? new URL(host.transport.url).hostname}
@@ -573,11 +559,17 @@ export function SourceControlSettingsPanel() {
                         ))}
                       </SelectPopup>
                     </Select>
-                  )}
+                  ) : null}
                   <Switch
                     checked={enabled}
-                    onCheckedChange={(checked) => setHostingProviderEnabled(kind, Boolean(checked))}
-                    aria-label={`Enable centralized ${label} operations`}
+                    disabled={!enabled && providerHosts.length === 0}
+                    onCheckedChange={(checked) =>
+                      setHostingProvider(
+                        kind,
+                        checked ? (selectedHost?.hostId ?? providerHosts[0]?.hostId ?? null) : null,
+                      )
+                    }
+                    aria-label={`Enable ${label}`}
                   />
                 </div>
               }
