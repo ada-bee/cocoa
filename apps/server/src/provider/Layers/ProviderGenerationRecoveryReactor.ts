@@ -5,7 +5,7 @@
  *
  * @module provider/Layers/ProviderGenerationRecoveryReactor
  */
-import type { ProviderInstanceId } from "@t3tools/contracts";
+import type { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -31,6 +31,7 @@ import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.t
 import { ProviderCommandReactor } from "../../orchestration/Services/ProviderCommandReactor.ts";
 import { PostTurnCheckpointReactor } from "../../orchestration/Services/PostTurnCheckpointReactor.ts";
 import { CheckpointRevertReactor } from "../../orchestration/Services/CheckpointRevertReactor.ts";
+import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 
 const RECOVERY_CONCURRENCY = 4;
 const SESSION_RECOVERY_TIMEOUT = Duration.seconds(30);
@@ -63,6 +64,7 @@ export const makeProviderGenerationRecoveryReactor = Effect.gen(function* () {
   const providerCommandReactor = yield* ProviderCommandReactor;
   const postTurnCheckpointReactor = yield* PostTurnCheckpointReactor;
   const checkpointRevertReactor = yield* CheckpointRevertReactor;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const startedRef = yield* Ref.make(false);
 
   const recoverGeneration = Effect.fn("ProviderGenerationRecoveryReactor.recoverGeneration")(
@@ -80,10 +82,28 @@ export const makeProviderGenerationRecoveryReactor = Effect.gen(function* () {
           }).pipe(Effect.as([])),
         ),
       );
+      const projectedStartingThreadIds = yield* projectionSnapshotQuery.getCommandReadModel().pipe(
+        Effect.map(
+          (model) =>
+            new Set(
+              model.threads
+                .filter((thread) => thread.session?.status === "starting")
+                .map((thread) => thread.id),
+            ),
+        ),
+        Effect.catch((error) =>
+          Effect.logWarning("Failed to read projected sessions for generation recovery", {
+            providerInstanceId: instance.instanceId,
+            generationId,
+            error,
+          }).pipe(Effect.as(new Set<ThreadId>())),
+        ),
+      );
       const recoverable = bindings.filter(
         (binding) =>
           binding.providerInstanceId === instance.instanceId &&
-          isRecoverableStatus(binding.status) &&
+          (isRecoverableStatus(binding.status) ||
+            projectedStartingThreadIds.has(binding.threadId)) &&
           binding.resumeCursor !== null &&
           binding.resumeCursor !== undefined,
       );

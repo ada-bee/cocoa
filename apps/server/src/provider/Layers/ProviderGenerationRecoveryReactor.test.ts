@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  type OrchestrationReadModel,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderSession,
@@ -42,6 +43,10 @@ import {
   CheckpointRevertReactor,
   type CheckpointRevertReactorShape,
 } from "../../orchestration/Services/CheckpointRevertReactor.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionSnapshotQueryShape,
+} from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 
 const INSTANCE_ID = ProviderInstanceId.make("codex_remote");
 const OTHER_INSTANCE_ID = ProviderInstanceId.make("codex_other");
@@ -144,6 +149,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
   readonly recover?: (input: RecoveryInput) => Effect.Effect<ProviderSession, ProviderServiceError>;
   readonly recoverCommands?: (providerInstanceId: ProviderInstanceId) => Effect.Effect<void>;
   readonly onListBindings?: () => void;
+  readonly projectedStartingThreadIds?: ReadonlyArray<ThreadId>;
 }) {
   const instances = yield* Ref.make(input.instances);
   const bindings = yield* Ref.make(input.bindings);
@@ -208,6 +214,16 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
     start: () => Effect.die("unused"),
     drain: Effect.void,
   };
+  const projectedStartingThreadIds = new Set(input.projectedStartingThreadIds ?? []);
+  const projectionSnapshotQuery = {
+    getCommandReadModel: () =>
+      Effect.succeed({
+        threads: input.bindings.map((entry) => ({
+          id: entry.threadId,
+          session: projectedStartingThreadIds.has(entry.threadId) ? { status: "starting" } : null,
+        })),
+      } as unknown as OrchestrationReadModel),
+  } as unknown as ProjectionSnapshotQueryShape;
   const reactor = yield* makeProviderGenerationRecoveryReactor.pipe(
     Effect.provideService(ProviderInstanceRegistry, registry),
     Effect.provideService(ProviderSessionDirectory, directory),
@@ -215,6 +231,7 @@ const makeHarness = Effect.fn("test.makeRecoveryHarness")(function* (input: {
     Effect.provideService(ProviderCommandReactor, providerCommandReactor),
     Effect.provideService(PostTurnCheckpointReactor, postTurnCheckpointReactor),
     Effect.provideService(CheckpointRevertReactor, checkpointRevertReactor),
+    Effect.provideService(ProjectionSnapshotQuery, projectionSnapshotQuery),
   );
   const ownerScope = yield* Scope.make("sequential");
 
@@ -431,6 +448,29 @@ it("filters by exact instance, active status, and a present resume cursor", () =
         [running.threadId, starting.threadId].toSorted(),
       );
       assert.equal(yield* Queue.size(harness.recoveries), 0);
+      yield* Scope.close(harness.ownerScope, Exit.void);
+    }),
+  ));
+
+it("recovers a stopped runtime binding whose projection is still starting", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const lifecycle = yield* makeLifecycle(ready(1));
+      const stale = binding({ name: "thread-stale-starting", status: "stopped" });
+      const harness = yield* makeHarness({
+        instances: [makeInstance(lifecycle.lifecycle, "stale-starting")],
+        bindings: [stale],
+        projectedStartingThreadIds: [stale.threadId],
+      });
+      yield* harness.reactor.start().pipe(Effect.provideService(Scope.Scope, harness.ownerScope));
+
+      assert.deepStrictEqual(yield* Queue.take(harness.recoveries), {
+        threadId: stale.threadId,
+        providerInstanceId: INSTANCE_ID,
+      });
+      yield* Queue.take(harness.dispatchRecoveries);
+      yield* Queue.take(harness.checkpointRecoveries);
+      yield* Queue.take(harness.revertRecoveries);
       yield* Scope.close(harness.ownerScope, Exit.void);
     }),
   ));
