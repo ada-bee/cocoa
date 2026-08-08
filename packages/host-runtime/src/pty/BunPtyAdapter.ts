@@ -12,7 +12,7 @@ export class BunPtyUnsupportedPlatformError extends Schema.TaggedErrorClass<BunP
   { platform: Schema.Literal("win32") },
 ) {
   override get message(): string {
-    return `Bun PTY terminal support is unavailable on ${this.platform}.`;
+    return `Bun PTY terminal support is unavailable on ${this.platform}. Please use Node.js (e.g. by running \`npx t3\`) instead.`;
   }
 }
 

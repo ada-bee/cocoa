@@ -1,3 +1,9 @@
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Match from "effect/Match";
+import { ChildProcessSpawner } from "effect/unstable/process";
+
 import {
   type VcsError,
   VcsProcessExitError,
@@ -9,12 +15,6 @@ import {
   VcsProcessStdinWriteError,
   VcsProcessTimeoutError,
 } from "@t3tools/contracts";
-import * as Context from "effect/Context";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
-import * as Match from "effect/Match";
-import type * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
-
 import * as ProcessRunner from "../process/ProcessRunner.ts";
 
 export interface VcsProcessInput {
@@ -41,7 +41,9 @@ export interface VcsProcessOutput {
 
 export class VcsProcess extends Context.Service<
   VcsProcess,
-  { readonly run: (input: VcsProcessInput) => Effect.Effect<VcsProcessOutput, VcsError> }
+  {
+    readonly run: (input: VcsProcessInput) => Effect.Effect<VcsProcessOutput, VcsError>;
+  }
 >()("@t3tools/host-runtime/vcs/VcsProcess") {}
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -50,6 +52,7 @@ const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
 
 const classifyNonZeroExit = (command: string, stderr: string): VcsProcessExitFailureKind => {
   const normalized = stderr.toLowerCase();
+
   if (
     normalized.includes("authentication failed") ||
     normalized.includes("not logged in") ||
@@ -62,6 +65,7 @@ const classifyNonZeroExit = (command: string, stderr: string): VcsProcessExitFai
   ) {
     return "authentication";
   }
+
   if (
     (command === "gh" &&
       (normalized.includes("could not resolve to a pullrequest") ||
@@ -78,11 +82,13 @@ const classifyNonZeroExit = (command: string, stderr: string): VcsProcessExitFai
   ) {
     return "not-found";
   }
+
   return "command-failed";
 };
 
 export const make = Effect.gen(function* () {
   const processRunner = yield* ProcessRunner.ProcessRunner;
+
   const run = Effect.fn("VcsProcess.run")(function* (input: VcsProcessInput) {
     const baseError = {
       operation: input.operation,
@@ -90,14 +96,15 @@ export const make = Effect.gen(function* () {
       cwd: input.cwd,
       argumentCount: input.args.length,
     };
+
     const result = yield* processRunner
       .run({
         command: input.command,
         args: input.args,
         cwd: input.cwd,
-        ...(input.spawnCwd === undefined ? {} : { spawnCwd: input.spawnCwd }),
-        ...(input.stdin === undefined ? {} : { stdin: input.stdin }),
-        ...(input.env === undefined ? {} : { env: input.env }),
+        ...(input.spawnCwd !== undefined ? { spawnCwd: input.spawnCwd } : {}),
+        ...(input.stdin !== undefined ? { stdin: input.stdin } : {}),
+        ...(input.env !== undefined ? { env: input.env } : {}),
         timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxOutputBytes: input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
         outputMode: "truncate",
@@ -133,7 +140,11 @@ export const make = Effect.gen(function* () {
           }),
         ),
       );
-    if (result.code === null) return yield* new VcsProcessMissingExitCodeError(baseError);
+
+    if (result.code === null) {
+      return yield* new VcsProcessMissingExitCodeError(baseError);
+    }
+
     if (!input.allowNonZeroExit && result.code !== 0) {
       return yield* VcsProcessExitError.fromProcessExit(
         baseError,
@@ -145,6 +156,7 @@ export const make = Effect.gen(function* () {
         classifyNonZeroExit(input.command, result.stderr),
       );
     }
+
     return {
       exitCode: result.code,
       stdout: result.stdout,
@@ -153,6 +165,7 @@ export const make = Effect.gen(function* () {
       stderrTruncated: result.stderrTruncated,
     } satisfies VcsProcessOutput;
   });
+
   return VcsProcess.of({ run });
 });
 
