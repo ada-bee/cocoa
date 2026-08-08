@@ -2614,6 +2614,36 @@ const seedRecoveryBinding = Effect.fn("ProviderServiceTest.seedRecoveryBinding")
 });
 
 recovery.layer("ProviderServiceLive recovery", (it) => {
+  it.effect("recovers a stopped session before reading authoritative conversation state", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-authoritative-recovery");
+      yield* seedRecoveryBinding({
+        threadId,
+        resumeCursor: { opaque: "resume-authoritative-recovery" },
+      });
+
+      recovery.codex.startSession.mockClear();
+      recovery.codex.readThread.mockClear();
+      recovery.codex.readThread.mockImplementationOnce((requestedThreadId) =>
+        Effect.succeed({ threadId: requestedThreadId, turns: [] }),
+      );
+
+      assert.deepEqual(
+        yield* provider.readAuthoritativeConversation({
+          threadId,
+          providerInstanceId: codexInstanceId,
+        }),
+        { threadId, providerInstanceId: codexInstanceId, turns: [] },
+      );
+      assert.equal(recovery.codex.startSession.mock.calls.length, 1);
+      assert.deepEqual(recovery.codex.startSession.mock.calls[0]?.[0].resumeCursor, {
+        opaque: "resume-authoritative-recovery",
+      });
+      assert.deepEqual(recovery.codex.readThread.mock.calls, [[threadId]]);
+    }),
+  );
+
   it.effect("deduplicates concurrent proactive recovery by thread id", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

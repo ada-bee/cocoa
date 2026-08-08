@@ -1599,7 +1599,11 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           const routed = yield* resolveRoutableSession({
             threadId: input.threadId,
             operation: "ProviderService.readAuthoritativeConversation",
-            allowRecovery: false,
+            // Durable turn reconciliation can outlive the in-memory adapter
+            // session (for example after a clean gateway restart). Resume the
+            // persisted provider thread before asking it for authoritative
+            // state so a stopped runtime binding cannot strand the projection.
+            allowRecovery: true,
             expectedProviderInstanceId: input.providerInstanceId,
           });
           if (routed.adapter.capabilities.conversationReconciliation !== "ordered-turn-state-v1") {
