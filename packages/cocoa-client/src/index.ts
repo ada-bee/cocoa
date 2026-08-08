@@ -69,14 +69,17 @@ export {
   CocoaClientProtocolError,
   CocoaClientRequestError,
 } from "./errors.ts";
+export { DEFAULT_COCOA_CLIENT_SCOPES } from "./http.ts";
 export { COCOA_CLIENT_UNARY_METHODS } from "./public-types.ts";
 export type {
   CocoaClient,
   CocoaClientConnectOptions,
   CocoaClientConnectionState,
   CocoaClientConnectionStatus,
+  CocoaClientFetch,
   CocoaClientRecovery,
   CocoaClientRecoveryUpdate,
+  CocoaClientScope,
   CocoaClientUnaryMethod,
   CocoaClientUnaryMethodMap,
   DisposableAsyncIterable,

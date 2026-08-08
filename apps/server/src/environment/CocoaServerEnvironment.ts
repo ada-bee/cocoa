@@ -83,6 +83,7 @@ const loadOrCreateEnvironmentId = Effect.gen(function* () {
 });
 
 export const make = Effect.gen(function* () {
+  const serverConfig = yield* ServerConfig.ServerConfig;
   const hostPlatform = yield* HostProcessPlatform;
   const hostArchitecture = yield* HostProcessArchitecture;
   const hostName = (yield* HostProcessHostname).trim();
@@ -90,6 +91,7 @@ export const make = Effect.gen(function* () {
   const descriptor: ExecutionEnvironmentDescriptor = {
     environmentId,
     label: hostName.length > 0 ? hostName : "Cocoa Gateway",
+    ...(serverConfig.cocoaPublicUrl ? { publicUrl: serverConfig.cocoaPublicUrl } : {}),
     platform: { os: platformOs(hostPlatform), arch: platformArch(hostArchitecture) },
     serverVersion: packageJson.version,
     capabilities: {

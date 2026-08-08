@@ -134,10 +134,12 @@ export const issueHeadlessServeAccessInfo = Effect.fn("issueHeadlessServeAccessI
   const serverConfig = yield* ServerConfig;
   const httpServer = yield* HttpServer.HttpServer;
   const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
-  const connectionString = resolveHeadlessConnectionString(
-    serverConfig.host,
-    resolveListeningPort(httpServer.address, serverConfig.port),
-  );
+  const connectionString =
+    serverConfig.cocoaPublicUrl ??
+    resolveHeadlessConnectionString(
+      serverConfig.host,
+      resolveListeningPort(httpServer.address, serverConfig.port),
+    );
   const issued = yield* serverAuth.issueStartupPairingCredential();
 
   return {

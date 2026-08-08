@@ -4,11 +4,14 @@ import * as NodeOS from "node:os";
 import { PortSchema } from "@t3tools/contracts";
 import * as NetService from "@t3tools/shared/Net";
 import * as Config from "effect/Config";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
+import * as Encoding from "effect/Encoding";
 import * as FileSystem from "effect/FileSystem";
 import * as LogLevel from "effect/LogLevel";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { Flag } from "effect/unstable/cli";
 
@@ -63,6 +66,8 @@ export interface CocoaGatewayCliFlags {
 
 const CocoaGatewayEnvConfig = Config.all({
   buildIdentity: Config.string("COCOA_BUILD_IDENTITY").pipe(Config.option),
+  publicUrl: Config.url("COCOA_PUBLIC_URL").pipe(Config.option),
+  password: Config.redacted("COCOA_PASSWORD").pipe(Config.option),
   logLevel: Config.logLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   port: Config.port("T3CODE_PORT").pipe(Config.option),
   host: Config.string("T3CODE_HOST").pipe(Config.option),
@@ -83,6 +88,20 @@ const CocoaGatewayEnvConfig = Config.all({
 
 const first = <A>(...values: ReadonlyArray<Option.Option<A>>): Option.Option<A> =>
   Option.firstSomeOf(values);
+
+export const resolveCocoaPassword = Effect.fn("resolveCocoaPassword")(function* (
+  configured: Redacted.Redacted<string> | undefined,
+) {
+  const generated = configured === undefined || Redacted.value(configured).length === 0;
+  if (!generated) {
+    return { password: configured, generated } as const;
+  }
+  const crypto = yield* Crypto.Crypto;
+  return {
+    password: Redacted.make(Encoding.encodeBase64Url(yield* crypto.randomBytes(24))),
+    generated,
+  } as const;
+});
 
 const resolveBaseDir = Effect.fn(function* (raw: string | undefined) {
   const path = yield* Path.Path;
@@ -133,6 +152,7 @@ export const resolveCocoaGatewayConfig = (
       ),
       () => false,
     );
+    const password = yield* resolveCocoaPassword(Option.getOrUndefined(env.password));
 
     return ServerConfig.ServerConfig.of({
       ...derivedPaths,
@@ -149,6 +169,9 @@ export const resolveCocoaGatewayConfig = (
       mode: "web",
       runtimeProfile: "cocoa-gateway",
       buildIdentity: normalizeCocoaBuildIdentity(Option.getOrUndefined(env.buildIdentity)),
+      ...(Option.isSome(env.publicUrl) ? { cocoaPublicUrl: env.publicUrl.value.origin } : {}),
+      cocoaPassword: password.password,
+      cocoaPasswordGenerated: password.generated,
       port,
       host: Option.getOrUndefined(first(flags.host, env.host)),
       cwd: baseDir,

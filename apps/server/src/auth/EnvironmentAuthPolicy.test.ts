@@ -154,14 +154,18 @@ it.layer(NodeServices.layer)("EnvironmentAuthPolicy.layer", (it) => {
     ),
   );
 
-  it.effect("never advertises client authentication for the Cocoa gateway", () =>
+  it.effect("requires client authentication for the Cocoa gateway", () =>
     Effect.gen(function* () {
       const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
       const descriptor = yield* policy.getDescriptor();
 
-      expect(descriptor.policy).toBe("unsafe-no-auth");
-      expect(descriptor.bootstrapMethods).toEqual([]);
-      expect(descriptor.sessionMethods).toEqual([]);
+      expect(descriptor.policy).toBe("remote-reachable");
+      expect(descriptor.bootstrapMethods).toEqual(["one-time-token"]);
+      expect(descriptor.sessionMethods).toEqual([
+        "browser-session-cookie",
+        "bearer-access-token",
+        "dpop-access-token",
+      ]);
     }).pipe(
       Effect.provide(
         makeEnvironmentAuthPolicyLayer({

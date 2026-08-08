@@ -16,11 +16,9 @@ export class EnvironmentAuthPolicy extends Context.Service<
 export const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const isRemoteReachable = isRemoteReachableHost(config.host);
-  const clientAuthDisabled = config.runtimeProfile === "cocoa-gateway";
 
-  const policy = clientAuthDisabled
-    ? "unsafe-no-auth"
-    : config.mode === "desktop"
+  const policy =
+    config.mode === "desktop"
       ? isRemoteReachable
         ? "remote-reachable"
         : "desktop-managed-local"
@@ -29,21 +27,16 @@ export const make = Effect.gen(function* () {
         : "loopback-browser";
 
   const bootstrapMethods: ServerAuthDescriptor["bootstrapMethods"] =
-    policy === "unsafe-no-auth"
-      ? []
-      : policy === "desktop-managed-local"
-        ? ["desktop-bootstrap"]
-        : config.mode === "desktop" && policy === "remote-reachable"
-          ? ["desktop-bootstrap", "one-time-token"]
-          : ["one-time-token"];
+    policy === "desktop-managed-local"
+      ? ["desktop-bootstrap"]
+      : config.mode === "desktop" && policy === "remote-reachable"
+        ? ["desktop-bootstrap", "one-time-token"]
+        : ["one-time-token"];
 
   const descriptor: ServerAuthDescriptor = {
     policy,
     bootstrapMethods,
-    sessionMethods:
-      policy === "unsafe-no-auth"
-        ? []
-        : ["browser-session-cookie", "bearer-access-token", "dpop-access-token"],
+    sessionMethods: ["browser-session-cookie", "bearer-access-token", "dpop-access-token"],
     sessionCookieName: resolveSessionCookieName({
       mode: config.mode,
       port: config.port,

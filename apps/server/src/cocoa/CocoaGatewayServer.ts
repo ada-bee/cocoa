@@ -6,7 +6,7 @@ import type * as Types from "effect/Types";
 import { FetchHttpClient, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
-import { cocoaGatewayAuthHttpApiLayer, environmentAuthenticatedAuthLayer } from "../auth/http.ts";
+import { authHttpApiLayer, environmentAuthenticatedAuthLayer } from "../auth/http.ts";
 import { cocoaClientV1WebSocketRouteLayer } from "../clientApi/v1/Route.ts";
 import * as ServerConfig from "../config.ts";
 import * as GatewayHealth from "../health/GatewayHealth.ts";
@@ -105,7 +105,7 @@ const commandReadinessLayer = HttpRouter.middleware()(
 const cocoaGatewayEnvironmentHttpApiLayer = HttpApiBuilder.layer(
   CocoaGatewayEnvironmentHttpApi,
 ).pipe(
-  Layer.provide(cocoaGatewayAuthHttpApiLayer),
+  Layer.provide(authHttpApiLayer),
   Layer.provide(orchestrationHttpApiLayer),
   Layer.provide(serverEnvironmentHttpApiLayer),
   Layer.provide(environmentAuthenticatedAuthLayer),

@@ -22,9 +22,9 @@ import type { ConnectedEnvironmentSummary, EnvironmentRuntimeState } from "./rem
 import { environmentSession, usePreparedConnection } from "./session";
 import { environmentCatalog } from "../connection/catalog";
 
-const connectionGatewayUrlAtom = Atom.make("").pipe(
+const connectionPairingUrlAtom = Atom.make("").pipe(
   Atom.keepAlive,
-  Atom.withLabel("mobile:connection-gateway-url"),
+  Atom.withLabel("mobile:connection-pairing-url"),
 );
 
 const pendingConnectionErrorAtom = Atom.make<string | null>(null).pipe(
@@ -144,30 +144,30 @@ export function useRemoteConnectionStatus() {
 
 export function useRemoteConnections() {
   const controller = useConnectionController();
-  const connectionGatewayUrl = useAtomValue(connectionGatewayUrlAtom);
+  const connectionPairingUrl = useAtomValue(connectionPairingUrlAtom);
   const pendingConnectionError = useAtomValue(pendingConnectionErrorAtom);
   const { connectedEnvironments, connectionError, connectionState } = useRemoteConnectionStatus();
 
-  const onChangeConnectionGatewayUrl = useCallback((gatewayUrl: string) => {
-    appAtomRegistry.set(connectionGatewayUrlAtom, gatewayUrl);
+  const onChangeConnectionPairingUrl = useCallback((pairingUrl: string) => {
+    appAtomRegistry.set(connectionPairingUrlAtom, pairingUrl);
   }, []);
 
   const onConnectPress = useCallback(
-    async (gatewayUrl?: string) => {
-      const nextGatewayUrl = gatewayUrl ?? connectionGatewayUrl;
+    async (pairingUrl?: string) => {
+      const nextPairingUrl = pairingUrl ?? connectionPairingUrl;
       setPendingConnectionError(null);
-      const result = await controller.connectGateway(nextGatewayUrl);
+      const result = await controller.connectPairingUrl(nextPairingUrl);
       if (AsyncResult.isFailure(result)) {
         const error = Cause.squash(result.cause);
         const message =
-          error instanceof Error ? error.message : "Failed to connect to the Cocoa gateway.";
+          error instanceof Error ? error.message : "Failed to pair with the environment.";
         setPendingConnectionError(message);
       } else {
-        appAtomRegistry.set(connectionGatewayUrlAtom, "");
+        appAtomRegistry.set(connectionPairingUrlAtom, "");
       }
       return result;
     },
-    [connectionGatewayUrl, controller],
+    [connectionPairingUrl, controller],
   );
 
   const onReconnectEnvironment = useCallback(
@@ -209,13 +209,13 @@ export function useRemoteConnections() {
   );
 
   return {
-    connectionGatewayUrl,
+    connectionPairingUrl,
     connectionState,
     connectionError,
-    gatewayConnectionError: pendingConnectionError,
+    pairingConnectionError: pendingConnectionError,
     connectedEnvironments,
     connectedEnvironmentCount: connectedEnvironments.length,
-    onChangeConnectionGatewayUrl,
+    onChangeConnectionPairingUrl,
     onConnectPress,
     onReconnectEnvironment,
     onUpdateEnvironment,

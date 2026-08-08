@@ -1,7 +1,9 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import { Command, GlobalFlag } from "effect/unstable/cli";
 
 import * as NetService from "@t3tools/shared/Net";
@@ -23,6 +25,9 @@ const runCocoaGateway = (
   Effect.gen(function* () {
     const logLevel = yield* GlobalFlag.LogLevel;
     const config = yield* resolveCocoaGatewayConfig(flags, logLevel, options);
+    if (config.cocoaPasswordGenerated && config.cocoaPassword) {
+      yield* Console.log(`Generated Cocoa password: ${Redacted.value(config.cocoaPassword)}`);
+    }
     return yield* runCocoaGatewayServer.pipe(Effect.provideService(ServerConfigService, config));
   });
 

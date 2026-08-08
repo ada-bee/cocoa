@@ -11,11 +11,17 @@ export * as Connection from "./layer.ts";
 export * from "./model.ts";
 export {
   ConnectionOnboarding,
+  type BearerConnectionUpdateInput,
   type DirectConnectionInput,
   type DirectConnectionUpdateInput,
+  type PairingConnectionInput,
+  prepareBearerConnectionUpdate,
   prepareDirectConnectionUpdate,
   prepareDirectRegistration,
+  preparePairingRegistration,
   registerDirectConnection,
+  registerPairingConnection,
+  updateBearerConnection,
   updateDirectConnection,
 } from "./onboarding.ts";
 export * from "./presentation.ts";
