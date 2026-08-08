@@ -1363,11 +1363,12 @@ const make = Effect.gen(function* () {
               const runtimeStatus = orchestrationSessionStatusFromRuntimeState(event.payload.state);
               // Replacing an endpoint generation reconnects every Cocoa session. The
               // transient handshake must not look like a new turn: preserve an active
-              // turn as running and an idle session's existing status. Only an accepted
-              // turn still waiting to reach the provider should remain starting.
+              // turn as running and settle an idle session as ready. The latter also
+              // repairs a stale `starting` projection left by an older reconnect. Only
+              // an accepted turn still waiting to reach the provider remains starting.
               if (runtimeStatus === "starting") {
                 if (activeTurnId !== null) return "running";
-                if (!hasPendingTurnStart) return thread.session?.status ?? "ready";
+                if (!hasPendingTurnStart) return "ready";
               }
               return hasPendingTurnStart && runtimeStatus === "ready" ? "starting" : runtimeStatus;
             }

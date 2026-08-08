@@ -720,6 +720,48 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.activeTurnId).toBeNull();
   });
 
+  effectIt.effect("repairs a stale idle starting session when its endpoint reconnects", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = asThreadId("thread-1");
+
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-stale-idle-session-starting"),
+        threadId,
+        session: {
+          threadId,
+          status: "starting",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      harness.emit({
+        type: "session.state.changed",
+        eventId: asEventId("evt-stale-idle-session-reconnecting"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        payload: { state: "starting" },
+      });
+
+      const thread = yield* Effect.promise(() =>
+        waitForThread(
+          harness.readModel,
+          (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
+          10_000,
+        ),
+      );
+      expect(thread.session?.status).toBe("ready");
+      expect(thread.session?.activeTurnId).toBeNull();
+    }),
+  );
+
   effectIt.effect(
     "keeps a reconnecting pending turn starting while ready clears stale active state",
     () =>
